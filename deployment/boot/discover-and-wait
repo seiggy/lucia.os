@@ -1,0 +1,49 @@
+#!/bin/sh
+# This hook is fetched by network-preseed, never run by initrd-preseed.
+umask 077
+trap '' HUP INT TERM
+[ ! -c /dev/console ] || exec >/dev/console 2>&1
+
+block()
+{
+    echo "Lucia read-only discovery: $1. Installation is disabled." >&2
+    while :; do sleep 3600; done
+}
+
+[ -d /sys/firmware/efi ] || block "UEFI firmware was not detected"
+[ "$(uname -m)" = x86_64 ] || block "unsupported architecture"
+[ -r /etc/lucia/discovery.conf ] || block "missing discovery configuration"
+. /etc/lucia/discovery.conf
+[ "$(uname -r)" = "$LUCIA_KERNEL_ABI" ] || block "storage module ABI mismatch"
+
+# No anna-install: before retriever configuration that only queues packages.
+for module in nvme ahci ata_piix virtio_pci virtio_blk virtio_scsi sd_mod; do
+    modprobe "$module" || block "required storage module could not be loaded"
+done
+udevadm trigger --action=add --subsystem-match=block ||
+    block "block device enumeration failed"
+udevadm settle --timeout=30 || block "device enumeration timed out"
+
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+export DOTNET_EnableDiagnostics=0
+export HOME=/run/lucia
+set -- discover --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt \
+    --state-directory /run/lucia
+if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
+    set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"
+fi
+run_agent()
+{
+    /usr/lib/lucia/agent/ld-linux-x86-64.so.2 \
+        --inhibit-cache --library-path /usr/lib/lucia/agent \
+        /usr/lib/lucia/agent/lucia-node-agent "$@"
+}
+run_agent "$@" ||
+    block "registration failed; no retry or installer continuation"
+if [ -f /etc/lucia/installation-enabled ]; then
+    shift
+    run_agent wait-install "$@" || block "owner approval was not received safely"
+    debconf-set-selections /run/lucia/install.cfg || block "approved installer configuration could not be applied"
+    exit 0
+fi
+block "registration submitted; match the displayed code with the owner"

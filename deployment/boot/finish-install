@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+umask 077
+[ -f /etc/lucia/installation-enabled ]
+. /etc/lucia/discovery.conf
+set -- stage-managed --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt --state-directory /run/lucia
+if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
+    set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"
+fi
+exec /usr/lib/lucia/agent/ld-linux-x86-64.so.2 --inhibit-cache --library-path /usr/lib/lucia/agent \
+    /usr/lib/lucia/agent/lucia-node-agent "$@"

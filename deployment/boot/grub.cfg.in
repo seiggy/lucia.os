@@ -1,0 +1,7 @@
+set default=0
+set timeout=3
+
+menuentry 'Lucia — read-only discovery (installation disabled)' {
+    linux /debian-installer/amd64/linux auto=true priority=critical netcfg/choose_interface=auto url=@DISCOVERY_URL@ ---
+    initrd /debian-installer/amd64/initrd.gz /lucia/lucia-overlay.cpio.gz
+}

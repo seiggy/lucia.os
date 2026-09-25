@@ -1,0 +1,18 @@
+#!/bin/sh
+# Read-only images never contain installation-enabled. Install images still
+# require a current, exact-disk grant before the partitioner may proceed.
+trap '' HUP INT TERM
+if [ -f /etc/lucia/installation-enabled ] && [ -r /etc/lucia/discovery.conf ]; then
+    . /etc/lucia/discovery.conf
+    set -- installation-guard --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt --state-directory /run/lucia
+    if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
+        set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"
+    fi
+    if /usr/lib/lucia/agent/ld-linux-x86-64.so.2 --inhibit-cache --library-path /usr/lib/lucia/agent \
+        /usr/lib/lucia/agent/lucia-node-agent "$@"; then
+        exit 0
+    fi
+    echo "Lucia installation authorization failed. Partitioning is blocked." >&2
+fi
+echo "Lucia read-only discovery bundle: partitioning is permanently disabled." >&2
+while :; do sleep 3600; done
