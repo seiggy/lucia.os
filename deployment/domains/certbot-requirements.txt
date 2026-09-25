@@ -1,0 +1,5 @@
+# Verified against the non-yanked official PyPI 5.8.0 releases, 2026-09-23.
+# certbot-dns-cloudflare 5.8.0 declares cloudflare>=4.0.
+# These top-level pins are not a transitive dependency lock or live API qualification.
+certbot==5.8.0
+certbot-dns-cloudflare==5.8.0

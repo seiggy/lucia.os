@@ -1,0 +1,97 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Lucia.Homelab.Server.Domains;
+using Lucia.Homelab.Server.Host;
+using Microsoft.Extensions.Logging.Abstractions;
+
+internal static class OperationsChecks
+{
+    internal static async Task Run(Action<bool, string> check)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "lucia-domain-operations-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var options = new DomainOnboardingOptions { StateDirectory = Path.Combine(root, "state"), GatewayDirectory = Path.Combine(root, "gateway") };
+            using var store = new DomainOnboardingStore(options);
+            var naming = DomainNames.Plan(new("example.com", "lab", "atlas"), "example.com");
+            var now = DateTimeOffset.UtcNow;
+            var plan = new DomainSetupPlan(Guid.NewGuid(), "", now, now.AddMinutes(30), new string('a', 32), new string('b', 32),
+                naming, "192.168.0.222", "owner@example.com", 60, "https://letsencrypt.org/documents/example.pdf",
+                "https://adguard.example.com", "owner", [], [], []);
+            plan = plan with { ReviewHash = DomainOnboardingStore.Hash(plan) };
+            var certificates = Path.Combine(store.Root, "certificates");
+            Directory.CreateDirectory(certificates);
+            var cert = Path.Combine(certificates, "fixture.pem");
+            var key = Path.Combine(certificates, "fixture.key");
+            await File.WriteAllTextAsync(cert, "Synthetic file for configuration inspection only.");
+            await File.WriteAllTextAsync(key, "Synthetic file, not a private key.");
+            var job = new DomainSetupJob(Guid.NewGuid(), "Active", "Active", "Synthetic active configuration", "owner", now, now, plan,
+                [], [naming.LocalHostnames[0]], new("lucia-" + Guid.NewGuid().ToString("N"), now, now.AddDays(60), naming.CertificateNames,
+                    new string('c', 64), cert, key, true), NextRenewalAt: now.AddHours(12));
+            await store.Update(current => current with { Job = job });
+            var profile = new DomainRuntimeProfile(1, naming.Domain, naming.ServiceUrls.Lucia, naming.ServiceUrls.Authentik,
+                naming.ServiceUrls.Spark, "https://legacy.invalid", "https://legacy.invalid:9443/application/o/lucia/", job.Id, now);
+            await DomainOnboardingStore.WriteJson(Path.Combine(store.Root, "active.json"), profile);
+            DomainIngressConfiguration.Publish(options.GatewayDirectory, naming, certificates, cert, key);
+            var provider = new ReadOnlyDns { Entries = naming.LocalHostnames.Select(name => new AdGuardRewrite(name, plan.IngressAddress))
+                .Append(new("unrelated.example.com", "192.168.0.99")).ToArray() };
+            var service = new DomainOperationsService(store, options, provider, NullLogger<DomainOperationsService>.Instance);
+            var before = await File.ReadAllTextAsync(Path.Combine(store.Root, "workflow.json"));
+            var snapshot = await service.Read(default);
+            check(snapshot.Routes.Length == 3 && snapshot.Routes.All(r => r.Configuration == "Published"), "Published routes were not identified.");
+            check(snapshot.Routes.Single(r => r.Kind == "Redirect").Target == naming.ServiceUrls.Lucia + "/", "Spark redirect was not distinguished from a proxy.");
+            check(snapshot.DnsRecords.All(r => r.State == "Matches") && snapshot.DnsRecords.Sum(r => r.Records.Length) == 3,
+                "Managed records were missing or unrelated AdGuard records were exposed.");
+            check(snapshot.DnsRecords[0].Ownership == "Created by Lucia during setup" && snapshot.DnsRecords[1].Ownership == "Pre-existing record",
+                "Existing DNS rules were falsely adopted.");
+            check(provider.Reads == 2 && before == await File.ReadAllTextAsync(Path.Combine(store.Root, "workflow.json")),
+                "Reading the operations view changed workflow or invoked unexpected DNS operations.");
+            var path = Path.Combine(options.GatewayDirectory, DomainIngressConfiguration.FileName);
+            var document = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+            document["http"]!["services"]!["domain-lucia"]!["loadBalancer"]!["servers"]![0]!["url"] = "http://different-service:8080";
+            await File.WriteAllTextAsync(path, document.ToJsonString());
+            snapshot = await service.Read(default);
+            check(snapshot.Routes[0] is { Configuration: "Changed", Target: "http://different-service:8080" },
+                "Changed gateway destination was shown as the original configuration.");
+            document["http"]!["routers"]!.AsObject().Remove("domain-authentik");
+            await File.WriteAllTextAsync(path, document.ToJsonString());
+            check((await service.Read(default)).Routes[1].Configuration == "Missing", "Missing route was reported as published.");
+            await File.WriteAllTextAsync(path, "invalid JSON");
+            provider.Fail = true;
+            snapshot = await service.Read(default);
+            check(snapshot.GatewayError is not null && snapshot.DnsError is not null
+                && snapshot.Routes.All(r => r.Configuration == "Unavailable") && snapshot.DnsRecords.All(r => r.State == "Unavailable"),
+                "Unavailable sources were presented as empty or healthy.");
+            check(!JsonSerializer.Serialize(snapshot).Contains("PRIVATE_PROVIDER_DETAIL"), "A raw provider error escaped.");
+            provider.Fail = false;
+            var duplicate = provider.Entries.Append(provider.Entries[0]).ToArray();
+            check(DomainOperationsService.Records(job, duplicate, provider.Health)[0].State == "Conflict", "Duplicate DNS rules were not flagged.");
+            check(DomainOperationsService.Records(job, [], provider.Health).All(r => r.State == "Missing"), "Absent records were not reported.");
+            check(DomainOperationsService.Records(job, provider.Entries, new(true, true, false)).All(r => r.State == "Disabled"),
+                "Globally disabled DNS rewrites were shown as healthy.");
+            check(DomainOperationsService.Records(job, [new("*.lab.example.com", "192.168.0.99")], provider.Health).All(r => r.State == "Conflict"),
+                "Overlapping wildcard drift was hidden.");
+            check(DomainOperationsService.Records(job, [new(naming.LocalHostnames[0], plan.IngressAddress) { Enabled = false }], provider.Health)[0].State == "Disabled",
+                "Disabled exact record was not identified.");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class ReadOnlyDns : ILocalDnsProvider
+    {
+        internal AdGuardRewrite[] Entries = [];
+        internal readonly AdGuardHealth Health = new(true, true, true);
+        internal bool Fail;
+        internal int Reads;
+        public Task<AdGuardConnectionStatus> GetConnectionAsync(CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Unexpected connection read.");
+        public Task<AdGuardHealth> GetHealthAsync(CancellationToken cancellationToken = default)
+        { Reads++; if (Fail) throw new IOException("PRIVATE_PROVIDER_DETAIL"); return Task.FromResult(Health); }
+        public Task<IReadOnlyList<AdGuardRewrite>> ListRewritesAsync(CancellationToken cancellationToken = default)
+        { Reads++; return Task.FromResult<IReadOnlyList<AdGuardRewrite>>(Entries); }
+        public Task AddRewriteAsync(AdGuardRewrite rewrite, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Overview must not add DNS records.");
+        public Task DeleteRewriteAsync(AdGuardRewrite rewrite, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Overview must not delete DNS records.");
+    }
+}
