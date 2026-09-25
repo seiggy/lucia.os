@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Lucia dashboard layout study</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202638; background: #f4f5f8; font-synthesis: none; }
+    body { margin: 0; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; }
+    .sample { background: #e7ebf3; color: #465169; text-align: center; font-size: 12px; font-weight: 600; padding: 10px 16px; letter-spacing: .02em; }
+    header { display: flex; align-items: center; justify-content: space-between; max-width: 1060px; margin: auto; padding: 25px 40px; }
+    .brand { font-size: 29px; font-weight: 760; letter-spacing: -.055em; }
+    .nav { display: flex; gap: 6px; padding: 5px; background: #e9ecf2; border-radius: 18px; }
+    .nav a { min-width: 100px; text-align: center; padding: 12px 18px; border-radius: 13px; font-size: 15px; font-weight: 650; }
+    .nav a.active { background: white; box-shadow: 0 2px 5px #20263809; }
+    .nav svg { width: 20px; height: 20px; vertical-align: -4px; margin-right: 7px; }
+    .settings { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 1px solid #e0e4ec; border-radius: 50%; background: white; }
+    .settings svg { width: 22px; height: 22px; }
+    main { max-width: 980px; margin: 18px auto 48px; padding: 0 26px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 42px; line-height: 1.13; letter-spacing: -.045em; font-weight: 720; }
+    h2 { font-size: 22px; line-height: 1.25; letter-spacing: -.025em; font-weight: 700; }
+    h3 { font-size: 19px; line-height: 1.25; letter-spacing: -.02em; font-weight: 680; }
+    p { font-size: 16px; line-height: 1.5; }
+    .muted { color: #60697c; }
+    .eyebrow { font-size: 14px; font-weight: 650; color: #626d80; margin-bottom: 12px; }
+    .intro { margin: 24px 0 26px; }
+    .intro p { margin-top: 14px; max-width: 570px; }
+    .fresh { display: inline-flex; align-items: center; gap: 7px; color: #60697c; font-size: 13px; margin-top: 16px; }
+    .fresh:before { content: ""; width: 6px; height: 6px; background: #478261; border-radius: 50%; }
+    .attention { background: #fff1da; border: 1px solid #eedbbc; border-radius: 25px; padding: 27px 30px; display: flex; align-items: center; gap: 22px; }
+    .attention .copy { flex: 1; }
+    .attention h2 { margin-bottom: 7px; }
+    .attention p { color: #745a34; max-width: 460px; }
+    .icon { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 18px; color: #285bce; background: #edf2ff; flex-shrink: 0; }
+    .icon svg { width: 29px; height: 29px; }
+    .icon.warning { color: #875809; background: #f7ddb0; }
+    .icon.green { color: #29744d; background: #e7f3ec; }
+    .icon.slate { color: #526276; background: #eef0f5; }
+    .icon.purple { color: #60509a; background: #efebfa; }
+    .action { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 48px; padding: 12px 21px; border-radius: 14px; background: #285bdd; color: white; font-size: 15px; font-weight: 660; white-space: nowrap; }
+    .action svg { width: 18px; height: 18px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 31px 0 15px; }
+    .text-link { color: #2859bd; font-size: 14px; font-weight: 650; }
+    .devices { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
+    .device { background: white; border: 1px solid #e7e9ef; padding: 21px; border-radius: 22px; min-width: 0; }
+    .device .icon { margin-bottom: 22px; }
+    .device h3 { font-size: 16px; }
+    .device p { font-size: 14px; margin-top: 6px; }
+    .status { display: flex; align-items: center; gap: 5px; font-weight: 560; color: #347253; }
+    .status svg { width: 15px; height: 15px; flex-shrink: 0; }
+    .status.warn { color: #855914; }
+    .device.attention-device { border-color: #e5c998; background: #fff7e9; }
+    .activity { background: white; border: 1px solid #e7e9ef; border-radius: 21px; padding: 4px 23px; }
+    .activity-row { display: flex; align-items: center; gap: 14px; padding: 18px 0; }
+    .activity-row + .activity-row { border-top: 1px solid #edf0f5; }
+    .activity-row .icon { width: 38px; height: 38px; border-radius: 12px; }
+    .activity-row .icon svg { width: 20px; height: 20px; }
+    .activity-row .copy { flex: 1; }
+    .activity-row h3 { font-size: 15px; }
+    .activity-row p, .activity-row time { font-size: 13px; color: #667083; }
+    .pill { font-size: 12px; font-weight: 650; background: #edf2fc; color: #355d99; padding: 6px 10px; border-radius: 8px; }
+    .bottom-nav { display: none; }
+    .layout-b .intro { display: flex; align-items: center; gap: 20px; margin-bottom: 28px; }
+    .layout-b .intro h1 { font-size: 35px; }
+    .layout-b .intro p { margin-top: 8px; }
+    .layout-b .devices { grid-template-columns: 1fr 1fr; gap: 18px; }
+    .layout-b .device { padding: 28px; display: grid; grid-template-columns: 64px 1fr; align-items: start; gap: 19px; min-height: 195px; border-radius: 26px; }
+    .layout-b .device .icon { margin: 0; }
+    .layout-b .device h3 { font-size: 23px; padding-top: 3px; }
+    .layout-b .device p { font-size: 15px; margin-top: 8px; }
+    .layout-b .device .device-note { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+    .layout-b .device .action { min-height: 42px; padding: 9px 16px; font-size: 14px; }
+    .layout-c .intro { margin-bottom: 30px; }
+    .layout-c .intro h1 { max-width: 570px; }
+    .layout-c .workspace { display: grid; grid-template-columns: 1.28fr 1fr; gap: 26px; align-items: start; }
+    .layout-c .section-title { margin-top: 0; }
+    .layout-c .attention + .section-title { margin-top: 26px; }
+    .layout-c .attention { flex-wrap: wrap; align-items: start; padding: 24px; gap: 16px; }
+    .layout-c .attention .copy { flex-basis: 230px; }
+    .layout-c .attention .action { width: 100%; }
+    .layout-c .devices { grid-template-columns: 1fr 1fr; }
+    .layout-c .device { padding: 20px; min-height: 174px; }
+    .layout-c .activity { margin-top: 18px; }
+    .layout-c .activity-row time { display: none; }
+    .small-note { font-size: 13px; line-height: 1.5; color: #667083; margin-top: 16px; }
+    .back { display: inline-flex; align-items: center; gap: 7px; color: #3e62ad; font-size: 15px; font-weight: 600; padding: 8px 0; margin-bottom: 18px; }
+    .back svg { width: 18px; height: 18px; }
+    .incident-intro { display: flex; align-items: center; gap: 20px; margin-bottom: 27px; }
+    .incident-intro h1 { font-size: 35px; }
+    .incident-intro p { margin-top: 8px; }
+    .incident-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 24px; }
+    .paper { background: white; padding: 27px; border: 1px solid #e7e9ef; border-radius: 24px; }
+    .paper h2 { margin-bottom: 13px; }
+    .paper p { color: #60697c; }
+    .fix { background: #edf3ff; padding: 20px; border-radius: 17px; margin: 23px 0 17px; }
+    .fix p { font-size: 14px; margin-top: 7px; }
+    .approval { width: 100%; }
+    .secondary { display: block; text-align: center; font-weight: 600; font-size: 14px; color: #60697c; padding: 15px 0 0; }
+    .steps { list-style: none; margin: 0; padding: 0; }
+    .steps li { display: flex; gap: 13px; padding: 15px 0; }
+    .steps li + li { border-top: 1px solid #edf0f5; }
+    .step-icon { border-radius: 50%; background: #eaf2ec; color: #307451; width: 27px; height: 27px; display: grid; place-items: center; flex-shrink: 0; font-size: 14px; font-weight: 700; }
+    .step-icon svg { width: 16px; height: 16px; }
+    .step-icon.current { background: #fff0d8; color: #8d6116; }
+    .step-icon.later { background: #eef0f4; color: #687487; }
+    .steps h3 { font-size: 15px; }
+    .steps p { font-size: 13px; margin-top: 4px; }
+    details { margin-top: 23px; border-top: 1px solid #e8ecf3; padding-top: 18px; }
+    summary { color: #52627f; font-size: 14px; font-weight: 600; cursor: pointer; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid #285bdd; outline-offset: 4px; }
+    @media (max-width: 700px) {
+      .sample { font-size: 11px; padding: 8px; }
+      header { padding: 20px 22px 10px; }
+      .brand { font-size: 26px; }
+      header .nav { display: none; }
+      .settings { width: 43px; height: 43px; }
+      main { margin: 21px auto 100px; padding: 0 22px; }
+      h1 { font-size: 33px; }
+      h2 { font-size: 21px; }
+      .intro { margin: 0 0 24px; }
+      .intro p { font-size: 15px; margin-top: 12px; }
+      .eyebrow { font-size: 13px; margin-bottom: 10px; }
+      .fresh { font-size: 12px; margin-top: 12px; }
+      .attention { padding: 21px; gap: 14px; flex-wrap: wrap; border-radius: 23px; align-items: start; }
+      .attention > .icon { width: 45px; height: 45px; border-radius: 14px; }
+      .attention > .icon svg { width: 25px; height: 25px; }
+      .attention .copy { flex-basis: 205px; }
+      .attention h2 { font-size: 20px; }
+      .attention p { font-size: 14px; }
+      .attention .action { width: 100%; }
+      .section-title { margin-top: 28px; }
+      .section-title h2 { font-size: 20px; }
+      .devices { grid-template-columns: 1fr 1fr; gap: 12px; }
+      .device { padding: 18px; }
+      .device .icon { width: 44px; height: 44px; border-radius: 14px; margin-bottom: 18px; }
+      .device .icon svg { width: 24px; height: 24px; }
+      .device h3 { font-size: 15px; }
+      .device p { font-size: 12px; }
+      .activity { padding: 3px 16px; }
+      .activity-row time { display: none; }
+      .activity-row h3 { font-size: 14px; }
+      .pill { font-size: 11px; }
+      .bottom-nav { position: fixed; display: flex; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #e1e5ee; padding: 10px 12px 19px; justify-content: space-around; z-index: 5; }
+      .bottom-nav a { width: 95px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 12px; font-weight: 650; color: #667183; }
+      .bottom-nav svg { width: 22px; height: 22px; }
+      .bottom-nav .active { color: #285bdd; }
+      .layout-b .intro { gap: 12px; align-items: start; }
+      .layout-b .intro > .icon { display: none; }
+      .layout-b .intro h1 { font-size: 32px; }
+      .layout-b .devices { gap: 12px; }
+      .layout-b .device { display: flex; flex-direction: column; gap: 14px; padding: 19px 16px; min-height: 206px; border-radius: 22px; }
+      .layout-b .device h3 { font-size: 16px; }
+      .layout-b .device p { font-size: 12px; margin-top: 7px; }
+      .layout-b .device .device-note { display: block; margin-top: auto; width: 100%; }
+      .layout-b .device .device-note .muted { display: none; }
+      .layout-b .device .action { width: 100%; font-size: 12px; padding: 9px; }
+      .layout-c .workspace { display: flex; flex-direction: column; gap: 27px; }
+      .layout-c .workspace > section { width: 100%; }
+      .layout-c .attention .copy { flex-basis: 205px; }
+      .layout-c .activity { margin-top: 15px; }
+      .layout-c .device { min-height: 0; }
+      .incident-intro { align-items: start; gap: 14px; }
+      .incident-intro h1 { font-size: 29px; }
+      .incident-intro .icon { width: 46px; height: 46px; }
+      .incident-grid { grid-template-columns: 1fr; gap: 18px; }
+      .paper { padding: 23px; }
+      .paper h2 { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sample">LAYOUT STUDY &middot; SAMPLE DATA &middot; NOT CONNECTED TO YOUR LAB</div>
+  <div id="app"></div>
+  <script>
+    const shapes = {
+      home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
+      devices: '<rect x="3" y="3" width="12" height="15" rx="2"/><path d="M7 7h4M7 11h4"/><rect x="17" y="10" width="5" height="11" rx="1"/>',
+      tasks: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3h6v3H9zm0 8 2 2 4-4M9 17h6"/>',
+      settings: '<path d="m9 4 1-2h4l1 2 2 1 2-.2 2 3-1 2v3l1 2-2 3-2-.2-2 1-1 2h-4l-1-2-2-1-2 .2-2-3 1-2v-3l-1-2 2-3 2 .2Z"/><circle cx="12" cy="11.5" r="3"/>',
+      spark: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h8v8H8zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/>',
+      server: '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M4 9h16M4 15h16M8 6h.01M8 12h.01M8 18h.01M12 6h4M12 12h4M12 18h4"/>',
+      media: '<rect x="3" y="4" width="18" height="13" rx="3"/><path d="M8 21h8m-4-4v4m-2-9 5 3-5 3Z"/>',
+      backup: '<rect x="4" y="5" width="16" height="14" rx="4"/><path d="M4 14h16M15 17h2"/><circle cx="12" cy="10" r="2"/>',
+      check: '<path d="m5 12 4 4L19 6"/>',
+      warning: '<path d="M12 7v6m0 4h.01"/><circle cx="12" cy="12" r="10"/>',
+      arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+      back: '<path d="M19 12H5m5-5-5 5 5 5"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'
+    };
+    const icon = (name) => `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${shapes[name]}</svg>`;
+    const params = new URLSearchParams(location.search);
+    const layout = ['a', 'b', 'c'].includes(params.get('layout')) ? params.get('layout') : 'a';
+    const incident = params.get('screen') === 'incident';
+    const issueUrl = `?layout=${layout}&screen=incident`;
+    const nav = (bottom = false) => `<nav aria-label="Main navigation" class="${bottom ? 'bottom-nav' : 'nav'}">${[['home','Home'],['devices','Devices'],['tasks','Tasks']].map(([id,label]) => `<a class="${id === 'home' ? 'active' : ''}" href="?layout=${layout}">${icon(id)}${label}</a>`).join('')}</nav>`;
+    const data = [
+      { name: 'Lucia Spark', icon: 'spark', color: '', state: 'All good', note: 'Your home base' },
+      { name: 'Home server', icon: 'server', color: 'warning', state: 'Needs your okay', note: 'Backups are paused', warning: true },
+      { name: 'Media server', icon: 'media', color: 'purple', state: 'All good', note: 'Movies & music' },
+      { name: 'Backup drive', icon: 'backup', color: 'green', state: 'All good', note: 'Your extra storage' }
+    ];
+    function deviceGrid(large = false) {
+      const devices = large ? [data[1], data[0], data[2], data[3]] : data;
+      return `<div class="devices">${devices.map(d => `<a href="${d.warning ? issueUrl : '#'}" class="device ${d.warning ? 'attention-device' : ''}">
+        <span class="icon ${d.color}">${icon(d.icon)}</span><div><h3>${d.name}</h3><p class="status ${d.warning ? 'warn' : ''}">${icon(d.warning ? 'warning' : 'check')}${d.state}</p></div>
+        ${large ? `<div class="device-note"><p class="muted">${d.note}</p>${d.warning ? `<span class="action">Review fix ${icon('arrow')}</span>` : ''}</div>` : ''}
+      </a>`).join('')}</div>`;
+    }
+    const attention = () => `<section class="attention"><span class="icon warning">${icon('backup')}</span><div class="copy"><div class="eyebrow">HOME SERVER</div><h2>Backups are paused.</h2><p>Lucia has a fix ready. It just needs your okay.</p></div><a class="action" href="${issueUrl}">Review fix ${icon('arrow')}</a></section>`;
+    const activity = () => `<div class="activity">
+      <div class="activity-row"><span class="icon">${icon('clock')}</span><div class="copy"><h3>Checking for updates</h3><p>Lucia Spark</p></div><span class="pill">In progress</span></div>
+      <div class="activity-row"><span class="icon green">${icon('check')}</span><div class="copy"><h3>Media server updated</h3><p>Finished without needing you</p></div><time>Earlier today</time></div>
+    </div>`;
+    const title = (label, link = '') => `<div class="section-title"><h2>${label}</h2>${link ? `<a class="text-link" href="#">${link}</a>` : ''}</div>`;
+    const intro = (heading = 'One thing needs<br>your okay.') => `<section class="intro"><div class="eyebrow">YOUR HOME</div><h1>${heading}</h1><p class="muted">Lucia has it figured out.<br>Your other devices are running normally.</p><span class="fresh">Last checked just now &middot; Sample</span></section>`;
+    const layouts = {
+      a: () => `${intro()}${attention()}${title('Your devices', 'See all 4')}${deviceGrid()}${title('Quietly taking care of things', 'All tasks')}${activity()}`,
+      b: () => `<section class="intro"><span class="icon warning">${icon('warning')}</span><div><div class="eyebrow">YOUR HOME</div><h1>3 devices okay.<br>1 needs your okay.</h1><p class="muted">Choose a device to see what is happening.</p><span class="fresh">Last checked just now &middot; Sample</span></div></section>${deviceGrid(true)}${title('Lucia is on it', 'All tasks')}${activity()}`,
+      c: () => `${intro('Here is how<br>your home is doing.')}<div class="workspace"><section>${title('One thing needs you')}${attention()}${title('Already being handled')}${activity()}</section><section>${title('Your devices', 'See all 4')}${deviceGrid()}<p class="small-note">3 running normally. Home server is waiting for your approval.</p></section></div>`
+    };
+    const incidentView = () => `<a class="back" href="?layout=${layout}">${icon('back')} Your home</a>
+      <div class="incident-intro"><span class="icon warning">${icon('backup')}</span><div><div class="eyebrow">HOME SERVER</div><h1>Let's get backups running.</h1><p class="muted">A fix is ready for your review.</p></div></div>
+      <div class="incident-grid"><section class="paper"><h2>Here is what happened.</h2><p>The backup service stopped responding. Scheduled backups are waiting for it to come back.</p>
+        <div class="fix"><h3>Lucia would restart the backup service.</h3><p>Only on Home server. Backups will be unavailable while it restarts. Lucia would then check whether they are running again.</p></div>
+        <p class="small-note">Your policy asks you to approve this action on Home server.</p><br>
+        <a class="action approval" href="#">Approve this fix</a><a class="secondary" href="#">Not now</a>
+        <details><summary>Technical details</summary><p>Sample diagnostic information would appear here.</p></details>
+      </section><section class="paper"><h2>One step at a time.</h2><ol class="steps">
+        <li><span class="step-icon">${icon('check')}</span><div><h3>Found the problem</h3><p>Backup service is not responding.</p></div></li>
+        <li><span class="step-icon">${icon('check')}</span><div><h3>Prepared a fix</h3><p>Restart only the affected service.</p></div></li>
+        <li><span class="step-icon current">3</span><div><h3>Waiting for your okay</h3><p>No changes have been made.</p></div></li>
+        <li><span class="step-icon later">4</span><div><h3>Check that it worked</h3><p>Verify backups are running again.</p></div></li>
+      </ol><details><summary>View full history</summary><p>This is an illustrative incident, not a live record.</p></details></section></div>`;
+    document.querySelector('#app').innerHTML = `<header><a class="brand" href="?layout=${layout}">Lucia</a>${nav()}<a class="settings" href="#" aria-label="Settings">${icon('settings')}</a></header><main class="layout-${layout}">${incident ? incidentView() : layouts[layout]()}</main>${nav(true)}`;
+  </script>
+</body>
+</html>

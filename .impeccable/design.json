@@ -1,0 +1,370 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-23T12:18:16.224Z",
+  "title": "Design System: Lucia portal",
+  "extensions": {
+    "colorMeta": {
+      "ocean-light": {
+        "role": "primary",
+        "displayName": "Ocean, light preset",
+        "tonalRamp": ["oklch(from #285bdd 15% c h)", "oklch(from #285bdd 25% c h)", "oklch(from #285bdd 35% c h)", "oklch(from #285bdd 45% c h)", "oklch(from #285bdd 60% c h)", "oklch(from #285bdd 75% c h)", "oklch(from #285bdd 85% c h)", "oklch(from #285bdd 95% c h)"]
+      },
+      "ocean-dark": {
+        "role": "primary",
+        "displayName": "Ocean, dark preset",
+        "tonalRamp": ["oklch(from #97b3ff 15% c h)", "oklch(from #97b3ff 25% c h)", "oklch(from #97b3ff 35% c h)", "oklch(from #97b3ff 45% c h)", "oklch(from #97b3ff 60% c h)", "oklch(from #97b3ff 75% c h)", "oklch(from #97b3ff 85% c h)", "oklch(from #97b3ff 95% c h)"]
+      },
+      "meadow-light": {
+        "role": "primary",
+        "displayName": "Meadow, light preset",
+        "tonalRamp": ["oklch(from #19714e 15% c h)", "oklch(from #19714e 25% c h)", "oklch(from #19714e 35% c h)", "oklch(from #19714e 45% c h)", "oklch(from #19714e 60% c h)", "oklch(from #19714e 75% c h)", "oklch(from #19714e 85% c h)", "oklch(from #19714e 95% c h)"]
+      },
+      "meadow-dark": {
+        "role": "primary",
+        "displayName": "Meadow, dark preset",
+        "tonalRamp": ["oklch(from #80cfac 15% c h)", "oklch(from #80cfac 25% c h)", "oklch(from #80cfac 35% c h)", "oklch(from #80cfac 45% c h)", "oklch(from #80cfac 60% c h)", "oklch(from #80cfac 75% c h)", "oklch(from #80cfac 85% c h)", "oklch(from #80cfac 95% c h)"]
+      },
+      "plum-light": {
+        "role": "primary",
+        "displayName": "Plum, light preset",
+        "tonalRamp": ["oklch(from #7951a8 15% c h)", "oklch(from #7951a8 25% c h)", "oklch(from #7951a8 35% c h)", "oklch(from #7951a8 45% c h)", "oklch(from #7951a8 60% c h)", "oklch(from #7951a8 75% c h)", "oklch(from #7951a8 85% c h)", "oklch(from #7951a8 95% c h)"]
+      },
+      "plum-dark": {
+        "role": "primary",
+        "displayName": "Plum, dark preset",
+        "tonalRamp": ["oklch(from #c6a2ed 15% c h)", "oklch(from #c6a2ed 25% c h)", "oklch(from #c6a2ed 35% c h)", "oklch(from #c6a2ed 45% c h)", "oklch(from #c6a2ed 60% c h)", "oklch(from #c6a2ed 75% c h)", "oklch(from #c6a2ed 85% c h)", "oklch(from #c6a2ed 95% c h)"]
+      },
+      "on-accent-white": {
+        "role": "contrast",
+        "displayName": "White button text candidate",
+        "tonalRamp": ["oklch(from #ffffff 15% c h)", "oklch(from #ffffff 25% c h)", "oklch(from #ffffff 35% c h)", "oklch(from #ffffff 45% c h)", "oklch(from #ffffff 60% c h)", "oklch(from #ffffff 75% c h)", "oklch(from #ffffff 85% c h)", "oklch(from #ffffff 95% c h)"]
+      },
+      "on-accent-black": {
+        "role": "contrast",
+        "displayName": "Black button text candidate",
+        "tonalRamp": ["oklch(from #000000 15% c h)", "oklch(from #000000 25% c h)", "oklch(from #000000 35% c h)", "oklch(from #000000 45% c h)", "oklch(from #000000 60% c h)", "oklch(from #000000 75% c h)", "oklch(from #000000 85% c h)", "oklch(from #000000 95% c h)"]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "Soft active accent, live surface mix",
+        "tonalRamp": ["oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 15% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 25% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 35% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 45% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 60% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 75% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 85% c h)", "oklch(from color-mix(in srgb, var(--accent, #285bdd) 10%, var(--surface, #ffffff)) 95% c h)"]
+      },
+      "page": {
+        "role": "neutral",
+        "displayName": "Light page field",
+        "tonalRamp": ["oklch(from #f3f5f9 15% c h)", "oklch(from #f3f5f9 25% c h)", "oklch(from #f3f5f9 35% c h)", "oklch(from #f3f5f9 45% c h)", "oklch(from #f3f5f9 60% c h)", "oklch(from #f3f5f9 75% c h)", "oklch(from #f3f5f9 85% c h)", "oklch(from #f3f5f9 95% c h)"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Light surface",
+        "tonalRamp": ["oklch(from #ffffff 15% c h)", "oklch(from #ffffff 25% c h)", "oklch(from #ffffff 35% c h)", "oklch(from #ffffff 45% c h)", "oklch(from #ffffff 60% c h)", "oklch(from #ffffff 75% c h)", "oklch(from #ffffff 85% c h)", "oklch(from #ffffff 95% c h)"]
+      },
+      "surface-subtle": {
+        "role": "neutral",
+        "displayName": "Light subtle surface",
+        "tonalRamp": ["oklch(from #e9edf4 15% c h)", "oklch(from #e9edf4 25% c h)", "oklch(from #e9edf4 35% c h)", "oklch(from #e9edf4 45% c h)", "oklch(from #e9edf4 60% c h)", "oklch(from #e9edf4 75% c h)", "oklch(from #e9edf4 85% c h)", "oklch(from #e9edf4 95% c h)"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Light primary text",
+        "tonalRamp": ["oklch(from #202839 15% c h)", "oklch(from #202839 25% c h)", "oklch(from #202839 35% c h)", "oklch(from #202839 45% c h)", "oklch(from #202839 60% c h)", "oklch(from #202839 75% c h)", "oklch(from #202839 85% c h)", "oklch(from #202839 95% c h)"]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Light supporting text",
+        "tonalRamp": ["oklch(from #58677d 15% c h)", "oklch(from #58677d 25% c h)", "oklch(from #58677d 35% c h)", "oklch(from #58677d 45% c h)", "oklch(from #58677d 60% c h)", "oklch(from #58677d 75% c h)", "oklch(from #58677d 85% c h)", "oklch(from #58677d 95% c h)"]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Light border and divider",
+        "tonalRamp": ["oklch(from #e0e5ee 15% c h)", "oklch(from #e0e5ee 25% c h)", "oklch(from #e0e5ee 35% c h)", "oklch(from #e0e5ee 45% c h)", "oklch(from #e0e5ee 60% c h)", "oklch(from #e0e5ee 75% c h)", "oklch(from #e0e5ee 85% c h)", "oklch(from #e0e5ee 95% c h)"]
+      },
+      "page-dark": {
+        "role": "neutral",
+        "displayName": "Dark page field",
+        "tonalRamp": ["oklch(from #121722 15% c h)", "oklch(from #121722 25% c h)", "oklch(from #121722 35% c h)", "oklch(from #121722 45% c h)", "oklch(from #121722 60% c h)", "oklch(from #121722 75% c h)", "oklch(from #121722 85% c h)", "oklch(from #121722 95% c h)"]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "Dark surface",
+        "tonalRamp": ["oklch(from #1b2230 15% c h)", "oklch(from #1b2230 25% c h)", "oklch(from #1b2230 35% c h)", "oklch(from #1b2230 45% c h)", "oklch(from #1b2230 60% c h)", "oklch(from #1b2230 75% c h)", "oklch(from #1b2230 85% c h)", "oklch(from #1b2230 95% c h)"]
+      },
+      "surface-subtle-dark": {
+        "role": "neutral",
+        "displayName": "Dark subtle surface",
+        "tonalRamp": ["oklch(from #242c3c 15% c h)", "oklch(from #242c3c 25% c h)", "oklch(from #242c3c 35% c h)", "oklch(from #242c3c 45% c h)", "oklch(from #242c3c 60% c h)", "oklch(from #242c3c 75% c h)", "oklch(from #242c3c 85% c h)", "oklch(from #242c3c 95% c h)"]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "Dark primary text",
+        "tonalRamp": ["oklch(from #eef2fa 15% c h)", "oklch(from #eef2fa 25% c h)", "oklch(from #eef2fa 35% c h)", "oklch(from #eef2fa 45% c h)", "oklch(from #eef2fa 60% c h)", "oklch(from #eef2fa 75% c h)", "oklch(from #eef2fa 85% c h)", "oklch(from #eef2fa 95% c h)"]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Dark supporting text",
+        "tonalRamp": ["oklch(from #b1bbcd 15% c h)", "oklch(from #b1bbcd 25% c h)", "oklch(from #b1bbcd 35% c h)", "oklch(from #b1bbcd 45% c h)", "oklch(from #b1bbcd 60% c h)", "oklch(from #b1bbcd 75% c h)", "oklch(from #b1bbcd 85% c h)", "oklch(from #b1bbcd 95% c h)"]
+      },
+      "line-dark": {
+        "role": "neutral",
+        "displayName": "Dark border and divider",
+        "tonalRamp": ["oklch(from #343e50 15% c h)", "oklch(from #343e50 25% c h)", "oklch(from #343e50 35% c h)", "oklch(from #343e50 45% c h)", "oklch(from #343e50 60% c h)", "oklch(from #343e50 75% c h)", "oklch(from #343e50 85% c h)", "oklch(from #343e50 95% c h)"]
+      },
+      "amber-bg": {
+        "role": "semantic",
+        "displayName": "Light attention field",
+        "tonalRamp": ["oklch(from #fff2dc 15% c h)", "oklch(from #fff2dc 25% c h)", "oklch(from #fff2dc 35% c h)", "oklch(from #fff2dc 45% c h)", "oklch(from #fff2dc 60% c h)", "oklch(from #fff2dc 75% c h)", "oklch(from #fff2dc 85% c h)", "oklch(from #fff2dc 95% c h)"]
+      },
+      "amber-line": {
+        "role": "semantic",
+        "displayName": "Light attention border",
+        "tonalRamp": ["oklch(from #e9d3aa 15% c h)", "oklch(from #e9d3aa 25% c h)", "oklch(from #e9d3aa 35% c h)", "oklch(from #e9d3aa 45% c h)", "oklch(from #e9d3aa 60% c h)", "oklch(from #e9d3aa 75% c h)", "oklch(from #e9d3aa 85% c h)", "oklch(from #e9d3aa 95% c h)"]
+      },
+      "amber-ink": {
+        "role": "semantic",
+        "displayName": "Light attention ink",
+        "tonalRamp": ["oklch(from #785417 15% c h)", "oklch(from #785417 25% c h)", "oklch(from #785417 35% c h)", "oklch(from #785417 45% c h)", "oklch(from #785417 60% c h)", "oklch(from #785417 75% c h)", "oklch(from #785417 85% c h)", "oklch(from #785417 95% c h)"]
+      },
+      "amber-icon": {
+        "role": "semantic",
+        "displayName": "Light attention icon well",
+        "tonalRamp": ["oklch(from #f7deb0 15% c h)", "oklch(from #f7deb0 25% c h)", "oklch(from #f7deb0 35% c h)", "oklch(from #f7deb0 45% c h)", "oklch(from #f7deb0 60% c h)", "oklch(from #f7deb0 75% c h)", "oklch(from #f7deb0 85% c h)", "oklch(from #f7deb0 95% c h)"]
+      },
+      "amber-bg-dark": {
+        "role": "semantic",
+        "displayName": "Dark attention field",
+        "tonalRamp": ["oklch(from #332b1f 15% c h)", "oklch(from #332b1f 25% c h)", "oklch(from #332b1f 35% c h)", "oklch(from #332b1f 45% c h)", "oklch(from #332b1f 60% c h)", "oklch(from #332b1f 75% c h)", "oklch(from #332b1f 85% c h)", "oklch(from #332b1f 95% c h)"]
+      },
+      "amber-line-dark": {
+        "role": "semantic",
+        "displayName": "Dark attention border",
+        "tonalRamp": ["oklch(from #6b5735 15% c h)", "oklch(from #6b5735 25% c h)", "oklch(from #6b5735 35% c h)", "oklch(from #6b5735 45% c h)", "oklch(from #6b5735 60% c h)", "oklch(from #6b5735 75% c h)", "oklch(from #6b5735 85% c h)", "oklch(from #6b5735 95% c h)"]
+      },
+      "amber-ink-dark": {
+        "role": "semantic",
+        "displayName": "Dark attention ink",
+        "tonalRamp": ["oklch(from #f2cc8c 15% c h)", "oklch(from #f2cc8c 25% c h)", "oklch(from #f2cc8c 35% c h)", "oklch(from #f2cc8c 45% c h)", "oklch(from #f2cc8c 60% c h)", "oklch(from #f2cc8c 75% c h)", "oklch(from #f2cc8c 85% c h)", "oklch(from #f2cc8c 95% c h)"]
+      },
+      "amber-icon-dark": {
+        "role": "semantic",
+        "displayName": "Dark attention icon well",
+        "tonalRamp": ["oklch(from #51402a 15% c h)", "oklch(from #51402a 25% c h)", "oklch(from #51402a 35% c h)", "oklch(from #51402a 45% c h)", "oklch(from #51402a 60% c h)", "oklch(from #51402a 75% c h)", "oklch(from #51402a 85% c h)", "oklch(from #51402a 95% c h)"]
+      },
+      "green-bg": {
+        "role": "semantic",
+        "displayName": "Light availability field, retained palette",
+        "tonalRamp": ["oklch(from #e6f2ea 15% c h)", "oklch(from #e6f2ea 25% c h)", "oklch(from #e6f2ea 35% c h)", "oklch(from #e6f2ea 45% c h)", "oklch(from #e6f2ea 60% c h)", "oklch(from #e6f2ea 75% c h)", "oklch(from #e6f2ea 85% c h)", "oklch(from #e6f2ea 95% c h)"]
+      },
+      "green-ink": {
+        "role": "semantic",
+        "displayName": "Light reported-availability ink",
+        "tonalRamp": ["oklch(from #236d46 15% c h)", "oklch(from #236d46 25% c h)", "oklch(from #236d46 35% c h)", "oklch(from #236d46 45% c h)", "oklch(from #236d46 60% c h)", "oklch(from #236d46 75% c h)", "oklch(from #236d46 85% c h)", "oklch(from #236d46 95% c h)"]
+      },
+      "green-bg-dark": {
+        "role": "semantic",
+        "displayName": "Dark availability field, retained palette",
+        "tonalRamp": ["oklch(from #203b30 15% c h)", "oklch(from #203b30 25% c h)", "oklch(from #203b30 35% c h)", "oklch(from #203b30 45% c h)", "oklch(from #203b30 60% c h)", "oklch(from #203b30 75% c h)", "oklch(from #203b30 85% c h)", "oklch(from #203b30 95% c h)"]
+      },
+      "green-ink-dark": {
+        "role": "semantic",
+        "displayName": "Dark reported-availability ink",
+        "tonalRamp": ["oklch(from #95d8b4 15% c h)", "oklch(from #95d8b4 25% c h)", "oklch(from #95d8b4 35% c h)", "oklch(from #95d8b4 45% c h)", "oklch(from #95d8b4 60% c h)", "oklch(from #95d8b4 75% c h)", "oklch(from #95d8b4 85% c h)", "oklch(from #95d8b4 95% c h)"]
+      },
+      "plum-bg": {
+        "role": "supporting",
+        "displayName": "Light supporting plum field, retained palette",
+        "tonalRamp": ["oklch(from #eeeafa 15% c h)", "oklch(from #eeeafa 25% c h)", "oklch(from #eeeafa 35% c h)", "oklch(from #eeeafa 45% c h)", "oklch(from #eeeafa 60% c h)", "oklch(from #eeeafa 75% c h)", "oklch(from #eeeafa 85% c h)", "oklch(from #eeeafa 95% c h)"]
+      },
+      "plum-ink": {
+        "role": "supporting",
+        "displayName": "Light supporting plum ink, retained palette",
+        "tonalRamp": ["oklch(from #675298 15% c h)", "oklch(from #675298 25% c h)", "oklch(from #675298 35% c h)", "oklch(from #675298 45% c h)", "oklch(from #675298 60% c h)", "oklch(from #675298 75% c h)", "oklch(from #675298 85% c h)", "oklch(from #675298 95% c h)"]
+      },
+      "plum-bg-dark": {
+        "role": "supporting",
+        "displayName": "Dark supporting plum field, retained palette",
+        "tonalRamp": ["oklch(from #352e48 15% c h)", "oklch(from #352e48 25% c h)", "oklch(from #352e48 35% c h)", "oklch(from #352e48 45% c h)", "oklch(from #352e48 60% c h)", "oklch(from #352e48 75% c h)", "oklch(from #352e48 85% c h)", "oklch(from #352e48 95% c h)"]
+      },
+      "plum-ink-dark": {
+        "role": "supporting",
+        "displayName": "Dark supporting plum ink, retained palette",
+        "tonalRamp": ["oklch(from #cebbf0 15% c h)", "oklch(from #cebbf0 25% c h)", "oklch(from #cebbf0 35% c h)", "oklch(from #cebbf0 45% c h)", "oklch(from #cebbf0 60% c h)", "oklch(from #cebbf0 75% c h)", "oklch(from #cebbf0 85% c h)", "oklch(from #cebbf0 95% c h)"]
+      },
+      "failed-bg": {
+        "role": "semantic",
+        "displayName": "Light request-failure field",
+        "tonalRamp": ["oklch(from #fff0e9 15% c h)", "oklch(from #fff0e9 25% c h)", "oklch(from #fff0e9 35% c h)", "oklch(from #fff0e9 45% c h)", "oklch(from #fff0e9 60% c h)", "oklch(from #fff0e9 75% c h)", "oklch(from #fff0e9 85% c h)", "oklch(from #fff0e9 95% c h)"]
+      },
+      "failed-ink": {
+        "role": "semantic",
+        "displayName": "Light request-failure ink",
+        "tonalRamp": ["oklch(from #963c2a 15% c h)", "oklch(from #963c2a 25% c h)", "oklch(from #963c2a 35% c h)", "oklch(from #963c2a 45% c h)", "oklch(from #963c2a 60% c h)", "oklch(from #963c2a 75% c h)", "oklch(from #963c2a 85% c h)", "oklch(from #963c2a 95% c h)"]
+      },
+      "failed-bg-dark": {
+        "role": "semantic",
+        "displayName": "Dark request-failure field",
+        "tonalRamp": ["oklch(from #3b2826 15% c h)", "oklch(from #3b2826 25% c h)", "oklch(from #3b2826 35% c h)", "oklch(from #3b2826 45% c h)", "oklch(from #3b2826 60% c h)", "oklch(from #3b2826 75% c h)", "oklch(from #3b2826 85% c h)", "oklch(from #3b2826 95% c h)"]
+      },
+      "failed-ink-dark": {
+        "role": "semantic",
+        "displayName": "Dark request-failure ink",
+        "tonalRamp": ["oklch(from #f2b2a5 15% c h)", "oklch(from #f2b2a5 25% c h)", "oklch(from #f2b2a5 35% c h)", "oklch(from #f2b2a5 45% c h)", "oklch(from #f2b2a5 60% c h)", "oklch(from #f2b2a5 75% c h)", "oklch(from #f2b2a5 85% c h)", "oklch(from #f2b2a5 95% c h)"]
+      }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Global heading fallback", "purpose": "Retained 42px h1 outside portal intro headings; not the active portal headline." },
+      "headline-mobile": { "displayName": "Global phone heading fallback", "purpose": "Retained global h1 at or below 700px; portal intros keep their own line height." },
+      "headline-narrow": { "displayName": "Global narrow heading fallback", "purpose": "Unchanged approved 31px functional h1 fallback at or below 380px, not the portal intro size." },
+      "portal-headline": { "displayName": "Portal intro heading", "purpose": "33px/1.2 intro headings at desktop and phone widths, with inherited heading weight and tracking." },
+      "brand": { "displayName": "Lucia wordmark", "purpose": "Unchanged 30px brand-only role; the portal uses 22px at or below 600px. Not a general display tier." },
+      "title": { "displayName": "Section title", "purpose": "Section and reading-surface headings." },
+      "subheading": { "displayName": "Supporting heading", "purpose": "Shared h3 and supporting model information with the source -.02em tracking." },
+      "compact-heading": { "displayName": "Directory and resource heading", "purpose": "16px h3 used by workspace directory groups, model slots/library rows, and application-key rows." },
+      "body": { "displayName": "Base text", "purpose": "Inherited application text outside paragraph-specific treatment." },
+      "paragraph": { "displayName": "Reading paragraph", "purpose": "Paragraphs with the more open line height; smaller supporting variants remain contextual." },
+      "control": { "displayName": "Action label", "purpose": "Primary and secondary button labels." },
+      "label": { "displayName": "Field and navigation label", "purpose": "Legends, inline actions, named-key fields, and contextual links; plain directory links are regular weight." },
+      "metadata": { "displayName": "Supporting metadata", "purpose": "Footer, model/key metadata, and small explanations; not primary instructions." },
+      "status": { "displayName": "Word-and-icon availability", "purpose": "Reported model availability; the hosted-model detail retains its scoped 12px variant. Not an unconditional Live badge." }
+    },
+    "shadows": [
+      { "name": "surface-light", "value": "0 3px 9px #2534530a", "purpose": "Retained root custom property; not the portal's contextual-selection treatment." },
+      { "name": "surface-dark", "value": "0 3px 10px #0000001a", "purpose": "Retained dark root custom property; contextual links use an underline, not this shadow." },
+      { "name": "navigation-overlay", "value": "0 24px 80px #10182730", "purpose": "Diffuse separation for the opaque directory, search, and account dialogs; backdrop dimming uses #10182766, without blur." },
+      { "name": "primary-hover", "value": "0 3px 9px #18233224", "purpose": "Hover feedback for an enabled primary action." },
+      { "name": "primary-active", "value": "inset 0 1px 2px #00000026", "purpose": "Pressed feedback for an enabled primary action." }
+    ],
+    "motion": [
+      { "name": "button-transition", "value": "background-color 160ms ease-out, box-shadow 160ms ease-out", "purpose": "Primary and secondary button state changes." },
+      { "name": "navigation-open", "value": "180ms cubic-bezier(.16,1,.3,1); transform: translateY(-8px) to translateY(0)", "purpose": "Modal opening translates only at full opacity. No scale, fade, decorative page entrance, or status delay." },
+      { "name": "reduced-motion-duration", "value": "0.01ms", "purpose": "Under prefers-reduced-motion: reduce, animation and transition durations use this value with !important; animation iteration count is one and scroll behavior is auto." }
+    ],
+    "breakpoints": [
+      { "name": "portal-compact (at or below)", "value": "1000px" },
+      { "name": "working-controls-compact (at or below)", "value": "900px" },
+      { "name": "working-controls-stack (at or below)", "value": "700px" },
+      { "name": "portal-phone-sheet (at or below)", "value": "600px" },
+      { "name": "global-narrow-fallback (at or below)", "value": "380px" },
+      { "name": "native-desktop-compact (below; Avalonia DIP)", "value": "960" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Shared accent action, shown with the key page's explicit creation entry. Live accent/contrast properties retain customization; this appearance specimen creates no key.",
+      "html": "<button class=\"ds-primary\" type=\"button\">New API key <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14m-5-5 5 5-5 5\" /></svg></button>",
+      "css": ".ds-primary { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 49px; padding: 12px 21px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 15px; line-height: 1.35; font-weight: 650; text-align: center; border: 1px solid transparent; border-radius: 14px; background: var(--accent, #285bdd); color: var(--on-accent, #ffffff); cursor: pointer; transition: background-color 160ms ease-out, box-shadow 160ms ease-out; } .ds-primary svg { width: 19px; height: 19px; flex-shrink: 0; } .ds-primary:hover:not(:disabled) { box-shadow: 0 3px 9px #18233224; } .ds-primary:active:not(:disabled) { box-shadow: inset 0 1px 2px #00000026; } .ds-primary:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; } .ds-primary:disabled { opacity: .65; cursor: wait; } @media (prefers-reduced-motion: reduce) { .ds-primary { transition-duration: .01ms !important; } }"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Neutral action with the same geometry as the primary; source hover changes the surface rather than adding a new accent.",
+      "html": "<button class=\"ds-secondary\" type=\"button\">Not now</button>",
+      "css": ".ds-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 49px; padding: 12px 21px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 15px; line-height: 1.35; font-weight: 650; text-align: center; border: 1px solid var(--line, #e0e5ee); border-radius: 14px; background: var(--surface, #ffffff); color: var(--text, #202839); cursor: pointer; transition: background-color 160ms ease-out, box-shadow 160ms ease-out; } .ds-secondary:hover { background: var(--surface-subtle, #e9edf4); } .ds-secondary:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; } .ds-secondary:disabled { opacity: .65; cursor: wait; } @media (prefers-reduced-motion: reduce) { .ds-secondary { transition-duration: .01ms !important; } }"
+    },
+    {
+      "name": "Inline text action",
+      "kind": "button",
+      "refersTo": "button-text",
+      "description": "Lightweight accent-ink action with SVG and hover underline. The portal raises the global minimum height to 44px; the footer retains smaller text.",
+      "html": "<button class=\"ds-text-action\" type=\"button\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M20 4v5h-5M4 20v-5h5\" /><path d=\"M4.5 9a8 8 0 0 1 13-4L20 9M4 15l2.5 4a8 8 0 0 0 13-4\" /></svg>Refresh</button>",
+      "css": ".ds-text-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--accent-ink, #285bdd); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 14px; line-height: 1.5; font-weight: 650; background: none; border: 0; padding: 6px 0; min-height: 44px; cursor: pointer; } .ds-text-action svg { width: 15px; height: 15px; flex-shrink: 0; } .ds-text-action:hover { text-decoration: underline; text-underline-offset: 4px; } .ds-text-action:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; } .ds-text-action:disabled { opacity: .55; cursor: default; }"
+    },
+    {
+      "name": "Management text field",
+      "kind": "input",
+      "refersTo": "management-field",
+      "description": "Named-key input with the shared model/key field geometry and an explicit label. Focus is customized; no new hover treatment or secret value is invented.",
+      "html": "<label class=\"ds-management-label\" for=\"ds-key-name\">Name<input class=\"ds-management-field\" id=\"ds-key-name\" maxlength=\"80\" required placeholder=\"For example, Home Assistant\" /></label>",
+      "css": ".ds-management-label { display: flex; flex-direction: column; gap: 10px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: var(--text, #202839); font-size: 14px; line-height: 1.5; font-weight: 650; } .ds-management-field { min-height: 48px; width: 100%; min-width: 0; border: 1px solid var(--line, #e0e5ee); border-radius: 12px; padding: 12px 14px; background: var(--surface, #ffffff); color: var(--text, #202839); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 14px; line-height: 1.5; font-weight: 650; } .ds-management-field:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; }"
+    },
+    {
+      "name": "Browser custom color input",
+      "kind": "input",
+      "refersTo": "color-input",
+      "description": "The native color picker and its label. This isolated specimen shows the default value; the app wires it to themeColors and appearance persistence.",
+      "html": "<div class=\"ds-custom-color\"><div><label class=\"ds-color-label\" for=\"ds-custom-accent\">Or choose your own color</label><p class=\"ds-color-help\">Button text adjusts to stay readable.</p></div><input class=\"ds-color-input\" id=\"ds-custom-accent\" type=\"color\" value=\"#285bdd\" /></div>",
+      "css": ".ds-custom-color { display: flex; justify-content: space-between; align-items: center; gap: 20px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: var(--text, #202839); } .ds-color-label { font-size: 14px; line-height: 1.5; font-weight: 650; } .ds-color-help { font-size: 12px; line-height: 1.6; color: var(--muted, #58677d); margin: 5px 0 0; } .ds-color-input { appearance: none; width: 50px; height: 44px; padding: 4px; background: var(--surface, #ffffff); border: 1px solid var(--line, #e0e5ee); border-radius: 12px; cursor: pointer; flex-shrink: 0; } .ds-color-input::-webkit-color-swatch-wrapper { padding: 0; } .ds-color-input::-webkit-color-swatch { border: 0; border-radius: 8px; } .ds-color-input:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; }"
+    },
+    {
+      "name": "Contextual Local AI navigation",
+      "kind": "nav",
+      "refersTo": "contextual-navigation-item",
+      "description": "Owner view of the Local AI siblings with Models selected. Playground remains available to non-Owners; Models and API keys are filtered by role. This is contextual navigation, not a three-tab global shell or bottom bar.",
+      "html": "<nav class=\"ds-context-nav\" aria-label=\"Local AI navigation\"><a class=\"ds-context-link\" href=\"#/ai\">Playground</a><a class=\"ds-context-link\" href=\"#/ai/models\" aria-current=\"page\">Models</a><a class=\"ds-context-link\" href=\"#/ai/keys\">API keys</a></nav>",
+      "css": ".ds-context-nav { display: flex; align-self: stretch; gap: 28px; background: var(--surface, #ffffff); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-context-link { display: flex; align-items: center; min-height: 52px; padding: 12px 2px; border-bottom: 2px solid transparent; color: var(--muted, #58677d); font-size: 14px; line-height: 1.5; font-weight: 650; white-space: nowrap; text-decoration: none; } .ds-context-link:hover { color: var(--text, #202839); } .ds-context-link[aria-current=\"page\"] { color: var(--accent-ink, #285bdd); border-bottom-color: var(--accent-ink, #285bdd); } .ds-context-link:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; } @media (max-width: 600px) { .ds-context-nav { width: 100%; gap: 24px; } }"
+    },
+    {
+      "name": "Model availability states",
+      "kind": "custom",
+      "refersTo": "status-available",
+      "description": "Illustrated word-and-icon states from Home, not current host readings. Non-interactive text has no invented hover/focus behavior, task chip, or unconditional Live badge.",
+      "html": "<span class=\"ds-status ds-status-green\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m5 12 4 4L19 6\" /></svg>Ready to respond</span> <span class=\"ds-status ds-status-amber\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /><path d=\"M9.5 8.5a2.5 2.5 0 0 1 5 .5c0 2-2.5 2-2.5 4m0 4h.01\" /></svg>Status unavailable</span>",
+      "css": ".ds-status { display: inline-flex; align-items: center; gap: 5px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 14px; font-weight: 550; line-height: 1.4; } .ds-status svg { width: 15px; height: 15px; flex-shrink: 0; } .ds-status-green { color: var(--green-ink, #236d46); } .ds-status-amber { color: var(--amber-ink, #785417); }"
+    },
+    {
+      "name": "Reading surface",
+      "kind": "card",
+      "refersTo": "reading-surface",
+      "description": "Shared neutral working surface and heading, shown with existing endpoint copy. This base specimen has no invented device, metric, hover elevation, or action; Local AI's detail panel uses a scoped smaller inset.",
+      "html": "<section class=\"ds-reading\"><h2 class=\"ds-reading-title\">Connect another app</h2><p class=\"ds-reading-copy\">The host speaks the OpenAI-compatible API.</p></section>",
+      "css": ".ds-reading { padding: 28px; background: var(--surface, #ffffff); border: 1px solid var(--line, #e0e5ee); border-radius: 25px; color: var(--text, #202839); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-reading-title { margin: 0 0 15px; font-size: 22px; font-weight: 700; line-height: 1.3; letter-spacing: -.02em; } .ds-reading-copy { margin: 0; font-size: 15px; line-height: 1.6; color: var(--muted, #58677d); overflow-wrap: anywhere; } @media (max-width: 700px) { .ds-reading { padding: 24px 21px; } }"
+    },
+    {
+      "name": "Compact workspace selector",
+      "kind": "nav",
+      "refersTo": "workspace-switch",
+      "description": "The current-workspace trigger, illustrated in Local AI. In the app it opens the grouped native dialog, not a permanent sidebar; this standalone appearance sample has no dialog handler.",
+      "html": "<button class=\"ds-area-switch\" type=\"button\" aria-label=\"Switch workspace, current: Local AI\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><svg class=\"ds-area-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"4\" /><path d=\"M8 8h8v8H8zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3\" /></svg><span>Local AI</span><svg class=\"ds-area-down\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\" /></svg></button>",
+      "css": ".ds-area-switch { display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 10px 14px; background: var(--surface, #ffffff); color: var(--text, #202839); border: 1px solid var(--line, #e0e5ee); border-radius: 12px; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 16px; line-height: 1.5; font-weight: 650; cursor: pointer; } .ds-area-icon { color: var(--accent-ink, #285bdd); width: 20px; height: 20px; flex-shrink: 0; } .ds-area-down { width: 16px; height: 16px; margin-left: 12px; color: var(--muted, #58677d); flex-shrink: 0; } .ds-area-switch:hover { border-color: var(--accent-ink, #285bdd); } .ds-area-switch:focus-visible { outline: 3px solid var(--accent-ink, #285bdd); outline-offset: 4px; } @media (max-width: 600px) { .ds-area-switch { font-size: 14px; min-height: 44px; padding: 9px 10px; gap: 7px; } .ds-area-icon { display: none; } .ds-area-down { margin-left: 0; } }"
+    },
+    {
+      "name": "Tool finder field",
+      "kind": "input",
+      "refersTo": "tool-search",
+      "description": "Native text field for the role-aware navigation directory, opened in the app with Find a tool or Ctrl/Cmd+K. The sample illustrates focus, not private-data search or connected filtering.",
+      "html": "<label class=\"ds-search-label\" for=\"ds-tool-query\">Search available tools</label><div class=\"ds-search-field\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"10.5\" cy=\"10.5\" r=\"6.5\" /><path d=\"m16 16 5 5\" /></svg><input class=\"ds-search-input\" id=\"ds-tool-query\" placeholder=\"Models, API keys, hardware…\" autocomplete=\"off\" /></div><p class=\"ds-search-note\">Jump to an available tool. This searches navigation, not your private data.</p>",
+      "css": ".ds-search-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; } .ds-search-field { display: flex; align-items: center; gap: 12px; border: 1px solid var(--line, #e0e5ee); padding: 0 14px; border-radius: 12px; background: var(--surface, #ffffff); } .ds-search-field svg { width: 24px; height: 24px; flex-shrink: 0; color: var(--muted, #58677d); } .ds-search-input { width: 100%; min-width: 0; min-height: 52px; border: 0; background: transparent; color: var(--text, #202839); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 16px; line-height: 1.5; font-weight: 400; } .ds-search-field:focus-within { outline: 2px solid var(--accent-ink, #285bdd); outline-offset: 2px; } .ds-search-input:focus-visible { outline: 0; } .ds-search-note { color: var(--muted, #58677d); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 14px; line-height: 1.6; max-width: 65ch; margin: 14px 0 24px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A simple check-in",
+    "overview": "Lucia uses iPhone-like, toy-like consumer simplicity for people who work in technology but find infrastructure consoles difficult. Quiet neutral fields, familiar rounded controls, a system sans face, and short, plain-language priorities make health and the next action understandable. Technical detail remains available through progressive disclosure rather than becoming the default experience.\n\nThe shipped portal extends that identity with a compact workspace switcher and visible contextual tools, not a permanent sidebar. Overview, Your lab, Local AI, and Settings group the available destinations; the directory and search are permission-aware. The reusable voice remains direct and reassuring without disguising uncertainty or presenting an example as a live result.\n\nThis system describes the managed, Authentik-protected browser portal and its existing working controls. The separate native bootstrap extension below remains scoped to Avalonia. The former preview scenarios, simulated task labels, invented device/activity cards, and three-tab/bottom-bar navigation are not current component specimens. The documentation records the built interface, not additional backend capabilities.",
+    "keyCharacteristics": [
+      "Consumer-device simplicity rather than cloud-console density.",
+      "Neutral light and dark fields with user-changeable accents.",
+      "Familiar rounded controls and recognizable SVG device icons.",
+      "Plain-language state labels, visible priorities, and progressive disclosure.",
+      "Compact workspace selection with visible, role-aware sibling tools.",
+      "Explicit unconnected boundaries and honest unknown or failed states."
+    ],
+    "rules": [
+      { "name": "The Changeable Accent Rule", "body": "Bind interactive accent colors to the runtime theme properties; Ocean is the default, not an immutable brand hue.", "section": "colors" },
+      { "name": "The State Has Words Rule", "body": "Pair state color with readable text and an icon or explicit context; never treat unknown health as healthy.", "section": "colors" },
+      { "name": "The Plain Language Rule", "body": "Lead with the understandable state or decision; keep technical detail behind disclosure rather than making it the primary label.", "section": "typography" },
+      { "name": "The Quiet Depth Rule", "body": "Use neutral layers and thin borders for structure; reserve the larger shadow for modal separation and the smaller interaction shadows for enabled primary actions.", "section": "elevation" },
+      { "name": "The Opaque Navigation Rule", "body": "Navigation opens by translation only; keep panel opacity at full strength so underlying tools never bleed through the moving surface.", "section": "components" },
+      { "name": "The Native Desktop Scope Rule", "body": "In the native setup utility, use the shipped Ocean resources and System/Light/Dark appearance selector; the web custom-accent behavior remains web-only.", "section": "components" }
+    ],
+    "dos": [
+      "Do preserve \"A simple check-in\" through plain-language priorities and familiar controls.",
+      "Do use the runtime accent, on-accent, accent-ink, and accent-soft properties so customization remains intact.",
+      "Do treat light, dark, and OS-following appearance as equally supported choices.",
+      "Do pair health and task-state color with words and meaningful icons or context.",
+      "Do retain visible focus, native labels and disclosures, reduced motion, and labeled navigation.",
+      "Do keep the portal's directory and contextual tools permission-aware, with full-opacity opening surfaces.",
+      "Do distinguish unconnected services from empty or healthy services, and keep test fixtures out of the dashboard."
+    ],
+    "donts": [
+      "Don't turn Ocean, a custom yellow screenshot, or a bootstrap ink value into an immutable brand palette.",
+      "Don't replace the approved consumer simplicity with a dense infrastructure console or decorative aesthetic metaphor.",
+      "Don't present missing health as success or an unsuccessful recovery as resolved.",
+      "Don't reintroduce synthetic devices, tasks, incidents, approvals, or repair controls as live functionality.",
+      "Don't hide the Owner's Models and API keys behind chat or replace the selected compact portal switcher with a permanent sidebar.",
+      "Don't describe in-memory conversation continuity as persistence across refresh or sign-out.",
+      "Don't promote scoped wordmark, narrow-heading, swatch, or metadata roles—or synthetic tonal ramps—into universal design defaults."
+    ]
+  }
+}
