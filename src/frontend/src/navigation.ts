@@ -20,6 +20,7 @@ export const destinations: Destination[] = [
   { page: 'home', area: 'overview', label: 'Home', description: 'Spark health and available tools', href: '#/', keywords: 'dashboard metrics health gpu cpu memory' },
   { page: 'devices', area: 'lab', label: 'Devices', description: 'Discover and review hardware', href: '#/devices', ownerOnly: true, keywords: 'pxe servers onboarding hardware' },
   { page: 'tasks', area: 'lab', label: 'Installation tasks', description: 'Hardware approvals and observations', href: '#/tasks', ownerOnly: true, keywords: 'progress approvals jobs installation' },
+  { page: 'updates', area: 'lab', label: 'Spark updates', description: 'OS and platform package updates', href: '#/updates', ownerOnly: true, keywords: 'apt packages security kernel nvidia cuda driver reboot restart schedule maintenance upgrade' },
   { page: 'ai', area: 'ai', label: 'Playground', description: 'Talk to your hosted model', href: '#/ai', keywords: 'chat conversation llm inference responses endpoint' },
   { page: 'ai-models', area: 'ai', label: 'Models', description: 'Your library, downloads, and Hugging Face', href: '#/ai/models', ownerOnly: true, keywords: 'llm embeddings quantization context hugging face token download load unload' },
   { page: 'ai-keys', area: 'ai', label: 'API keys', description: 'Give an application inference access', href: '#/ai/keys', ownerOnly: true, keywords: 'credentials client token revoke expiry connect app' },

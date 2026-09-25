@@ -4,6 +4,7 @@ using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Telemetry;
 using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.Nodes;
+using Lucia.Homelab.Server.Packages;
 
 if (args is ["--check-model-lease"])
 {
@@ -41,6 +42,7 @@ builder.AddHardwareOnboarding();
 builder.AddHardwareBoot();
 builder.Services.AddSingleton<ManagedNodeEnrollment>();
 builder.AddSparkTelemetry();
+builder.AddPackageUpdates();
 
 var app = builder.Build();
 
@@ -62,6 +64,7 @@ app.MapHardwareOnboarding();
 app.MapHardwareBoot();
 app.MapManagedInstallation();
 app.MapSparkTelemetry();
+app.MapPackageUpdates();
 
 app.MapDevelopmentApiDocumentation();
 

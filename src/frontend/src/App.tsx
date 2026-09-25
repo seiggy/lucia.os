@@ -9,6 +9,7 @@ import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
 import { AdGuardSettings } from './AdGuardSettings'
 import { DomainOnboarding } from './DomainOnboarding'
+import { SparkUpdates } from './SparkUpdates'
 import { routeDestination } from './navigation'
 import { useAuthentication } from './useAuthentication'
 import { inferenceConnection } from './authentication'
@@ -172,6 +173,7 @@ function App() {
   const session = authentication.session
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
+      : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
       : route.page === 'settings' ? settings()
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
           : route.page === 'domain-settings' ? <DomainOnboarding session={session} refreshSession={authentication.refresh} />

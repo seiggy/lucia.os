@@ -55,6 +55,7 @@ FILES = frozenset((
     "tools/identity/application.py", "tools/host/provision_host.py", "tools/host/package.py",
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
+    "tools/packages/package_worker.py",
     "deployment/boot/Dockerfile", "deployment/boot/serve.py", "deployment/boot/discover-and-wait",
     "deployment/boot/partitioner-guard", "deployment/boot/grub.cfg.in", "deployment/boot/finish-install",
     "deployment/host/Dockerfile",

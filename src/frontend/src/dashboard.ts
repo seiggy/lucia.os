@@ -20,6 +20,7 @@ export type Route =
   | { page: 'home' }
   | { page: 'devices' }
   | { page: 'tasks' }
+  | { page: 'updates' }
   | { page: 'settings' }
   | { page: 'adguard-settings' }
   | { page: 'domain-settings' }
@@ -40,6 +41,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 3 && parts[0] === 'ai' && parts[1] === 'models' && parts[2] === 'find') return { page: 'ai-models', view: 'find' }
   if (parts.length === 1 && parts[0] === 'devices') return { page: 'devices' }
   if (parts.length === 1 && parts[0] === 'tasks') return { page: 'tasks' }
+  if (parts.length === 1 && parts[0] === 'updates') return { page: 'updates' }
   return { page: 'not-found' }
 }
 

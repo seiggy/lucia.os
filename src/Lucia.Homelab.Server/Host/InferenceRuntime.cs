@@ -184,7 +184,8 @@ public sealed class InferenceRuntime : IAsyncDisposable
         finally { Gate.Release(); }
     }
 
-    public async Task UnloadAsync(ModelKind kind, CancellationToken cancellationToken)
+    /// <param name="keepSelection">Pause only: keep the saved startup selection so it can be restored later.</param>
+    public async Task UnloadAsync(ModelKind kind, CancellationToken cancellationToken, bool keepSelection = false)
     {
         await Gate.WaitAsync(cancellationToken);
         try
@@ -200,7 +201,8 @@ public sealed class InferenceRuntime : IAsyncDisposable
                 await UnloadEmbeddingAsync();
             else
                 throw new ArgumentException("Unknown model kind.", nameof(kind));
-            await _catalog.SaveSelectionAsync(kind, null, null);
+            if (!keepSelection)
+                await _catalog.SaveSelectionAsync(kind, null, null);
         }
         finally { Gate.Release(); }
     }

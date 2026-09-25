@@ -24,6 +24,7 @@ internal static class BootstrapPayload
         "tools/domains/activation_worker.py",
         "tools/nodes/enrollment_worker.py",
         "tools/nodes/prepare_directory.py",
+        "tools/packages/package_worker.py",
         "deployment/host/Dockerfile",
         "deployment/boot/Dockerfile",
         "deployment/boot/serve.py",

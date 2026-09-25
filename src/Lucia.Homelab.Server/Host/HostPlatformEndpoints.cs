@@ -233,10 +233,16 @@ public sealed class HostErrorFilter(ILogger<HostErrorFilter> logger) : IEndpoint
 }
 
 public sealed class HostModelStartup(ModelCatalog catalog, InferenceRuntime runtime, IOptions<HostPlatformOptions> options,
-    ILogger<HostModelStartup> logger) : IHostedService
+    IOptions<Packages.PackageUpdatesOptions> packages, ILogger<HostModelStartup> logger) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (Packages.PackageUpdatesOptions.ModelsPaused(packages.Value))
+        {
+            runtime.StartupError = "Local AI is paused while platform updates install. Lucia reloads it when they finish.";
+            logger.LogInformation("Startup model loading deferred until platform updates finish.");
+            return;
+        }
         Guid? chat = null;
         try
         {
