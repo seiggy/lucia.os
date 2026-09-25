@@ -1,0 +1,15 @@
+version: 1
+
+dn: uid=authentik,ou=Services,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: inetOrgPerson
+uid: authentik
+cn: Authentik directory reader
+sn: Service
+description: Read-only directory synchronization and password authentication
+
+dn: cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: groupOfUniqueNames
+cn: ldap-admins
+uniqueMember: ${LDAP_INIT_ROOT_USER_DN}

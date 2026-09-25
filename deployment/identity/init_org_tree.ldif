@@ -1,0 +1,22 @@
+version: 1
+
+dn: ${LDAP_INIT_ORG_DN}
+description: Lucia account directory
+objectClass: top
+objectClass: organization
+${LDAP_INIT_ORG_COMPUTED_ATTRS}
+
+dn: ou=Users,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalUnit
+ou: Users
+
+dn: ou=Groups,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalUnit
+ou: Groups
+
+dn: ou=Services,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalUnit
+ou: Services

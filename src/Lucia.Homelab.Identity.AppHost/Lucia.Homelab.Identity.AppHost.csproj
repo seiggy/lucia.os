@@ -1,0 +1,14 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.5.4">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+    <UserSecretsId>lucia-identity-6caa8845-c9b5-4c91-bf32-aa4d5bb5b727</UserSecretsId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Docker" Version="13.5.4" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.5.4" />
+  </ItemGroup>
+</Project>
