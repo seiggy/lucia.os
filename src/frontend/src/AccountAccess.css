@@ -1,0 +1,22 @@
+.authentication-shell { max-width: 900px; margin: auto; padding: 42px 28px; }
+.authentication-shell > .brand { display: inline-block; margin-bottom: 64px; }
+.authentication-panel { max-width: 600px; margin: 0; padding: 0; min-height: 0; }
+.authentication-panel > .icon-tile { margin-bottom: 24px; }
+.authentication-panel h1 { margin-bottom: 20px; }
+.authentication-panel p { max-width: 55ch; color: var(--muted); }
+.authentication-panel .button, .authentication-panel .account-actions { margin-top: 28px; }
+.authentication-panel .authentication-note { margin-top: 40px; font-size: 14px; }
+.authentication-panel .authentication-error { margin-top: 20px; padding: 16px; border-radius: 12px; color: var(--failed-ink); background: var(--failed-bg); }
+.header-actions { display: flex; align-items: center; gap: 18px; }
+.account-actions { display: flex; align-items: center; gap: 14px; }
+.account-actions > span { max-width: 140px; overflow-wrap: anywhere; font-size: 14px; font-weight: 650; }
+.account-actions small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 3px; }
+.account-actions form { margin: 0; }
+.account-actions .text-link { white-space: nowrap; }
+@media (max-width: 720px) {
+  .header-actions { gap: 12px; }
+  .account-actions { gap: 10px; }
+  .account-actions > span { max-width: 90px; font-size: 14px; }
+  .authentication-shell { padding: 28px 20px; }
+  .authentication-shell > .brand { margin-bottom: 44px; }
+}

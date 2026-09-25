@@ -1,0 +1,38 @@
+.spark-health { padding: 28px; margin-bottom: 28px; }
+.spark-health-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.spark-health-heading h2 { margin-bottom: 10px; }
+.spark-updated { color: var(--muted); font-size: 12px; text-align: right; padding-top: 5px; }
+.spark-readings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin: 28px 0 24px; }
+.spark-readings dt { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+.spark-readings dd { margin: 0 0 8px; font-size: 19px; font-weight: 680; overflow-wrap: anywhere; }
+.spark-readings small { display: block; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.spark-secondary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.spark-secondary p, .spark-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.spark-note { margin-top: 12px; }
+.spark-missing { color: var(--amber-ink); }
+.spark-error { margin-top: 20px; color: var(--failed-ink); }
+.spark-error p { font-size: 14px; }
+.spark-history { margin-top: 20px; }
+.spark-history-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 20px; }
+.spark-trend { margin: 0; min-width: 0; }
+.spark-trend figcaption { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 650; margin-bottom: 12px; }
+.spark-trend figcaption span { color: var(--muted); font-weight: 400; }
+.spark-trend svg { display: block; width: 100%; height: 100px; overflow: visible; }
+.spark-grid { stroke: var(--line); stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.spark-line { stroke: var(--accent-ink); stroke-width: 2; fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+.spark-trend-memory .spark-line { stroke: var(--plum-ink); }
+.spark-trend-gpu .spark-line { stroke: var(--green-ink); }
+.spark-history-empty { min-height: 100px; display: flex; align-items: center; color: var(--muted); font-size: 12px; }
+.spark-history-axis { display: flex; justify-content: space-between; gap: 20px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+@media (max-width: 900px) {
+  .spark-readings { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+}
+@media (max-width: 700px) {
+  .spark-health { padding: 24px 21px; }
+  .spark-health-heading { flex-direction: column; gap: 12px; }
+  .spark-updated { text-align: left; padding: 0; }
+  .spark-readings { column-gap: 18px; }
+  .spark-readings dd { font-size: 16px; }
+  .spark-history-grid { grid-template-columns: 1fr; gap: 24px; }
+  .spark-history-axis { font-size: 12px; }
+}

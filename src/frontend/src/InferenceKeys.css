@@ -1,0 +1,34 @@
+.key-error { color: var(--failed-ink); margin-bottom: 20px; }
+.key-notice { min-height: 24px; color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+.key-create, .key-secret { padding: 28px; margin-bottom: 28px; }
+.key-secret > p { margin-top: 12px; color: var(--muted); }
+.key-create h2, .key-secret h2 { margin-bottom: 18px; }
+.key-fields { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; margin-bottom: 24px; }
+.key-fields label, .key-secret label { display: flex; flex-direction: column; gap: 10px; font-size: 14px; font-weight: 650; }
+.key-fields input, .key-secret input { min-height: 48px; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--surface); color: var(--text); font: inherit; width: 100%; min-width: 0; }
+.key-fields small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.6; }
+.key-secret input { margin: 10px 0 20px; }
+.key-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.key-list-section { margin-top: 36px; }
+.key-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.key-page-heading > .button { flex-shrink: 0; }
+.key-list-heading, .key-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.key-list-heading { margin-bottom: 18px; }
+.key-list { padding: 0 24px; }
+.key-list article { padding: 22px 0; }
+.key-list article + article { border-top: 1px solid var(--line); }
+.key-row > div { min-width: 0; }
+.key-row h3, .key-hint { overflow-wrap: anywhere; }
+.key-row h3 { font-size: 16px; }
+.key-hint { color: var(--muted); font-size: 14px; margin-top: 8px; }
+.key-meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.key-revoke { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.key-revoke p { max-width: 65ch; font-size: 14px; margin-bottom: 16px; }
+.ai-management-links { display: flex; flex-wrap: wrap; gap: 20px; margin: -10px 0 26px; }
+@media (max-width: 700px) {
+  .key-create, .key-secret { padding: 24px 21px; }
+  .key-fields { grid-template-columns: 1fr; gap: 20px; }
+  .key-list { padding-inline: 20px; }
+  .key-row { align-items: flex-start; }
+  .key-page-heading { flex-direction: column; gap: 0; margin-bottom: 24px; }
+}

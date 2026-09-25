@@ -1,0 +1,75 @@
+.model-manager-section, .model-confirmation { padding: 28px; margin-bottom: 28px; }
+.model-manager-section > h2 { margin-bottom: 18px; }
+.model-library-navigation { display: flex; gap: 12px; margin: 0 0 28px; }
+.model-library-navigation a { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; font-weight: 650; background: var(--surface); }
+.model-library-navigation a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-ink); }
+.model-library-navigation svg { width: 18px; height: 18px; }
+.provider-connection { margin-top: 0; padding: 12px 24px; }
+.provider-connection > summary { color: var(--text); }
+.provider-connection > summary span { color: var(--muted); font-size: 12px; margin-left: 16px; font-weight: 400; }
+.provider-connection > p { margin-top: 16px; font-size: 14px; }
+.provider-connection > form { margin-bottom: 12px; }
+.model-library-empty { padding-block: 16px; color: var(--muted); }
+.model-library-empty .button { margin-top: 20px; }
+.model-manager-error { color: var(--failed-ink); margin: 16px 0; overflow-wrap: anywhere; }
+.model-manager-notice { min-height: 24px; color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+.model-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+.model-slots h3 { font-size: 16px; margin-bottom: 10px; }
+.model-name { overflow-wrap: anywhere; font-size: 15px; font-weight: 650; margin: 12px 0; }
+.model-slots .muted, .model-meta, .model-revision { font-size: 12px; }
+.model-revision { color: var(--muted); overflow-wrap: anywhere; margin-top: 8px; }
+.model-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.model-manager-section label, .model-context-input label { display: block; font-size: 14px; font-weight: 650; }
+.model-manager-section input:not([type="checkbox"]), .model-manager-section select { display: block; width: 100%; min-width: 0; min-height: 48px; margin-top: 10px; padding: 12px 14px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 12px; font: inherit; }
+.provider-token-form { margin-top: 18px; }
+.provider-token-form .model-actions { margin-top: 20px; }
+.model-search { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; gap: 18px; align-items: end; }
+.model-direct { margin-top: 24px; }
+.model-direct > label { color: var(--muted); }
+.model-direct > div { display: flex; align-items: center; gap: 20px; }
+.model-direct .text-link { margin-top: 10px; flex-shrink: 0; }
+.model-search-results { margin-top: 24px; }
+.model-search-result { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; padding: 18px 0; color: var(--text); }
+.model-search-result strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.model-search-result small { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; }
+.model-search-result > svg { flex-shrink: 0; width: 18px; height: 18px; color: var(--accent-ink); }
+.model-repository { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+.model-repository > h3 { overflow-wrap: anywhere; }
+.model-repository > label { margin-top: 24px; }
+.model-checkbox { display: flex !important; align-items: flex-start; gap: 12px; font-size: 14px; font-weight: 400 !important; margin: 24px 0; max-width: 70ch; }
+.model-checkbox input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
+.model-estimate { margin: 24px 0; }
+.model-estimate h3 { font-size: 16px; margin-bottom: 12px; }
+.model-estimate > p { font-size: 14px; }
+.model-estimate .fact-list { max-width: 650px; }
+.model-library { margin-top: 36px; }
+.model-section-heading, .model-library-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.model-section-heading { margin-bottom: 18px; }
+.model-library-list { padding: 0 24px; }
+.model-library-list:empty { display: none; }
+.model-library-list > article { padding: 24px 0; }
+.model-library-list > article + article { border-top: 1px solid var(--line); }
+.model-library-row > div:first-child { min-width: 0; flex: 1; }
+.model-library-row h3 { font-size: 16px; overflow-wrap: anywhere; margin-bottom: 10px; }
+.model-library-row .muted { font-size: 14px; overflow-wrap: anywhere; }
+.model-meta { color: var(--muted); margin-top: 8px; }
+.model-local-plan { margin-top: 22px; padding-top: 1px; border-top: 1px solid var(--line); }
+.model-context-input { max-width: 650px; margin: 24px 0; }
+.model-context-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 20px; }
+.model-context-heading output { color: var(--accent-ink); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.model-context-input input[type="range"] { display: block; width: 100%; min-width: 0; height: 44px; margin: 8px 0 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.model-context-input input[type="range"]:disabled { cursor: default; opacity: .6; }
+.model-context-limits { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 20px; font-size: 12px; color: var(--muted); }
+.model-context-input .section-note { margin-top: 12px; }
+.model-confirmation { margin-top: 28px; border-color: var(--amber-line); }
+.model-confirmation > p { max-width: 70ch; margin: 16px 0 22px; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .model-manager-section, .model-confirmation { padding: 24px 21px; }
+  .model-slots, .model-search { grid-template-columns: 1fr; gap: 24px; }
+  .model-library-row { flex-direction: column; }
+  .model-library-list { padding-inline: 20px; }
+  .model-direct > div { gap: 12px; }
+  .provider-connection > summary span { display: block; margin-left: 18px; margin-top: 5px; }
+  .model-library-navigation { gap: 8px; }
+  .model-library-navigation a { padding-inline: 12px; }
+}
