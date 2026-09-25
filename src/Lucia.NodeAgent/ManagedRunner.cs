@@ -56,10 +56,10 @@ internal static class ManagedRunner
                 }
                 else Console.Error.WriteLine("Native enrollment is pending. The node is not managed yet.");
             }
-            catch (NodeAgentException)
+            catch (NodeAgentException ex)
             {
                 configuration = null;
-                Console.Error.WriteLine("First-boot enrollment is unavailable or invalid; retrying within the enrollment deadline.");
+                Console.Error.WriteLine("First-boot enrollment is unavailable or invalid; retrying within the enrollment deadline. " + ex.Message);
             }
             if (configuration is null) await Task.Delay(TimeSpan.FromSeconds(30), token);
         }
@@ -87,10 +87,10 @@ internal static class ManagedRunner
                         }
                         else renewalFailures = Math.Min(renewalFailures + 1, 5);
                     }
-                    catch (NodeAgentException)
+                    catch (NodeAgentException ex)
                     {
                         renewalFailures = Math.Min(renewalFailures + 1, 5);
-                        Console.Error.WriteLine("Expired identity recovery is pending or rejected. No heartbeat was sent.");
+                        Console.Error.WriteLine("Expired identity recovery is pending or rejected. No heartbeat was sent. " + ex.Message);
                     }
                     nextRenewal = DateTimeOffset.UtcNow.AddSeconds(Math.Min(900, 30 * (1 << renewalFailures)));
                 }
@@ -124,10 +124,10 @@ internal static class ManagedRunner
                     }
                     else renewalFailures = Math.Min(renewalFailures + 1, 5);
                 }
-                catch (NodeAgentException)
+                catch (NodeAgentException ex)
                 {
                     renewalFailures = Math.Min(renewalFailures + 1, 5);
-                    Console.Error.WriteLine("Certificate renewal remains pending or failed validation. The still-valid identity is retained.");
+                    Console.Error.WriteLine("Certificate renewal remains pending or failed validation. The still-valid identity is retained. " + ex.Message);
                 }
                 nextRenewal = DateTimeOffset.UtcNow.AddSeconds(Math.Min(900, 30 * (1 << renewalFailures)));
             }
@@ -142,9 +142,9 @@ internal static class ManagedRunner
                 await client.HeartbeatAsync(configuration.CertificatePem, ReadMetrics(plan), key, token);
                 Console.Error.WriteLine("Authenticated managed heartbeat accepted.");
             }
-            catch (NodeAgentException)
+            catch (NodeAgentException ex)
             {
-                Console.Error.WriteLine("Authenticated heartbeat was not accepted; management freshness is not confirmed.");
+                Console.Error.WriteLine("Authenticated heartbeat was not accepted; management freshness is not confirmed. " + ex.Message);
             }
             await heartbeatTimer.WaitForNextTickAsync(token);
         }

@@ -74,7 +74,8 @@ internal static class ManagedFiles
             Encoding.UTF8.GetBytes(OwnersSudoers), sudoers: true);
         await RunAsync("/usr/bin/in-target", ["visudo", "--check", "--file", "/etc/sudoers.d/lucia-owners"], token);
         Write("/target/etc/ssh/sshd_config.d/00-lucia.conf", ManagedIdentity.Ssh);
-        SecureStateDirectory.EnsureDirectory("/target/run/sshd");
+        // in-target bind-mounts the installer's /run over /target/run, so sshd -t looks for /run/sshd there.
+        SecureStateDirectory.EnsureDirectory("/run/sshd");
         await RunAsync("/usr/bin/in-target", ["sshd", "-t"], token);
         await RunAsync("/usr/bin/in-target", ["systemctl", "enable", "lucia-node-agent.service", "ssh.service"], token);
     }
@@ -201,7 +202,11 @@ internal static class ManagedFiles
             var stdout = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, timeout.Token);
             var stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null, timeout.Token);
             await Task.WhenAll(process.WaitForExitAsync(timeout.Token), stdout, stderr);
-            if (process.ExitCode != 0) throw new NodeAgentException("A fixed installed-system setup operation failed. Local owner inspection is required.");
+            if (process.ExitCode != 0)
+            {
+                var step = Path.GetFileName(executable) == "in-target" ? arguments[0] + " " + arguments.ElementAtOrDefault(1) : Path.GetFileName(executable);
+                throw new NodeAgentException($"Installed-system setup step '{step.Trim()}' exited with code {process.ExitCode}. Local owner inspection is required.");
+            }
         }
         catch
         {

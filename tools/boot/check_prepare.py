@@ -129,6 +129,7 @@ def hook_checks():
     assert "--state-directory /run/lucia" in discovery
     assert "status " not in discovery and "anna-install " not in discovery
     assert '[ -f /etc/lucia/installation-enabled ]' in guard and 'installation-guard --server' in guard
+    assert 'db_set partman-auto/disk "$disk"' in guard and '/dev/disk/by-id/*:/dev/[a-z]*)' in guard
     assert "initrd /debian-installer/amd64/initrd.gz /lucia/lucia-overlay.cpio.gz" in template
     assert "url=@DISCOVERY_URL@" in template and "partman" not in template
     rendered = template.replace("@DISCOVERY_URL@", "https://spark-9423" + p.DISCOVERY_ROUTE).encode()

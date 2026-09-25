@@ -7,5 +7,12 @@ set -- stage-managed --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt
 if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
     set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"
 fi
-exec /usr/lib/lucia/agent/ld-linux-x86-64.so.2 --inhibit-cache --library-path /usr/lib/lucia/agent \
-    /usr/lib/lucia/agent/lucia-node-agent "$@"
+agent=/usr/lib/lucia/agent
+if "$agent/ld-linux-x86-64.so.2" --inhibit-cache --library-path "$agent" "$agent/lucia-node-agent" "$@" 2>/run/lucia/finish.err; then
+    cat /run/lucia/finish.err >&2
+    exit 0
+fi
+# The installer only shows "exit code 1"; put the agent's reason on the console too.
+sed 's/^/Lucia: /' /run/lucia/finish.err >/dev/console 2>/dev/null || true
+cat /run/lucia/finish.err >&2
+exit 1

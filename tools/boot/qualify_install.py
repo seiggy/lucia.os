@@ -95,7 +95,7 @@ def main():
             "-device", "virtio-net-pci,netdev=net0,romfile="
         ]
         guest = subprocess.Popen(command, stdout=qemu_log, stderr=subprocess.STDOUT)
-        until = time.monotonic() + 1800
+        until = time.monotonic() + 3600  # A full network install of trixie takes ~30 minutes before enrollment.
         approved = None
         last_phase = None
         managed = None
@@ -129,7 +129,8 @@ def main():
         result = subprocess.run(ssh + ["sudo", "-n", "sh", "-c",
             "'test \"$(. /etc/os-release; echo $ID)\" = debian && test \"$(hostname)\" = qualification-node && getent passwd qualification-owner && getent group lucia-owners'"],
             capture_output=True, text=True, timeout=60)
-        if result.returncode: raise RuntimeError("Installed recovery SSH or directory identity checks failed.")
+        if result.returncode:
+            raise RuntimeError(f"Installed recovery SSH or directory identity checks failed (exit {result.returncode}): {result.stderr.strip()[-400:]}")
         # Password login is intentionally a separate mandatory check, not inferred
         # from getent or a heartbeat. The host runner supplies its isolated owner.
         password = (root / "owner-password").read_text().strip()
@@ -144,7 +145,7 @@ def main():
             text=True, env=environment, start_new_session=True, timeout=60)
         del password
         if login.returncode or login.stdout.strip() != "qualification-owner":
-            raise RuntimeError("Real LDAP SSH password login did not pass.")
+            raise RuntimeError(f"Real LDAP SSH password login did not pass (exit {login.returncode}): {login.stderr.strip()[-400:]}")
         guest.terminate()
         guest.wait(timeout=20)
         guest = None

@@ -165,7 +165,7 @@ internal static class InstallationRules
             d-i apt-setup/contrib boolean false
             d-i apt-setup/services-select multiselect security, updates
             d-i passwd/root-login boolean true
-            d-i passwd/root-password-crypted password !
+            d-i passwd/root-password-crypted password *
             d-i passwd/make-user boolean false
             d-i partman/early_command string /usr/lib/lucia/installation-guard
             d-i partman-auto/disk string {{plan.DiskId}}

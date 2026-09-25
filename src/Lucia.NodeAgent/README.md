@@ -86,8 +86,15 @@ are exposed as CLI options.
    `installation-started.json` before returning success. Repeated guard calls
    reuse the saved grant, never request fresh authority, and repeat the same
    unused-disk and expiry checks. Any nonzero result must stop partman.
+   After the agent succeeds, the parent guard resolves the approved by-id
+   path (remembered in `/run/lucia/approved-disk-id` across its early_command
+   and init.d runs) to its kernel device and sets `partman-auto/disk` and
+   `grub-installer/bootdev` to it: partman's `mapdevfs` passes NVMe and
+   virtio by-id links through unchanged, so a by-id value matches no disk.
 4. Parent `/usr/lib/lucia/finish-install` invokes `stage-managed` after d-i
-   installation. `/target` must be an ext4 root partition on the selected
+   installation; if it fails, the agent's reason (including which fixed setup
+   step exited) is also written to the installer console, since d-i itself only
+   reports "exit code 1". `/target` must be an ext4 root partition on the selected
    physical disk, not an arbitrary bind mount or directory. Unexpected
    nested target mounts are refused (d-i dev/proc/sys/run and the same disk's
    EFI mount are allowed). The entire **flat** self-contained runtime is copied

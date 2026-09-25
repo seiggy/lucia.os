@@ -72,7 +72,6 @@ internal static class ManagedIdentity
             using var publicKey = certificate.GetECDsaPublicKey();
             if (publicKey is null || !publicKey.ExportSubjectPublicKeyInfo().SequenceEqual(key.ExportSubjectPublicKeyInfo())
                 || !certificate.SubjectName.RawData.SequenceEqual(new X500DistinguishedName("CN=" + plan.DeviceId.ToString("D")).RawData)
-                || !certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => !e.CertificateAuthority)
                 || certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority)
                 || certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow || (expired && !allowExpiredForRenewal)
                 || !certificate.Extensions.OfType<X509KeyUsageExtension>().Any(e => e.KeyUsages.HasFlag(X509KeyUsageFlags.DigitalSignature)))

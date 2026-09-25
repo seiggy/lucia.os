@@ -117,7 +117,7 @@ internal static class InstallationChecks
             && !preseed.Contains("sh -c", StringComparison.Ordinal) && !preseed.Contains("wget", StringComparison.Ordinal),
             "Preseed includes credentials, arbitrary shell or multi-disk removal.");
         Check(preseed.Contains("passwd/root-login boolean true", StringComparison.Ordinal)
-            && preseed.Contains("root-password-crypted password !", StringComparison.Ordinal)
+            && preseed.Contains("root-password-crypted password *", StringComparison.Ordinal)
             && preseed.Contains("passwd/make-user boolean false", StringComparison.Ordinal)
             && preseed.Contains("firmware-realtek", StringComparison.Ordinal) && preseed.Contains("mirror/suite string trixie", StringComparison.Ordinal),
             "Preseed OS/security defaults are wrong.");
@@ -182,6 +182,10 @@ internal static class InstallationChecks
         var chained = managed with { CertificatePem = chainedLeaf.ExportCertificatePem() + "\n" + intermediate.ExportCertificatePem() };
         using (var validated = ManagedIdentity.ValidateConfiguration(chained, plan, identity, new(credentials.Server)))
             Check(validated.RawData.SequenceEqual(chainedLeaf.RawData), "Leaf/intermediate chain returned a CA instead of the bound node leaf.");
+        // step-ca's default leaf template omits basicConstraints; absence means end-entity (RFC 5280).
+        using var stepLeaf = MakeLeaf(intermediate, identity, plan, isCa: null);
+        using (ManagedIdentity.ValidateConfiguration(chained with { CertificatePem = stepLeaf.ExportCertificatePem() + "\n" + intermediate.ExportCertificatePem() },
+                   plan, identity, new(credentials.Server))) { count++; }
         Reject(() => ManagedIdentity.ValidateConfiguration(chained with { CertificatePem = chainedLeaf.ExportCertificatePem() },
             plan, identity, new(credentials.Server)), "Missing required intermediate was accepted without downloads.");
         Reject(() => ManagedIdentity.ValidateConfiguration(chained with
@@ -717,10 +721,10 @@ internal static class InstallationChecks
         return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-10), DateTimeOffset.UtcNow.AddDays(20));
     }
 
-    private static X509Certificate2 MakeLeaf(X509Certificate2 ca, ECDsa key, InstallPlan plan, bool expired = false, bool isCa = false, bool extraSan = false)
+    private static X509Certificate2 MakeLeaf(X509Certificate2 ca, ECDsa key, InstallPlan plan, bool expired = false, bool? isCa = false, bool extraSan = false)
     {
         var request = new CertificateRequest("CN=" + plan.DeviceId.ToString("D"), key, HashAlgorithmName.SHA256);
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(isCa, false, 0, true));
+        if (isCa is { } authority) request.CertificateExtensions.Add(new X509BasicConstraintsExtension(authority, false, 0, true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.2") }, true));
         var san = new SubjectAlternativeNameBuilder();
