@@ -1,0 +1,5 @@
+{
+  "appHost": {
+    "path": "src/Lucia.Homelab.AppHost/Lucia.Homelab.AppHost.csproj"
+  }
+}

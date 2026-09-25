@@ -1,0 +1,45 @@
+# Build output
+**/bin/
+**/obj/
+artifacts/
+**/aspire-output/
+**/__pycache__/
+*.pyc
+
+# Local dependency caches and model weights
+.dependencies/
+**/node_modules/
+**/data/models/
+*.gguf
+*.safetensors
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets and local state (never commit)
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key
+secrets/
+**/appsettings.*.local.json
+
+# Agent / browser tooling output
+.playwright-cli/
+.playwright-mcp/
+.impeccable/config.local.json
+.impeccable/hook.cache.json
+.impeccable/live/
+.impeccable/critique/
+.impeccable/screenshots/
