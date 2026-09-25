@@ -1,0 +1,260 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Lucia.Desktop.MainWindow"
+        Title="Lucia - Set up your Spark" Width="1040" Height="840"
+        MinWidth="740" MinHeight="640" WindowStartupLocation="CenterScreen">
+    <!-- THESIS: One calm, guided setup, not a second infrastructure console.
+         OWN-WORLD: Lucia's system typography, blue accent, quiet neutrals, light/dark surfaces.
+         STORY: Connect to the known Spark, review changes, create a real owner, verify access.
+         FIRST VIEWPORT: Compact brand and appearance control; step rail beside one clear form.
+         FORM: User-approved constrained five-step wizard; no concept roll for this fixed sequence.
+         Recovery returns to inspected remote state. -->
+    <Grid RowDefinitions="Auto,*,Auto" Margin="28,22,28,18">
+        <Grid ColumnDefinitions="*,Auto" Margin="4,0,4,22">
+            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <Border Width="35" Height="35" CornerRadius="10" Background="#285BDD">
+                    <Path Data="M12 8 V27 H26 V22 H17 V8 Z" Fill="White"/>
+                </Border>
+                <TextBlock Text="Lucia" FontSize="25" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <TextBlock Text="Appearance" Classes="caption" VerticalAlignment="Center"/>
+                <ComboBox x:Name="AppearanceChoice" SelectedIndex="0" Width="110"
+                          AutomationProperties.Name="Appearance" SelectionChanged="AppearanceChanged">
+                    <ComboBoxItem Content="System"/>
+                    <ComboBoxItem Content="Light"/>
+                    <ComboBoxItem Content="Dark"/>
+                </ComboBox>
+            </StackPanel>
+        </Grid>
+
+        <Grid x:Name="BodyGrid" Grid.Row="1" ColumnDefinitions="208,*">
+            <Grid x:Name="StepRail" RowDefinitions="Auto,*" Margin="0,12,24,12">
+                <StackPanel>
+                    <Border x:Name="StepConnect" Classes="step active"><TextBlock Text="1   Connect"/></Border>
+                    <Border x:Name="StepReview" Classes="step"><TextBlock Text="2   Review"/></Border>
+                    <Border x:Name="StepOwner" Classes="step"><TextBlock Text="3   Your account"/></Border>
+                    <Border x:Name="StepInstall" Classes="step"><TextBlock Text="4   Set up"/></Border>
+                    <Border x:Name="StepFinish" Classes="step"><TextBlock Text="5   Ready"/></Border>
+                </StackPanel>
+                <StackPanel Grid.Row="1" VerticalAlignment="Bottom" Margin="16,24,0,0" Spacing="8">
+                    <TextBlock Text="A home for your identity." FontWeight="SemiBold"/>
+                    <TextBlock Text="Your accounts and certificate authority stay on your Spark." Classes="caption"/>
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Column="1" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}"
+                    BorderThickness="1" CornerRadius="24">
+                <Grid RowDefinitions="*,Auto">
+                    <ScrollViewer x:Name="PageScroll" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="34,30,34,24" Spacing="0">
+                            <TextBlock x:Name="CompactStep" Classes="caption" Margin="0,0,0,12" IsVisible="False"/>
+                            <Border x:Name="ErrorPanel" IsVisible="False" Background="{DynamicResource ErrorBg}"
+                                    Padding="16" CornerRadius="12" Margin="0,0,0,24">
+                                <StackPanel Spacing="6">
+                                    <TextBlock x:Name="ErrorHeading" Text="We couldn't continue" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ErrorInk}"/>
+                                    <TextBlock x:Name="ErrorMessage" Foreground="{DynamicResource ErrorInk}"
+                                               AutomationProperties.LiveSetting="Assertive"/>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel x:Name="ConnectPage">
+                                <TextBlock Text="Let's set up your Spark" Classes="heading" AutomationProperties.HeadingLevel="1"/>
+                                <TextBlock Text="A secure home for your accounts, ready without the command line."
+                                           Classes="muted" Margin="0,0,0,26"/>
+                                <StackPanel x:Name="ConnectionFields" Spacing="18">
+                                    <Grid ColumnDefinitions="*,100">
+                                        <StackPanel Margin="0,0,14,0">
+                                            <TextBlock Text="Spark address" Classes="label"/>
+                                            <TextBox x:Name="HostInput" PlaceholderText="192.168.1.20 or spark.local"
+                                                     AutomationProperties.Name="Spark address" MaxLength="253"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="SSH port" Classes="label"/>
+                                            <TextBox x:Name="PortInput" Text="22" MaxLength="5" AutomationProperties.Name="SSH port"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="Spark username" Classes="label"/>
+                                        <TextBox x:Name="SshUsernameInput" PlaceholderText="Your DGX OS username"
+                                                 AutomationProperties.Name="Spark username" MaxLength="64"/>
+                                        <TextBlock Text="Use the account from NVIDIA's initial setup. You'll create your Lucia account later."
+                                                   Classes="caption" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel>
+                                        <TextBlock Text="Connect using" Classes="label"/>
+                                        <ComboBox x:Name="AuthenticationChoice" SelectedIndex="0" HorizontalAlignment="Stretch"
+                                                  AutomationProperties.Name="SSH authentication method" SelectionChanged="AuthenticationChanged">
+                                            <ComboBoxItem Content="Password"/>
+                                            <ComboBoxItem Content="Private key"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel x:Name="SshPasswordPanel">
+                                        <TextBlock Text="Spark password" Classes="label"/>
+                                        <TextBox x:Name="SshPasswordInput" PasswordChar="&#x2022;"
+                                                 AutomationProperties.Name="Spark password" MaxLength="1024"/>
+                                    </StackPanel>
+                                    <StackPanel x:Name="PrivateKeyPanel" IsVisible="False" Spacing="16">
+                                        <StackPanel>
+                                            <TextBlock Text="Private key file" Classes="label"/>
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBox x:Name="KeyPathInput" AutomationProperties.Name="Private key file"/>
+                                                <Button Grid.Column="1" Content="Browse" Margin="10,0,0,0" Click="BrowseKey"/>
+                                            </Grid>
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="Key passphrase, if needed" Classes="label"/>
+                                            <TextBox x:Name="KeyPassphraseInput" PasswordChar="&#x2022;"
+                                                     AutomationProperties.Name="Private key passphrase" MaxLength="1024"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+                                <Border x:Name="HostKeyPanel" IsVisible="False" Background="{DynamicResource AccentSoft}"
+                                        Padding="18" CornerRadius="14" Margin="0,22,0,0">
+                                    <StackPanel Spacing="12">
+                                        <TextBlock Text="Is this your Spark?" FontSize="18" FontWeight="SemiBold"/>
+                                        <TextBlock Text="Compare this SSH fingerprint with the one shown on your Spark or a trusted record. Your credentials have not been sent."
+                                                   Classes="muted"/>
+                                        <TextBlock x:Name="HostKeyTarget" FontWeight="SemiBold"/>
+                                        <TextBox x:Name="HostKeyFingerprint" IsReadOnly="True" TextWrapping="Wrap"
+                                                 FontFamily="monospace" FontSize="13" AutomationProperties.Name="SSH host fingerprint"/>
+                                        <CheckBox x:Name="HostKeyConsent" IsCheckedChanged="ConsentChanged">
+                                            <TextBlock Text="I checked this fingerprint and trust this Spark."/>
+                                        </CheckBox>
+                                        <Button Content="Cancel" Classes="quiet" HorizontalAlignment="Left" Click="CancelHostKey"/>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Text="SSH credentials stay in memory for this session. Nothing is installed during the connection check."
+                                           Classes="caption" Margin="0,24,0,0"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="ReviewPage" IsVisible="False">
+                                <TextBlock x:Name="ReviewHeading" Classes="heading" AutomationProperties.HeadingLevel="1"/>
+                                <TextBlock x:Name="ReviewDescription" Classes="muted" Margin="0,0,0,20"/>
+                                <TextBlock x:Name="SparkDetails" Classes="caption" Margin="0,0,0,18"/>
+                                <StackPanel x:Name="ChecksPanel" Spacing="0"/>
+                                <StackPanel x:Name="ChangesPanel" Margin="0,16,0,0">
+                                    <TextBlock Text="With your approval" Classes="section"/>
+                                    <ItemsControl x:Name="PlannedChanges">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate><TextBlock Text="{Binding}" Classes="muted" Margin="0,0,0,10"/></DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                                <Expander x:Name="ModelDirectoryPanel" Header="Advanced: existing model directory"
+                                          HorizontalAlignment="Stretch" Margin="0,16,0,0">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="Absolute Linux path on your Spark (optional)" Classes="label"/>
+                                        <TextBox x:Name="ModelDirectoryInput" AutomationProperties.Name="Existing Linux model directory"
+                                                 MaxLength="4096" TextChanged="ModelDirectoryChanged"/>
+                                        <TextBlock Text="Leave empty for a new, empty managed model directory. No model weights are downloaded. Existing selections are preserved; setup will not move models."
+                                                   Classes="caption"/>
+                                    </StackPanel>
+                                </Expander>
+                                <CheckBox x:Name="ReviewConsent" Margin="0,18,0,0" IsCheckedChanged="ConsentChanged">
+                                    <TextBlock x:Name="ReviewConsentText" Text="I approve these changes on this Spark."/>
+                                </CheckBox>
+                            </StackPanel>
+
+                            <StackPanel x:Name="OwnerPage" IsVisible="False">
+                                <TextBlock x:Name="OwnerHeading" Classes="heading" AutomationProperties.HeadingLevel="1"/>
+                                <TextBlock x:Name="OwnerDescription" Classes="muted" Margin="0,0,0,24"/>
+                                <StackPanel Spacing="18">
+                                    <StackPanel>
+                                        <TextBlock Text="Your Lucia username" Classes="label"/>
+                                        <TextBox x:Name="OwnerUsernameInput" AutomationProperties.Name="Lucia owner username" MaxLength="32"/>
+                                    </StackPanel>
+                                    <StackPanel>
+                                        <TextBlock Text="Your Lucia password" Classes="label"/>
+                                        <TextBox x:Name="OwnerPasswordInput" PasswordChar="&#x2022;"
+                                                 AutomationProperties.Name="Lucia owner password" MaxLength="1024"/>
+                                        <TextBlock x:Name="OwnerPasswordHint" Classes="caption" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel x:Name="ConfirmPasswordPanel">
+                                        <TextBlock Text="Confirm password" Classes="label"/>
+                                        <TextBox x:Name="ConfirmPasswordInput" PasswordChar="&#x2022;"
+                                                 AutomationProperties.Name="Confirm Lucia password" MaxLength="1024"/>
+                                    </StackPanel>
+                                    <StackPanel>
+                                        <TextBlock Text="Address for your identity services" Classes="label"/>
+                                        <TextBox x:Name="PublicHostInput" AutomationProperties.Name="Identity service address" MaxLength="253"/>
+                                        <TextBlock Text="A DNS name or IP address, without https:// or a port. This will be included in your certificate."
+                                                   Classes="caption" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel x:Name="SudoPanel" IsVisible="False">
+                                        <TextBlock Text="Spark administrator password" Classes="label"/>
+                                        <TextBox x:Name="SudoPasswordInput" PasswordChar="&#x2022;"
+                                                 AutomationProperties.Name="Spark administrator password" MaxLength="1024"/>
+                                        <TextBlock Text="Used only for the prerequisite changes listed in the review. It is not your Lucia password and won't be saved."
+                                                   Classes="caption" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <TextBlock x:Name="OwnerAuthorityNotice" Classes="caption" Margin="0,24,0,0"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="InstallPage" IsVisible="False">
+                                <TextBlock x:Name="InstallHeading" Text="Setting up your Spark" Classes="heading"
+                                           AutomationProperties.HeadingLevel="1"/>
+                                <TextBlock x:Name="InstallDescription" Text="Your Spark is doing the work. Your accounts and trust stay there."
+                                           Classes="muted" Margin="0,0,0,30"/>
+                                <ProgressBar x:Name="InstallProgress" IsIndeterminate="True" Height="6"
+                                             Foreground="{DynamicResource Accent}" Margin="0,0,0,22"/>
+                                <TextBlock x:Name="CurrentOperation" Text="Preparing a secure setup job..." FontSize="18"
+                                           FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite"/>
+                                <TextBlock x:Name="ElapsedText" Classes="caption" Margin="0,10,0,0"/>
+                                <TextBlock Text="Started jobs continue if this app closes or the connection drops. Reconnect to resume watching without another password or job. Runtime uploads interrupted before a job starts must restart."
+                                           Classes="muted" Margin="0,28,0,0"/>
+                                <Expander Header="Setup details" HorizontalAlignment="Stretch" Margin="0,24,0,0">
+                                    <StackPanel Spacing="8">
+                                        <TextBox x:Name="EventLog" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                                                 MinHeight="140" MaxHeight="240" FontSize="13"
+                                                 AutomationProperties.Name="Setup progress log"/>
+                                        <Button Content="Copy details" Classes="quiet" HorizontalAlignment="Left" Click="CopyLog"/>
+                                    </StackPanel>
+                                </Expander>
+                            </StackPanel>
+
+                            <StackPanel x:Name="FinishPage" IsVisible="False">
+                                <TextBlock Text="Lucia is ready to open" Classes="heading" AutomationProperties.HeadingLevel="1"/>
+                                <TextBlock x:Name="FinishDescription" Classes="muted" Margin="0,0,0,22"/>
+                                <TextBlock Text="One last step on this computer" Classes="section"/>
+                                <TextBlock Text="Your private certificate authority protects access to your Spark. Trust its public certificate here so your browser can open Lucia and Authentik without a warning."
+                                           Classes="muted" Margin="0,0,0,18"/>
+                                <TextBlock x:Name="TrustScope" Classes="caption"/>
+                                <Expander Header="Certificate fingerprint" HorizontalAlignment="Stretch" Margin="0,14,0,10">
+                                    <TextBox x:Name="RootFingerprint" IsReadOnly="True" TextWrapping="Wrap"
+                                             FontFamily="monospace" FontSize="13" AutomationProperties.Name="CA SHA-256 fingerprint"/>
+                                </Expander>
+                                <CheckBox x:Name="TrustConsent" IsCheckedChanged="ConsentChanged">
+                                    <TextBlock Text="I approve trusting certificates issued by this Lucia CA on this computer."/>
+                                </CheckBox>
+                                <WrapPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                    <Button x:Name="TrustButton" Content="Trust this certificate" Click="InstallTrust" Margin="0,0,10,10"/>
+                                    <Button Content="Export certificate" Classes="quiet" Click="ExportTrust" Margin="0,0,0,10"/>
+                                </WrapPanel>
+                                <TextBlock x:Name="TrustStatus" Classes="caption" Margin="0,6,0,0" AutomationProperties.LiveSetting="Polite"/>
+                                <TextBlock Text="Already trust this CA? You can open Lucia directly. Never bypass a certificate warning."
+                                           Classes="caption" Margin="0,20,0,0"/>
+                                <TextBlock Text="Sign in with your Lucia account" Classes="section" Margin="0,26,0,8"/>
+                                <TextBlock x:Name="OwnerReadyText" FontWeight="SemiBold"/>
+                                <TextBox x:Name="HostAddress" IsReadOnly="True" AutomationProperties.Name="Lucia address" Margin="0,10,0,0"/>
+                                <TextBox x:Name="AuthentikAddress" IsReadOnly="True" AutomationProperties.Name="Authentik address" Margin="0,10,0,0"/>
+                                <Button Content="Open Authentik administration" Classes="quiet" HorizontalAlignment="Left" Click="OpenAuthentik" Margin="0,10,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                    <Border Grid.Row="1" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="28,18">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Button x:Name="BackButton" Content="Back" Classes="quiet" Click="GoBack" IsVisible="False"/>
+                            <TextBlock x:Name="BusyText" Grid.Column="1" Classes="caption" VerticalAlignment="Center" Margin="12,0"/>
+                            <Button x:Name="ContinueButton" Grid.Column="2" Content="Connect to Spark" Classes="primary"
+                                    IsDefault="True" Click="Continue"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+        <TextBlock x:Name="ScopeCaption" Grid.Row="2" Text="Lucia setup · Managed host, private CA, LDAP, and Authentik" Classes="caption" Margin="4,15,0,0"/>
+    </Grid>
+</Window>

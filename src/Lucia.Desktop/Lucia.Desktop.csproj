@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.0</Version>
+    <Description>Lucia setup for your DGX Spark</Description>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lucia.Desktop.Core\Lucia.Desktop.Core.csproj" />
+    <Content Include="..\..\tools\desktop\bootstrap.py" Link="BootstrapPayload\tools\desktop\bootstrap.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="..\..\tools\identity\provision.py;..\..\tools\identity\owner.py;..\..\tools\identity\application.py" Link="BootstrapPayload\tools\identity\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\tools\host\provision_host.py;..\..\tools\host\package.py" Link="BootstrapPayload\tools\host\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\tools\boot\prepare.py;..\..\tools\boot\provision_boot.py" Link="BootstrapPayload\tools\boot\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\tools\boot\Dockerfile" Link="BootstrapPayload\tools\boot\Dockerfile" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\tools\domains\activation_worker.py" Link="BootstrapPayload\tools\domains\activation_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\tools\nodes\enrollment_worker.py;..\..\tools\nodes\prepare_directory.py" Link="BootstrapPayload\tools\nodes\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\deployment\host\Dockerfile" Link="BootstrapPayload\deployment\host\Dockerfile" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\deployment\boot\Dockerfile;..\..\deployment\boot\serve.py;..\..\deployment\boot\discover-and-wait;..\..\deployment\boot\partitioner-guard;..\..\deployment\boot\grub.cfg.in;..\..\deployment\boot\finish-install" Link="BootstrapPayload\deployment\boot\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\..\deployment\identity\start-ca.sh;..\..\deployment\identity\renew-certificate.sh;..\..\deployment\identity\install-node-trust.sh;..\..\deployment\identity\init_org_tree.ldif;..\..\deployment\identity\init_org_entries.ldif" Link="BootstrapPayload\deployment\identity\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="..\Lucia.Homelab.Identity.AppHost\AppHost.cs;..\Lucia.Homelab.Identity.AppHost\Lucia.Homelab.Identity.AppHost.csproj;..\Lucia.Homelab.Identity.AppHost\aspire.config.json" Link="BootstrapPayload\src\Lucia.Homelab.Identity.AppHost\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+  </ItemGroup>
+</Project>

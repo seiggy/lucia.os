@@ -1,0 +1,129 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Lucia.Desktop.App"
+             RequestedThemeVariant="Default">
+    <Application.Resources>
+        <ResourceDictionary>
+            <x:Double x:Key="TextControlPlaceholderOpacity">1</x:Double>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="Page">#F3F5F9</SolidColorBrush>
+                    <SolidColorBrush x:Key="Surface">#FFFFFF</SolidColorBrush>
+                    <SolidColorBrush x:Key="Subtle">#E9EDF4</SolidColorBrush>
+                    <SolidColorBrush x:Key="Ink">#202839</SolidColorBrush>
+                    <SolidColorBrush x:Key="Muted">#58677D</SolidColorBrush>
+                    <SolidColorBrush x:Key="Line">#E0E5EE</SolidColorBrush>
+                    <SolidColorBrush x:Key="Accent">#285BDD</SolidColorBrush>
+                    <SolidColorBrush x:Key="AccentInk">#2855BE</SolidColorBrush>
+                    <SolidColorBrush x:Key="AccentSoft">#E9EFFF</SolidColorBrush>
+                    <SolidColorBrush x:Key="GoodInk">#236D46</SolidColorBrush>
+                    <SolidColorBrush x:Key="GoodBg">#E6F2EA</SolidColorBrush>
+                    <SolidColorBrush x:Key="WarningInk">#785417</SolidColorBrush>
+                    <SolidColorBrush x:Key="WarningBg">#FFF2DC</SolidColorBrush>
+                    <SolidColorBrush x:Key="ErrorInk">#963C2A</SolidColorBrush>
+                    <SolidColorBrush x:Key="ErrorBg">#FFF0E9</SolidColorBrush>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="Page">#121722</SolidColorBrush>
+                    <SolidColorBrush x:Key="Surface">#1B2230</SolidColorBrush>
+                    <SolidColorBrush x:Key="Subtle">#242C3C</SolidColorBrush>
+                    <SolidColorBrush x:Key="Ink">#EEF2FA</SolidColorBrush>
+                    <SolidColorBrush x:Key="Muted">#B1BBCD</SolidColorBrush>
+                    <SolidColorBrush x:Key="Line">#343E50</SolidColorBrush>
+                    <SolidColorBrush x:Key="Accent">#285BDD</SolidColorBrush>
+                    <SolidColorBrush x:Key="AccentInk">#97B3FF</SolidColorBrush>
+                    <SolidColorBrush x:Key="AccentSoft">#263656</SolidColorBrush>
+                    <SolidColorBrush x:Key="GoodInk">#95D8B4</SolidColorBrush>
+                    <SolidColorBrush x:Key="GoodBg">#203B30</SolidColorBrush>
+                    <SolidColorBrush x:Key="WarningInk">#F2CC8C</SolidColorBrush>
+                    <SolidColorBrush x:Key="WarningBg">#332B1F</SolidColorBrush>
+                    <SolidColorBrush x:Key="ErrorInk">#F2B2A5</SolidColorBrush>
+                    <SolidColorBrush x:Key="ErrorBg">#3B2826</SolidColorBrush>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+    <Application.Styles>
+        <FluentTheme />
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{DynamicResource Page}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+            <Setter Property="FontFamily" Value="Segoe UI, San Francisco, Noto Sans"/>
+            <Setter Property="FontSize" Value="15"/>
+        </Style>
+        <Style Selector="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style Selector="TextBlock.heading">
+            <Setter Property="FontSize" Value="31"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="LineHeight" Value="38"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+        <Style Selector="TextBlock.section">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,12,0,8"/>
+        </Style>
+        <Style Selector="TextBlock.muted">
+            <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+            <Setter Property="LineHeight" Value="23"/>
+        </Style>
+        <Style Selector="TextBlock.caption">
+            <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="LineHeight" Value="20"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="MinHeight" Value="44"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Background" Value="{DynamicResource Surface}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Line}"/>
+            <Setter Property="PlaceholderForeground" Value="{DynamicResource Muted}"/>
+        </Style>
+        <Style Selector="TextBox:focus">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentInk}"/>
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="MinHeight" Value="44"/>
+            <Setter Property="Padding" Value="18,10"/>
+            <Setter Property="CornerRadius" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource Accent}"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.quiet">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentInk}"/>
+        </Style>
+        <Style Selector="Border.step">
+            <Setter Property="Padding" Value="16,13"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style Selector="Border.step.active">
+            <Setter Property="Background" Value="{DynamicResource Surface}"/>
+        </Style>
+        <Style Selector="Border.step.active TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource AccentInk}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="TextBlock.check-ready">
+            <Setter Property="Foreground" Value="{DynamicResource GoodInk}"/>
+        </Style>
+        <Style Selector="TextBlock.check-action">
+            <Setter Property="Foreground" Value="{DynamicResource WarningInk}"/>
+        </Style>
+        <Style Selector="TextBlock.check-blocked">
+            <Setter Property="Foreground" Value="{DynamicResource ErrorInk}"/>
+        </Style>
+    </Application.Styles>
+</Application>
