@@ -116,7 +116,7 @@ internal static class InstallationChecks
             && !preseed.Contains("device_remove_lvm", StringComparison.Ordinal) && !preseed.Contains("device_remove_md", StringComparison.Ordinal)
             && !preseed.Contains("sh -c", StringComparison.Ordinal) && !preseed.Contains("wget", StringComparison.Ordinal),
             "Preseed includes credentials, arbitrary shell or multi-disk removal.");
-        Check(preseed.Contains("root-login boolean false", StringComparison.Ordinal)
+        Check(preseed.Contains("passwd/root-login boolean true", StringComparison.Ordinal)
             && preseed.Contains("root-password-crypted password !", StringComparison.Ordinal)
             && preseed.Contains("passwd/make-user boolean false", StringComparison.Ordinal)
             && preseed.Contains("firmware-realtek", StringComparison.Ordinal) && preseed.Contains("mirror/suite string trixie", StringComparison.Ordinal),
