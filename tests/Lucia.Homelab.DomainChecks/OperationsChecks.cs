@@ -73,8 +73,43 @@ internal static class OperationsChecks
                 "Overlapping wildcard drift was hidden.");
             check(DomainOperationsService.Records(job, [new(naming.LocalHostnames[0], plan.IngressAddress) { Enabled = false }], provider.Health)[0].State == "Disabled",
                 "Disabled exact record was not identified.");
+
+            var wanted = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(naming,
+                [new("node1", "192.168.1.172"), new("atlas", "192.168.1.5"), new("public", "8.8.8.8"), new("taken", "192.168.1.9")]);
+            check(wanted.Length == 2 && wanted[0] == new AdGuardRewrite("node1.lab.example.com", "192.168.1.172"),
+                "Node DNS accepted a public address or a Lucia service name.");
+            var state = Path.Combine(root, "nodes", "dns-records.json");
+            var dns = new WritableDns { Entries = [new("taken.lab.example.com", "192.168.1.50")] };
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, wanted, default);
+            check(dns.Entries.Contains(wanted[0]) && dns.Entries.Contains(new("taken.lab.example.com", "192.168.1.50")) && dns.Entries.Length == 2,
+                "Node record was not published, or a record Lucia did not create was replaced.");
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, [wanted[0] with { Answer = "192.168.1.173" }], default);
+            check(dns.Entries.Contains(new("node1.lab.example.com", "192.168.1.173")) && !dns.Entries.Contains(wanted[0]),
+                "A changed node address did not replace Lucia's own record.");
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, [], default);
+            check(dns.Entries is [{ Domain: "taken.lab.example.com" }], "A removed node's record was kept, or another record was deleted.");
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class WritableDns : ILocalDnsProvider
+    {
+        internal AdGuardRewrite[] Entries = [];
+        public Task<AdGuardConnectionStatus> GetConnectionAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
+        public Task<AdGuardHealth> GetHealthAsync(CancellationToken cancellationToken = default) => Task.FromResult(new AdGuardHealth(true, true, true));
+        public Task<IReadOnlyList<AdGuardRewrite>> ListRewritesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AdGuardRewrite>>(Entries);
+        public Task AddRewriteAsync(AdGuardRewrite rewrite, CancellationToken cancellationToken = default)
+        {
+            if (Entries.Any(entry => entry.Domain == rewrite.Domain)) throw new InvalidOperationException("Name already exists.");
+            Entries = [.. Entries, rewrite];
+            return Task.CompletedTask;
+        }
+        public Task DeleteRewriteAsync(AdGuardRewrite rewrite, CancellationToken cancellationToken = default)
+        {
+            Entries = Entries.Where(entry => entry != rewrite).ToArray();
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class ReadOnlyDns : ILocalDnsProvider

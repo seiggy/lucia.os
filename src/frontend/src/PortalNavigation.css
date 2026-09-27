@@ -98,7 +98,8 @@ html:has(.portal-workspace) { scroll-padding-block: 174px 24px; }
   .portal-search-button, .portal-account-button { padding: 10px; width: 40px; justify-content: center; }
   .portal-search-button span { display: none; }
   .portal-context { padding-inline: 18px; min-height: 54px; justify-content: flex-start; top: 76px; }
-  .workspace-navigation { width: 100%; gap: 24px; }
+  .workspace-navigation { width: 100%; gap: 24px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .workspace-navigation::-webkit-scrollbar { display: none; }
   .workspace-navigation a { min-height: 52px; font-size: 14px; }
   .portal-workspace > main { padding-inline: 20px; margin: 28px auto 40px; }
   .portal-workspace .page-intro h1 { font-size: 33px; }

@@ -11,7 +11,7 @@ public sealed record DomainOperationsSnapshot(DateTimeOffset CheckedAt, string N
     string? GatewayError, string? DnsError, ManagedDomainRoute[] Routes, ManagedDomainRecord[] DnsRecords);
 
 public sealed class DomainOperationsService(DomainOnboardingStore store, DomainOnboardingOptions options,
-    ILocalDnsProvider dns, ILogger<DomainOperationsService> logger)
+    ILocalDnsProvider dns, ILogger<DomainOperationsService> logger, Nodes.ManagedNodeEnrollment? nodes = null)
 {
     public async Task<DomainOperationsSnapshot> Read(CancellationToken ct)
     {
@@ -19,6 +19,7 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
         var profile = DomainActivationConfiguration.Read(store.Root);
         if (profile is null || job is null || job.Id != profile.ProfileId)
             throw new InvalidOperationException("An activated domain is required to view its managed configuration.");
+        var nodeRecords = nodes is null ? [] : Nodes.ManagedNodeDns.Wanted(job.Plan.Naming, await nodes.Addresses(ct));
         string? gatewayError = null;
         ManagedDomainRoute[] routes;
         try
@@ -60,7 +61,7 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
         if (after?.Id != job.Id || after.Certificate?.CertificateSha256 != job.Certificate?.CertificateSha256)
             throw new InvalidOperationException("The domain configuration changed during this check. Refresh to read its current state.");
         return new(DateTimeOffset.UtcNow, job.Plan.Naming.Namespace, job.Plan.IngressAddress, gatewayError, dnsError,
-            routes, Records(job, records, health));
+            routes, [.. Records(job, records, health), .. Records(nodeRecords, records, health)]);
     }
 
     internal static ManagedDomainRoute[] Routes(DomainSetupJob job, JsonNode? actual, JsonNode? expected)
@@ -90,19 +91,24 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
     }
 
     internal static ManagedDomainRecord[] Records(DomainSetupJob job, IReadOnlyList<AdGuardRewrite>? entries, AdGuardHealth? health) =>
-        job.Plan.Naming.LocalHostnames.Select(name =>
-        {
-            var found = entries?.Where(entry => entry.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)
-                || (entry.Domain.StartsWith("*.", StringComparison.Ordinal)
-                    && name.EndsWith(entry.Domain[1..].TrimEnd('.'), StringComparison.OrdinalIgnoreCase))).ToArray() ?? [];
-            var exact = found.Where(entry => entry.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
-            var state = entries is null || health is null ? "Unavailable"
-                : !health.Running || !health.ProtectionEnabled || !health.RewritesEnabled ? "Disabled"
-                : found.Length == 0 ? "Missing"
-                : exact.Length == 1 && found.All(entry => entry.Enabled && entry.Answer == job.Plan.IngressAddress) ? "Matches"
-                : exact.Length == 1 && !exact[0].Enabled && found.Length == 1 ? "Disabled" : "Conflict";
-            return new ManagedDomainRecord(name, job.Plan.IngressAddress, state,
-                job.CreatedRewrites.Contains(name) ? "Created by Lucia during setup" : "Pre-existing record",
-                found.Take(20).ToArray(), found.Length);
-        }).ToArray();
+        job.Plan.Naming.LocalHostnames.Select(name => Record(name, job.Plan.IngressAddress,
+            job.CreatedRewrites.Contains(name) ? "Created by Lucia during setup" : "Pre-existing record", entries, health)).ToArray();
+
+    internal static ManagedDomainRecord[] Records(IEnumerable<AdGuardRewrite> nodes, IReadOnlyList<AdGuardRewrite>? entries, AdGuardHealth? health) =>
+        nodes.Select(node => Record(node.Domain, node.Answer, "Managed node, kept current from its heartbeats", entries, health)).ToArray();
+
+    private static ManagedDomainRecord Record(string name, string expected, string ownership,
+        IReadOnlyList<AdGuardRewrite>? entries, AdGuardHealth? health)
+    {
+        var found = entries?.Where(entry => entry.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)
+            || (entry.Domain.StartsWith("*.", StringComparison.Ordinal)
+                && name.EndsWith(entry.Domain[1..].TrimEnd('.'), StringComparison.OrdinalIgnoreCase))).ToArray() ?? [];
+        var exact = found.Where(entry => entry.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var state = entries is null || health is null ? "Unavailable"
+            : !health.Running || !health.ProtectionEnabled || !health.RewritesEnabled ? "Disabled"
+            : found.Length == 0 ? "Missing"
+            : exact.Length == 1 && found.All(entry => entry.Enabled && entry.Answer == expected) ? "Matches"
+            : exact.Length == 1 && !exact[0].Enabled && found.Length == 1 ? "Disabled" : "Conflict";
+        return new ManagedDomainRecord(name, expected, state, ownership, found.Take(20).ToArray(), found.Length);
+    }
 }

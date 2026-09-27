@@ -51,6 +51,7 @@ builder.Services.AddSingleton(new HostAuthenticationOptions
 builder.AddHardwareOnboarding();
 builder.AddHardwareBoot();
 builder.Services.AddSingleton<ManagedNodeEnrollment>();
+builder.Services.AddSingleton<OwnerSshKeys>();
 var app = builder.Build();
 app.Use((context, next) =>
 {
@@ -63,6 +64,7 @@ app.UseAuthorization();
 app.MapHardwareOnboarding();
 app.MapHardwareBoot();
 app.MapManagedInstallation();
+app.MapOwnerSshKeys();
 app.MapGet("/health/live", () => Results.Json(new { status = "ok", fixture = true }));
 await app.RunAsync();
 
@@ -74,7 +76,8 @@ internal sealed class FixtureOwnerAuthentication(IOptionsMonitor<AuthenticationS
     {
         if (Request.Headers.Authorization.ToString() != "Bearer " + key.Value)
             return Task.FromResult(AuthenticateResult.NoResult());
-        var identity = new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "disposable-vm-owner"), new(ClaimTypes.Role, "Owner")], "fixture");
+        var identity = new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "disposable-vm-owner"), new(ClaimTypes.Role, "Owner"),
+            new("preferred_username", "qualification-owner")], "fixture");
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), "fixture")));
     }
 }

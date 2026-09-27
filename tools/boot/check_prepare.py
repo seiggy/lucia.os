@@ -134,6 +134,15 @@ def hook_checks():
     assert "url=@DISCOVERY_URL@" in template and "partman" not in template
     rendered = template.replace("@DISCOVERY_URL@", "https://spark-9423" + p.DISCOVERY_ROUTE).encode()
     p.validate_grub(rendered, "https://spark-9423")
+    p.validate_grub(rendered.replace(p.READ_ONLY_TITLE, p.INSTALL_TITLE), "https://spark-9423")
+    assert p.READ_ONLY_TITLE in rendered
+    theme = (deployment / "grub-theme.txt").read_text(encoding="utf-8")
+    # Stock font.pf2 carries ASCII, arrows and these box-drawing glyphs only.
+    assert {c for c in theme if ord(c) > 126} <= set("━┃┏┓┗┛│┌┐└┘←↑→↓"), "GRUB theme glyph missing from font.pf2"
+    assert 'id = "__timeout__"' in theme and "%d" in theme
+    screen = (deployment / "screen.sh").read_text(encoding="utf-8")
+    finish = (deployment / "finish-install").read_text(encoding="utf-8")
+    assert "/dev/tty5" in screen and "read " not in screen, "Status screen must never wait for input"
     for unsafe in (
         rendered.replace(b"/api/boot/discovery.cfg", b"/pxe/discovery.cfg"),
         rendered.replace(b" /lucia/lucia-overlay.cpio.gz", b""),
@@ -143,7 +152,7 @@ def hook_checks():
         rejects(lambda: p.validate_grub(unsafe, "https://spark-9423"))
     if sys.platform != "linux":
         return "not run (Linux required)"
-    for script in (discovery, guard):
+    for script in (discovery, guard, screen, finish):
         subprocess.run(["sh", "-n"], input=script.encode(), check=True)
     process = subprocess.Popen(["sh", "-c", guard],
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -168,7 +177,7 @@ def bundle_checks(path):
     expected_url = receipt["controller"]["server"] + "/api/boot/discovery.cfg"
     assert receipt["controller"]["discoveryUrl"] == expected_url
     grub = (root / "public" / p.BOOT / "grub/grub.cfg").read_text()
-    assert "url=" + expected_url + " ---" in grub and "/pxe/discovery.cfg" not in grub
+    assert "url=" + expected_url + " " + p.CONSOLE_ARGS + " ---" in grub and "/pxe/discovery.cfg" not in grub
     overlay = p.cpio_members((root / "public/lucia/lucia-overlay.cpio.gz").read_bytes())
     for name, expected in receipt["overlayFiles"].items():
         assert overlay[name][0] == expected["mode"]
@@ -177,6 +186,7 @@ def bundle_checks(path):
     assert regular == set(receipt["overlayFiles"])
     required = {
         "usr/lib/lucia/discover-and-wait", "usr/lib/partman/init.d/00lucia-approval",
+        "usr/lib/lucia/screen.sh",
         "usr/lib/lucia/agent/lucia-node-agent", "usr/lib/lucia/agent/ld-linux-x86-64.so.2",
         "usr/lib/lucia/agent/libssl.so.3", "usr/lib/lucia/agent/libcrypto.so.3",
         "etc/wgetrc", "etc/lucia/public-ca.crt", "etc/lucia/discovery.conf",
@@ -238,7 +248,7 @@ def uefi_smoke(bundle, destination, root_shim=False):
     config = grub.read_text()
     # Only the private test copy changes: expose the real UEFI boot on serial.
     config = ("serial --unit=0 --speed=115200\nterminal_input serial\n"
-              "terminal_output serial\n" + config.replace(" ---", " console=ttyS0,115200n8 ---"))
+              "terminal_output serial\n" + config.replace(" quiet ", " ").replace(" ---", " console=ttyS0,115200n8 ---"))
     grub.write_text(config)
     shutil.copyfile(variables, destination / "vars.fd")
     disk = destination / "disposable.raw"
@@ -282,7 +292,7 @@ def uefi_smoke(bundle, destination, root_shim=False):
         "transport": "private QEMU user-net TFTP; restrict=on; no host ports or bridges",
         "boot": "OVMF Secure Boot off, Debian shim -> GRUB -> kernel (no -kernel)",
         "rootShimCompatibility": root_shim,
-        "diagnosticChange": "private GRUB copy adds serial console only",
+        "diagnosticChange": "private GRUB copy adds serial console and drops quiet only",
         "kernelReached": b"Linux version 6.12.107+deb13-amd64" in log,
         "preseedUnavailableObserved": b"Failed to retrieve the preconfiguration file" in log,
         "networkConfigurationPromptObserved": b"Name server addresses:" in log,

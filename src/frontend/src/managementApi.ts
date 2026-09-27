@@ -16,14 +16,20 @@ export async function ownerRequest(session: AuthenticationSession, refreshSessio
   if (response.status === 401) void refreshSession()
   if (response.ok) return response
   let message = `Lucia could not complete this request (HTTP ${response.status}).`
+  let code: string | undefined
+  let certificateSha256: string | undefined
   try {
     const value: unknown = await response.json()
     if (value && typeof value === 'object' && 'error' in value) {
       const error = value.error
       if (typeof error === 'string') message = error
-      else if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string')
-        message = error.message
+      else if (error && typeof error === 'object') {
+        if ('message' in error && typeof error.message === 'string') message = error.message
+        if ('code' in error && typeof error.code === 'string') code = error.code
+        if ('certificateSha256' in error && typeof error.certificateSha256 === 'string' && /^[a-f\d]{64}$/.test(error.certificateSha256))
+          certificateSha256 = error.certificateSha256
+      }
     }
   } catch { /* A non-JSON upstream failure retains its HTTP status. */ }
-  throw new Error(message)
+  throw Object.assign(new Error(message), { code, certificateSha256 })
 }

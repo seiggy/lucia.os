@@ -146,7 +146,16 @@ Staging writes:
   never fetches GitHub keys or continuously synchronizes recovery access.
 * SSH disallows root login, allows only `lucia-owners` and `lucia-recovery`,
   enables PAM for directory authentication, and requires public-key-only
-  authentication for recovery.
+  authentication for recovery. `AuthorizedKeysFile` also reads
+  `/etc/ssh/lucia-authorized-keys/%u`: owner public keys added in Lucia
+  (**Settings → SSH keys**) arrive in each heartbeat reply and are written
+  there as root-owned 0644 files under a root-owned 0755 directory. Each file
+  is validated like the recovery key (no options or comments); usernames must
+  be lowercase POSIX names and never `root` or `lucia-recovery`. Only changed
+  files are rewritten and files for accounts with no keys are deleted. A reply
+  without the list (older Lucia) keeps the installed files. The agent rewrites
+  the sshd drop-in and reloads sshd on every managed start, so upgraded nodes
+  converge.
 * `/etc/sudoers.d/lucia-owners`, mode 0440, grants exactly
   `%lucia-owners ALL=(ALL:ALL) ALL`: LDAP owners must authenticate with their
   password for sudo. A fixed in-target `visudo --check --file` validates it.

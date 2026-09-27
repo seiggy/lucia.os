@@ -61,7 +61,7 @@ public sealed partial class DiscoveryClient
             $"/api/nodes/{id:D}/challenge", null, null, token)));
     }
 
-    internal async Task HeartbeatAsync(string certificate, NodeMetrics metrics, ECDsa key, CancellationToken token)
+    internal async Task<IReadOnlyDictionary<string, string[]>?> HeartbeatAsync(string certificate, NodeMetrics metrics, ECDsa key, CancellationToken token)
     {
         ValidateHeartbeatDates(certificate);
         var challenge = await NodeChallengeAsync(metrics.NodeId, token);
@@ -69,8 +69,10 @@ public sealed partial class DiscoveryClient
         var proof = SignReport(challenge, JsonSerializer.Serialize(metrics, AgentJson.Options), key);
         var response = await SendReplyAsync(HttpMethod.Post, $"/api/nodes/{metrics.NodeId:D}/heartbeat",
             JsonSerializer.SerializeToUtf8Bytes(new MachineRequest(certificate, proof), AgentJson.Options), null, token);
-        if (response.Status != HttpStatusCode.OK || !Deserialize<HeartbeatResult>(response.Bytes).Accepted)
+        var result = response.Status == HttpStatusCode.OK ? Deserialize<HeartbeatResult>(response.Bytes) : null;
+        if (result is not { Accepted: true })
             throw new NodeAgentException("The managed heartbeat was not accepted.");
+        return result.SshKeys;
     }
 
     internal async Task<ManagedConfiguration?> RenewAsync(string certificate, InstallPlan plan, string csr, ECDsa key, CancellationToken token)
@@ -96,7 +98,7 @@ public sealed partial class DiscoveryClient
         return value;
     }
 
-    private sealed record HeartbeatResult(bool Accepted);
+    private sealed record HeartbeatResult(bool Accepted, Dictionary<string, string[]>? SshKeys = null);
     private sealed record PendingResult(string State);
 
     private static void ValidateHeartbeatDates(string pem)

@@ -46,6 +46,7 @@ internal static class BootHttpChecks
             builder.AddHardwareBoot();
             builder.Services.AddSingleton(new HostAuthenticationOptions());
             builder.Services.AddSingleton<ManagedNodeEnrollment>();
+builder.Services.AddSingleton<OwnerSshKeys>();
             await using var app = builder.Build();
             app.Use((context, next) =>
             {

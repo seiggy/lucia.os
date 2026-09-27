@@ -26,6 +26,8 @@ export const destinations: Destination[] = [
   { page: 'ai-keys', area: 'ai', label: 'API keys', description: 'Give an application inference access', href: '#/ai/keys', ownerOnly: true, keywords: 'credentials client token revoke expiry connect app' },
   { page: 'settings', area: 'settings', label: 'Appearance', description: 'Color mode, themes, and custom accent', href: '#/settings', keywords: 'preferences light dark system theme' },
   { page: 'adguard-settings', area: 'settings', label: 'AdGuard', description: 'Connect your existing local DNS server', href: '#/settings/adguard', ownerOnly: true, keywords: 'dns rewrite network connection password' },
+  { page: 'unifi-settings', area: 'settings', label: 'UniFi Network', description: 'Reserve node addresses on your UniFi gateway', href: '#/settings/unifi', ownerOnly: true, keywords: 'dhcp reservation fixed ip address gateway router network connection api key' },
+  { page: 'ssh-key-settings', area: 'settings', label: 'SSH keys', description: 'Sign in to managed servers with your keys', href: '#/settings/ssh-keys', ownerOnly: true, keywords: 'ssh public key authorized_keys login server github ed25519 passwordless' },
   { page: 'domain-settings', area: 'settings', label: 'Domains', description: 'Cloudflare DNS and HTTPS certificates', href: '#/settings/domains', ownerOnly: true, keywords: 'ssl tls lets encrypt certbot wildcard subdomain urls names cloudflare' },
 ]
 

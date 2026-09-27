@@ -31,7 +31,24 @@ DISCOVERY_ROUTE = "/api/boot/discovery.cfg"
 PUBLIC = (
     BOOT + "bootnetx64.efi", BOOT + "grubx64.efi", BOOT + "linux",
     BOOT + "initrd.gz", BOOT + "grub/grub.cfg", BOOT + "grub/font.pf2",
-    "lucia/lucia-overlay.cpio.gz",
+    "lucia/lucia-overlay.cpio.gz", BOOT + "grub/lucia-theme.txt",
+)
+GRUB_PREAMBLE = [
+    "set default=0", "set timeout=3", "set timeout_style=menu",
+    "set menu_color_normal=light-gray/black", "set menu_color_highlight=white/blue",
+    "if loadfont $prefix/font.pf2; then", "set gfxmode=1024x768,auto", "set gfxpayload=keep",
+    "insmod efi_gop", "insmod gfxterm", "insmod gfxmenu", "terminal_output gfxterm",
+    "set theme=$prefix/lucia-theme.txt", "fi",
+]
+READ_ONLY_TITLE = b"register only, installation is off"
+INSTALL_TITLE = b"register, then install when approved"
+# Lucia colors for every text console. fb=false keeps d-i on the kernel console
+# (not bterm, whose VGA palette is fixed), so newt's blue/gray/red roles become
+# navy page, pale cards and accent blue. quiet keeps kernel chatter off screen.
+CONSOLE_ARGS = (
+    "quiet fb=false vt.default_red=32,40,25,212,18,121,151,243,88,91,128,242,151,198,185,255 "
+    "vt.default_grn=40,91,113,222,23,81,179,245,103,131,207,204,179,162,205,255 "
+    "vt.default_blu=57,221,78,250,34,168,255,249,125,234,172,140,255,237,252,255"
 )
 PINS = {
     "SHA256SUMS": "31a1a4fc99c5b0a729d261f137cd7e1599bfa6f214f83fe4e596543d8ccf2dec",
@@ -345,12 +362,13 @@ def validate_grub(data, server):
     lines = [line.strip() for line in data.decode().splitlines() if line.strip()]
     expected_tail = [
         f"linux /{BOOT}linux auto=true priority=critical netcfg/choose_interface=auto "
-        f"url={server_url(server)}{DISCOVERY_ROUTE} ---",
+        f"url={server_url(server)}{DISCOVERY_ROUTE} {CONSOLE_ARGS} ---",
         f"initrd /{BOOT}initrd.gz /lucia/lucia-overlay.cpio.gz",
         "}",
     ]
-    require(len(lines) == 6 and lines[:2] == ["set default=0", "set timeout=3"] and
-            re.fullmatch(r"menuentry '[^'\r\n$\\]+' \{", lines[2]) and lines[3:] == expected_tail,
+    n = len(GRUB_PREAMBLE)
+    require(len(lines) == n + 4 and lines[:n] == GRUB_PREAMBLE and
+            re.fullmatch(r"menuentry '[^'\r\n$\\]+' \{", lines[n]) and lines[n + 1:] == expected_tail,
             "GRUB must offer only guarded Lucia discovery at the controller API route")
 
 
@@ -583,6 +601,7 @@ def prepare_bundle(*, output: str | Path, node_agent: str | Path, ca_file: str |
     deployment = (Path(boot_assets) if boot_assets is not None else
                   Path(__file__).resolve().parents[2] / "deployment" / "boot")
     for src, dest in (("discover-and-wait", "usr/lib/lucia/discover-and-wait"),
+                      ("screen.sh", "usr/lib/lucia/screen.sh"),
                       ("partitioner-guard", "usr/lib/partman/init.d/00lucia-approval")):
         data = bounded_file(deployment / src, 16384).replace(b"\r\n", b"\n")
         run(["sh", "-n"], input=data)
@@ -619,10 +638,13 @@ def prepare_bundle(*, output: str | Path, node_agent: str | Path, ca_file: str |
     grub = bounded_file(deployment / "grub.cfg.in", 16384).replace(b"\r\n", b"\n")
     grub = grub.replace(b"@DISCOVERY_URL@", (server + DISCOVERY_ROUTE).encode())
     if installation:
-        grub = grub.replace(b"read-only discovery (installation disabled)", b"discovery and owner-approved installation")
+        grub = grub.replace(READ_ONLY_TITLE, INSTALL_TITLE)
     validate_grub(grub, server)
+    theme = bounded_file(deployment / "grub-theme.txt", 16384).replace(b"\r\n", b"\n")
+    theme.decode("utf-8")
     for name, data in stock_files.items():
         write(output / "public" / name, grub if name.endswith("/grub.cfg") else data)
+    write(output / "public" / BOOT / "grub/lucia-theme.txt", theme)
     write(output / "public/lucia/lucia-overlay.cpio.gz", overlay)
     receipt = {
         "schemaVersion": 1, "purpose": "approved-installation-with-managed-enrollment" if installation else "read-only-discovery-no-installation",

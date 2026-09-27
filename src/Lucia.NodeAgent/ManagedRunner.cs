@@ -139,8 +139,21 @@ internal static class ManagedRunner
             try
             {
                 using var heartbeatIdentity = ManagedIdentity.ValidateConfiguration(configuration, plan, key, client.Server);
-                await client.HeartbeatAsync(configuration.CertificatePem, ReadMetrics(plan), key, token);
+                var sshKeys = await client.HeartbeatAsync(configuration.CertificatePem, ReadMetrics(plan), key, token);
                 Console.Error.WriteLine("Authenticated managed heartbeat accepted.");
+                // An older Lucia omits the list; keep whatever is installed rather than revoking everything.
+                if (sshKeys is not null)
+                {
+                    try
+                    {
+                        if (ManagedFiles.WriteSshKeys(sshKeys))
+                            Console.Error.WriteLine($"Owner SSH keys updated for {sshKeys.Count} account(s).");
+                    }
+                    catch (Exception ex) when (ex is NodeAgentException or IOException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine("Owner SSH keys could not be updated; the installed keys were kept. " + ex.Message);
+                    }
+                }
             }
             catch (NodeAgentException ex)
             {

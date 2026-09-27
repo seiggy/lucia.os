@@ -59,6 +59,22 @@ internal static class NodeEnrollmentChecks
             service.ValidateCertificate(id, "synthetic-node", fingerprint, expired.ExportCertificatePem(), renewal: true);
             check(true, "A known key's expired certificate cannot be checked for renewal recovery.");
             Reject(() => service.ValidateCertificate(Guid.NewGuid(), "synthetic-node", fingerprint, expired.ExportCertificatePem(), renewal: true));
+
+            var sshKeys = new OwnerSshKeys(nodeOptions);
+            var sshKey = "ssh-ed25519 " + Convert.ToBase64String([0, 0, 0, 11, .. "ssh-ed25519"u8, 0, 0, 0, 32, .. RandomNumberGenerator.GetBytes(32)]);
+            var added = sshKeys.Add("zack", new(sshKey + " zack@laptop", null), DateTimeOffset.UtcNow, default).GetAwaiter().GetResult();
+            check(added.Keys is [{ Label: "zack@laptop" }] && added.Keys[0].PublicKey == sshKey, "An owner SSH key was not stored normalized with its label.");
+            check(sshKeys.Authorized(default).GetAwaiter().GetResult() is { Count: 1 } authorized && authorized["zack"].SequenceEqual([sshKey]),
+                "Heartbeat key list did not match the stored keys.");
+            try { sshKeys.Add("zack", new(sshKey, "again"), DateTimeOffset.UtcNow, default).GetAwaiter().GetResult(); check(false, "Duplicate key accepted."); }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 409) { check(true, "Duplicate rejected."); }
+            foreach (var name in new[] { "root", "lucia-recovery", "Zack", "../x", "" })
+            {
+                try { OwnerSshKeys.Username(name); check(false, "Unsafe SSH username accepted."); }
+                catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Unsafe username rejected."); }
+            }
+            var removed = sshKeys.Remove("zack", added.Keys[0].Id, default).GetAwaiter().GetResult();
+            check(removed.Keys.Length == 0 && sshKeys.Authorized(default).GetAwaiter().GetResult().Count == 0, "A removed key was still sent to nodes.");
         }
         finally { Directory.Delete(folder, recursive: true); }
         return Task.CompletedTask;

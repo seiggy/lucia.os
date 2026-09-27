@@ -95,6 +95,33 @@ export function parseAdGuardStatus(value: unknown): AdGuardStatus {
   return { configured: boolean(x.configured), baseUrl: optional(x.baseUrl, text), username: optional(x.username, text),
     allowInsecureHttp: boolean(x.allowInsecureHttp), version: optional(x.version, text), lastVerifiedAt: optional(x.lastVerifiedAt, date) }
 }
+export interface UniFiStatus {
+  configured: boolean; baseUrl: string | null; site: string | null; certificateSha256: string | null
+  networkVersion: string | null; reserveNodeAddresses: boolean; lastVerifiedAt: string | null
+}
+export type DhcpState = 'Reserved' | 'Reserving' | 'ReservedElsewhere' | 'AddressTaken' | 'NotSeen' | 'Failed'
+export interface DhcpReservations {
+  enabled: boolean; checkedAt: string | null; error: string | null
+  nodes: { hostname: string; address: string; mac: string | null; state: DhcpState; host: boolean }[]
+}
+export function parseUniFiStatus(value: unknown): UniFiStatus {
+  const x = object(value)
+  return { configured: boolean(x.configured), baseUrl: optional(x.baseUrl, text), site: optional(x.site, text),
+    certificateSha256: optional(x.certificateSha256, value => { const pin = text(value); if (!/^[a-f\d]{64}$/.test(pin)) throw invalid(); return pin }),
+    networkVersion: optional(x.networkVersion, text), reserveNodeAddresses: boolean(x.reserveNodeAddresses), lastVerifiedAt: optional(x.lastVerifiedAt, date) }
+}
+const dhcpStates: readonly DhcpState[] = ['Reserved', 'Reserving', 'ReservedElsewhere', 'AddressTaken', 'NotSeen', 'Failed']
+export function parseDhcpReservations(value: unknown): DhcpReservations {
+  const x = object(value)
+  if (!Array.isArray(x.nodes) || x.nodes.length > 500) throw invalid()
+  return { enabled: boolean(x.enabled), checkedAt: optional(x.checkedAt, date), error: optional(x.error, text),
+    nodes: x.nodes.map(item => {
+      const n = object(item)
+      const state = text(n.state) as DhcpState
+      if (!dhcpStates.includes(state)) throw invalid()
+      return { hostname: text(n.hostname), address: text(n.address), mac: optional(n.mac, text), state, host: boolean(n.host) }
+    }) }
+}
 export function parseDomainPlan(value: unknown): DomainPlan {
   const x = object(value)
   const naming = object(x.naming)

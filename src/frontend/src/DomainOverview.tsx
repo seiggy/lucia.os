@@ -89,7 +89,7 @@ export function DomainOverview({ state, session, refreshSession, replaceToken }:
       <div className="network-actions"><button className="text-link" onClick={replaceToken}>Replace Cloudflare token</button></div>
     </section>
     <section className="surface network-section">
-      <h2>AdGuard records</h2><p className="section-note">Only records matching Lucia’s managed endpoints are shown. Refresh reads AdGuard; it does not add or repair records.</p>
+      <h2>AdGuard records</h2><p className="section-note">Only records matching Lucia’s managed endpoints and nodes are shown. Refresh reads AdGuard. Node records follow each node’s latest heartbeat address; other records are never changed here.</p>
       {snapshot?.dnsError && <p className="network-error">{snapshot.dnsError}</p>}
       {snapshot && <table className="network-table"><caption className="network-table-caption">Local DNS records for managed endpoints</caption>
         <thead><tr><th>Hostname</th><th>Expected address</th><th>Records in AdGuard</th><th>Status</th></tr></thead>

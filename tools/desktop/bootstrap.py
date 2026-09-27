@@ -58,6 +58,7 @@ FILES = frozenset((
     "tools/packages/package_worker.py",
     "deployment/boot/Dockerfile", "deployment/boot/serve.py", "deployment/boot/discover-and-wait",
     "deployment/boot/partitioner-guard", "deployment/boot/grub.cfg.in", "deployment/boot/finish-install",
+    "deployment/boot/screen.sh", "deployment/boot/grub-theme.txt",
     "deployment/host/Dockerfile",
     "deployment/identity/start-ca.sh", "deployment/identity/renew-certificate.sh",
     "deployment/identity/install-node-trust.sh", "deployment/identity/init_org_tree.ldif",

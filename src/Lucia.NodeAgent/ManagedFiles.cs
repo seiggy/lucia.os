@@ -7,7 +7,53 @@ namespace Lucia.NodeAgent;
 internal static class ManagedFiles
 {
     internal const string StatePath = "/var/lib/lucia-agent/private";
+    internal const string SshKeysPath = "/etc/ssh/lucia-authorized-keys";
     internal const string OwnersSudoers = "%lucia-owners ALL=(ALL:ALL) ALL\n";
+
+    /// <summary>Validates Lucia's owner key list into authorized_keys file contents, without options.</summary>
+    internal static Dictionary<string, string> SshKeyFiles(IReadOnlyDictionary<string, string[]> users)
+    {
+        if (users.Count > 256) throw InvalidKeys();
+        var files = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (user, keys) in users)
+        {
+            if (!SshUser(user) || keys is null || keys.Length is 0 or > 20) throw InvalidKeys();
+            try { files[user] = string.Concat(keys.Select(key => InstallationRules.RecoveryKey(key) + "\n")); }
+            catch (NodeAgentException) { throw InvalidKeys(); }
+        }
+        return files;
+    }
+
+    internal static bool SshUser(string name) =>
+        System.Text.RegularExpressions.Regex.IsMatch(name, @"\A[a-z_][a-z0-9_.-]{0,31}\z") && name is not ("root" or "lucia-recovery");
+
+    /// <summary>Makes the key directory match Lucia's list exactly; returns whether anything changed.</summary>
+    internal static bool WriteSshKeys(IReadOnlyDictionary<string, string[]> users)
+    {
+        var files = SshKeyFiles(users);
+        var changed = false;
+        foreach (var (user, content) in files)
+        {
+            var path = SshKeysPath + "/" + user;
+            var bytes = Encoding.ASCII.GetBytes(content);
+            byte[]? existing = null;
+            try { existing = SecureStateDirectory.ReadSystemFile(path); }
+            catch (Exception ex) when (ex is NodeAgentException or IOException) { }
+            if (existing is not null && existing.AsSpan().SequenceEqual(bytes)) continue;
+            SecureStateDirectory.WriteSystemFile(path, bytes, publicRead: true);
+            changed = true;
+        }
+        foreach (var path in Directory.EnumerateFiles(SshKeysPath))
+        {
+            var name = Path.GetFileName(path);
+            if (files.ContainsKey(name) || name.StartsWith(".write-", StringComparison.Ordinal)) continue;
+            SecureStateDirectory.DeleteSystemFile(SshKeysPath + "/" + name);
+            changed = true;
+        }
+        return changed;
+    }
+
+    private static NodeAgentException InvalidKeys() => new("Lucia returned an invalid SSH key list; the installed keys were kept.");
 
     internal static async Task StageAsync(SecureStateDirectory source, InstallPlan plan, Uri origin, string caFile, CancellationToken token)
     {
@@ -109,9 +155,12 @@ internal static class ManagedFiles
     internal static async Task ConfigureDirectoryAsync(ManagedConfiguration config, Uri origin, CancellationToken token)
     {
         SecureStateDirectory.MakePrivateDirectory("/etc/sssd");
-        using (var secure = new SecureStateDirectory("/etc/sssd"))
-            secure.WritePrivate("sssd.conf", Encoding.UTF8.GetBytes(ManagedIdentity.Sssd(config, origin)));
+        // sssd's unit makes its config group-readable on every start, so replace it as a root-owned system file.
+        SecureStateDirectory.WriteSystemFile("/etc/sssd/sssd.conf", Encoding.UTF8.GetBytes(ManagedIdentity.Sssd(config, origin)));
         SecureStateDirectory.WriteSystemFile("/etc/lucia/directory-ca.pem", Encoding.UTF8.GetBytes(config.CaPem), publicRead: true);
+        SecureStateDirectory.MakeReadableDirectory(SshKeysPath);
+        // Rewritten on every start so nodes installed by an older agent adopt the current SSH policy.
+        Write("/etc/ssh/sshd_config.d/00-lucia.conf", ManagedIdentity.Ssh);
         var nss = Encoding.UTF8.GetString(SecureStateDirectory.ReadSystemFile("/etc/nsswitch.conf"));
         SecureStateDirectory.WriteSystemFile("/etc/nsswitch.conf", Encoding.UTF8.GetBytes(Nsswitch(nss)), publicRead: true);
         var session = Encoding.UTF8.GetString(SecureStateDirectory.ReadSystemFile("/etc/pam.d/common-session"));

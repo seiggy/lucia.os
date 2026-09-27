@@ -93,7 +93,7 @@ assert verify_bundle("/out/new-bundle") == receipt
 All arguments to `prepare_bundle` are keyword-only. File/directory arguments
 accept `str` or `pathlib.Path`; it returns the same dictionary persisted as
 `output/receipt.json`. `verify_bundle(directory)` is read-only and returns that
-dictionary after checking local artifact/evidence hashes, the exact seven-file
+dictionary after checking local artifact/evidence hashes, the exact eight-file
 allowlist, guarded GRUB configuration and controller route. It does not replace
 fresh signature authentication: `prepare_bundle(..., replay=...)` rechecks that
 chain without network access. Existing `verify(directory)` remains an alias.
@@ -105,7 +105,7 @@ The schema is `schemaVersion: 1`; integration fields are:
 | `purpose` | `"read-only-discovery-no-installation"` |
 | `debianVersion`, `installerBuild`, `kernelAbi` | Exact version strings |
 | `controller` | `{server, discoveryUrl, connectAddress, publicCaSha256, publicCaDerSha256}`; absent override is `""`; hashes cover PEM bytes and DER respectively |
-| `artifacts` | `{public-relative-path: lowercase-sha256}`; exactly the seven paths below |
+| `artifacts` | `{public-relative-path: lowercase-sha256}`; exactly the eight paths below |
 | `upstream` | `{original-boot-path: sha256}` before replacing GRUB configuration |
 | `agentFiles` | `{publish-filename: sha256}` of every trusted maintainer input |
 | `overlayFiles` | `{initramfs-relative-path: {mode, sha256}}`; mode includes POSIX file type; symlink hashes cover target bytes |
@@ -137,7 +137,7 @@ The fixed upstream installer is `20250803+deb13u7`:
 4. Signed Release hashes authenticate the Debian amd64 package/udeb indexes,
    which authenticate all included runtime libraries and storage modules.
 
-Only `bundle/public` is suitable for the public boot service. Its exact seven
+Only `bundle/public` is suitable for the public boot service. Its exact eight
 regular files are:
 
 ```text
@@ -147,6 +147,7 @@ debian-installer/amd64/linux
 debian-installer/amd64/initrd.gz
 debian-installer/amd64/grub/grub.cfg
 debian-installer/amd64/grub/font.pf2
+debian-installer/amd64/grub/lucia-theme.txt
 lucia/lucia-overlay.cpio.gz
 ```
 
@@ -155,7 +156,7 @@ The initial TFTP bootfile must be
 GRUB's embedded `debian-installer/amd64/grub` prefix. GRUB loads the untouched
 upstream kernel and initrd, followed by the separate Lucia compressed CPIO.
 No additional loader assets were needed in the isolated UEFI smoke. Mount
-only this seven-file `public` directory as the **TFTP root too**, not just as
+only this eight-file `public` directory as the **TFTP root too**, not just as
 an HTTP allowlist: the original netboot tar contains unchecked installer/BIOS
 menus. Build and verification reject additional public files, extra GRUB
 entries/config includes, a missing guard overlay, and the old preseed route.
@@ -200,8 +201,8 @@ GNU Wget retains certificate/hostname verification with the public CA selected
 in `/etc/wgetrc`; the agent uses its own public-CA argument.
 
 The hook checks UEFI/architecture/kernel ABI, loads the pre-staged NVMe, SATA,
-and virtio module closure, settles udev, invokes native discovery once, prints
-the safe matching code on the console, and **blocks forever on both success and
+and virtio module closure, settles udev, invokes native discovery once, shows
+the safe matching code on the Lucia status screen, and **blocks forever on both success and
 failure**. Runtime private keys/capabilities are created only in `/run/lucia`.
 The independent `/lib/partman/init.d/00lucia-approval` interlock also blocks
 unconditionally, including if preseed fetching fails or its error is caught.
@@ -210,6 +211,27 @@ Owner approval does not release either block. There are no disk choices,
 partition recipes, erase confirmations, filesystem mounts, swap/RAID/LVM
 activation, or installer execution in these scripts. This is not a sandbox
 against a malicious root operator deliberately removing the guard.
+
+## Boot screens (no keyboard or monitor needed)
+
+Every screen advances on its own; none waits for a key. Screenshots are in
+[the UniFi setup guide](../../docs/unifi-network-boot.md#what-the-servers-screen-shows).
+
+- **GRUB** (`grub-theme.txt` → `grub/lucia-theme.txt`): a dark gfxmenu with a
+  box-drawing LUCIA wordmark and a 3-second countdown. The stock `font.pf2`
+  only has ASCII, arrows and `━┃┏┓┗┛│┌┐└┘`; `check_prepare.py` rejects any
+  other glyph. If the font or theme fails to load, GRUB falls back to its text
+  menu.
+- **Kernel args** (`CONSOLE_ARGS` in `prepare.py`): `quiet`, `fb=false` and
+  `vt.default_red/grn/blu`. `fb=false` keeps d-i on the kernel console instead
+  of bterm, whose VGA palette is fixed. newt's blue/gray/red roles then draw as
+  Lucia navy, pale cards and accent blue. These args sit before `---` and do
+  not reach the installed system.
+- **Status screen** (`screen.sh`, drawn on tty5 and brought to the front):
+  sun mark and wordmark, five steps with live timers, the verification code in
+  large glyphs, and a plain-language fail panel with the fix and the reason.
+  `discover-and-wait` hands back to the installer on tty1 after approval, and
+  `finish-install` brings it forward again if enrollment fails.
 
 ## Runtime support and qualification limits
 

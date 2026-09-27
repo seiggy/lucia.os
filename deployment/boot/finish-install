@@ -12,7 +12,17 @@ if "$agent/ld-linux-x86-64.so.2" --inhibit-cache --library-path "$agent" "$agent
     cat /run/lucia/finish.err >&2
     exit 0
 fi
-# The installer only shows "exit code 1"; put the agent's reason on the console too.
-sed 's/^/Lucia: /' /run/lucia/finish.err >/dev/console 2>/dev/null || true
+# The installer only shows "exit code 1"; show the agent's reason on the Lucia screen.
+if [ -r /usr/lib/lucia/screen.sh ]; then
+    . /usr/lib/lucia/screen.sh
+    screen_open
+    s1=ok s2=ok s3=ok s4=ok s5=fail d4=installed PANEL=fail
+    FAIL_WHAT='this machine could not join Lucia'
+    FAIL_TODO='Check it in Lucia → Devices, then network-boot it again.'
+    FAIL_DETAIL=$(sed '/^$/d' /run/lucia/finish.err 2>/dev/null | tail -n 1)
+    FAIL_NOTE='Debian is installed but not managed. Reinstalling replaces it.'
+    screen_draw
+    screen_front
+fi
 cat /run/lucia/finish.err >&2
 exit 1

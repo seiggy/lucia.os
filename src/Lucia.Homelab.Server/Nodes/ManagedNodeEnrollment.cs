@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -25,7 +26,9 @@ internal sealed record NativeNodeRequest(int SchemaVersion, Guid NodeId, Guid Ta
 internal sealed record NativeNodeResponse(int SchemaVersion, Guid NodeId, Guid? TaskId, string RequestHash,
     bool Success, string Message, DateTimeOffset CheckedAt, NodeEnrollmentConfiguration? Configuration);
 internal sealed record ManagedNodeRecord(Guid NodeId, Guid TaskId, string Hostname, string PublicKeyFingerprint,
-    string CertificatePem, DateTimeOffset CertificateExpiresAt, DateTimeOffset? LastSeenAt, NodeHeartbeat? Status);
+    string CertificatePem, DateTimeOffset CertificateExpiresAt, DateTimeOffset? LastSeenAt, NodeHeartbeat? Status,
+    string? Address = null);
+public sealed record ManagedNodeAddress(string Hostname, string Address, Guid NodeId = default);
 
 public sealed class ManagedNodeEnrollment(
     HardwareOnboardingStore onboarding, IOptions<HardwareOnboardingOptions> options, HostAuthenticationOptions authentication)
@@ -33,21 +36,34 @@ public sealed class ManagedNodeEnrollment(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string Root => Path.Combine(Path.GetDirectoryName(options.Value.StateDirectory)!, "nodes");
     private string NodePath(Guid id) => Path.Combine(Root, "identities", id.ToString("D") + ".json");
+    internal string DnsStatePath => Path.Combine(Root, "dns-records.json");
+
+    /// <summary>Raised when a heartbeat arrives from a node address Lucia has not recorded yet.</summary>
+    public event Action? AddressChanged;
 
     public async Task<object> Snapshot(CancellationToken ct)
+    {
+        var records = await Records(ct);
+        return records.Select(node => new { node.NodeId, node.TaskId, node.Hostname, node.CertificateExpiresAt, node.LastSeenAt,
+            state = node.LastSeenAt is null ? "AwaitingHeartbeat" : node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2) ? "Online" : "Stale",
+            node.Address, node.Status }).ToArray();
+    }
+
+    public async Task<ManagedNodeAddress[]> Addresses(CancellationToken ct) =>
+        (await Records(ct)).Where(node => node.Address is not null)
+            .Select(node => new ManagedNodeAddress(node.Hostname, node.Address!, node.NodeId)).ToArray();
+
+    private async Task<ManagedNodeRecord[]> Records(CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
             var directory = Path.Combine(Root, "identities");
             DomainOnboardingStore.RejectLinks(directory);
-            if (!Directory.Exists(directory)) return Array.Empty<object>();
+            if (!Directory.Exists(directory)) return [];
             var paths = Directory.GetFiles(directory, "*.json");
             if (paths.Length > HardwareOnboardingStore.MaximumDevices) throw new InvalidDataException("Managed-node registry is oversized.");
-            var records = paths.Select(Read<ManagedNodeRecord>).ToArray();
-            return records.Select(node => new { node.NodeId, node.TaskId, node.Hostname, node.CertificateExpiresAt, node.LastSeenAt,
-                state = node.LastSeenAt is null ? "AwaitingHeartbeat" : node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2) ? "Online" : "Stale",
-                node.Status }).ToArray();
+            return paths.Select(Read<ManagedNodeRecord>).ToArray();
         }
         finally { _gate.Release(); }
     }
@@ -79,9 +95,13 @@ public sealed class ManagedNodeEnrollment(
         return await Prepare(payload, identity.Hostname, fingerprint, ct, renewal: true);
     }
 
-    public async Task Heartbeat(Guid id, NodeHeartbeat report, string certificatePem, string fingerprint, CancellationToken ct)
+    /// <param name="address">The connection address the signed challenge was bound to.</param>
+    public async Task Heartbeat(Guid id, NodeHeartbeat report, string certificatePem, string fingerprint, IPAddress address,
+        CancellationToken ct)
     {
         ValidateHeartbeat(id, report);
+        var text = (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString();
+        bool changed;
         await _gate.WaitAsync(ct);
         try
         {
@@ -89,9 +109,12 @@ public sealed class ManagedNodeEnrollment(
             if (report.Hostname != identity.Hostname) throw Denied();
             await onboarding.CompleteEnrollmentAsync(id, identity.TaskId, fingerprint, ct);
             await onboarding.ManagedHeartbeatAsync(id, fingerprint, ct);
-            await DomainOnboardingStore.WriteJson(NodePath(id), identity with { LastSeenAt = DateTimeOffset.UtcNow, Status = report }, ct);
+            changed = identity.Address != text;
+            await DomainOnboardingStore.WriteJson(NodePath(id),
+                identity with { LastSeenAt = DateTimeOffset.UtcNow, Status = report, Address = text }, ct);
         }
         finally { _gate.Release(); }
+        if (changed) AddressChanged?.Invoke();
     }
 
     private async Task<NodeEnrollmentConfiguration?> Prepare(NodeEnrollmentPayload payload, string hostname, string fingerprint,
@@ -144,7 +167,7 @@ public sealed class ManagedNodeEnrollment(
                         if (existing is not null && (existing.TaskId != payload.TaskId || existing.Hostname != hostname
                             || existing.PublicKeyFingerprint != fingerprint)) throw Denied();
                         var record = new ManagedNodeRecord(payload.NodeId, payload.TaskId, hostname, fingerprint,
-                            configuration.CertificatePem, expiry, existing?.LastSeenAt, existing?.Status);
+                            configuration.CertificatePem, expiry, existing?.LastSeenAt, existing?.Status, existing?.Address);
                         await DomainOnboardingStore.WriteJson(NodePath(payload.NodeId), record, ct);
                         return configuration;
                     }

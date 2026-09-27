@@ -18,6 +18,7 @@ ALLOWED = frozenset((
     "debian-installer/amd64/bootnetx64.efi", "debian-installer/amd64/grubx64.efi",
     "grubx64.efi",
     "debian-installer/amd64/grub/grub.cfg", "debian-installer/amd64/grub/font.pf2",
+    "debian-installer/amd64/grub/lucia-theme.txt",
     "debian-installer/amd64/linux", "debian-installer/amd64/initrd.gz",
     "lucia/lucia-overlay.cpio.gz",
 ))

@@ -71,15 +71,15 @@ public static class InstallationEndpoints
             return Results.Json(challenges.Issue(address));
         });
         nodes.MapPost("/heartbeat", async (Guid id, HttpContext context, BootOptions options, ManagedNodeEnrollment enrollment,
-            DiscoveryChallenges challenges, CancellationToken ct) =>
+            DiscoveryChallenges challenges, OwnerSshKeys sshKeys, CancellationToken ct) =>
         {
             var address = HardwareBootExtensions.RequireNetwork(context, options);
             var input = await HardwareBootExtensions.ReadRequest<NodeSignedSubmission>(context, ct);
             var proof = challenges.Verify(input.Proof, address);
             var report = JsonSerializer.Deserialize<NodeHeartbeat>(proof.ReportJson, HardwareOnboardingJson.Options)
                 ?? throw new DiscoveryProtocolException(400, "A signed node report is required.");
-            await enrollment.Heartbeat(id, report, input.CertificatePem, proof.PublicKeyFingerprint, ct);
-            return Results.Ok(new { accepted = true });
+            await enrollment.Heartbeat(id, report, input.CertificatePem, proof.PublicKeyFingerprint, address, ct);
+            return Results.Ok(new { accepted = true, sshKeys = await sshKeys.Authorized(ct) });
         });
         nodes.MapPost("/renew", async (Guid id, HttpContext context, BootOptions options, ManagedNodeEnrollment enrollment,
             DiscoveryChallenges challenges, CancellationToken ct) =>

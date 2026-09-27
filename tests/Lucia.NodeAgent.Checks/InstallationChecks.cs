@@ -310,6 +310,17 @@ internal static class InstallationChecks
         Check(ManagedIdentity.Ssh.Contains("PermitRootLogin no", StringComparison.Ordinal)
             && ManagedIdentity.Ssh.Contains("AllowGroups lucia-owners lucia-recovery", StringComparison.Ordinal)
             && ManagedIdentity.Ssh.Contains("AuthenticationMethods publickey", StringComparison.Ordinal), "SSH access is not scoped.");
+        Check(ManagedIdentity.Ssh.Contains("AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/lucia-authorized-keys/%u", StringComparison.Ordinal),
+            "Owner SSH keys from Lucia are not read by sshd.");
+        var keyFiles = ManagedFiles.SshKeyFiles(new Dictionary<string, string[]> { ["zack"] = [publicKey + " laptop", publicKey] });
+        Check(keyFiles["zack"] == publicKey + "\n" + publicKey + "\n", "Owner SSH keys were not normalized without comments.");
+        foreach (var bad in new Dictionary<string, string[]>[]
+        {
+            new() { ["root"] = [publicKey] }, new() { ["lucia-recovery"] = [publicKey] }, new() { ["../etc"] = [publicKey] },
+            new() { ["Zack"] = [publicKey] }, new() { ["zack"] = [] }, new() { ["zack"] = ["command=\"id\" " + publicKey] },
+            new() { ["zack"] = [publicKey + "\n" + publicKey] }
+        })
+            Reject(() => ManagedFiles.SshKeyFiles(bad), "Unsafe owner SSH key list passed.");
         Check(ManagedIdentity.Service.Contains("UMask=0077", StringComparison.Ordinal)
             && ManagedIdentity.Service.Contains("ExecStart=/usr/lib/lucia/agent/lucia-node-agent managed-run", StringComparison.Ordinal)
             && !ManagedIdentity.Service.Contains("secret", StringComparison.OrdinalIgnoreCase), "Service is not fixed/private.");

@@ -44,7 +44,7 @@ def main():
     shutil.copyfile(tree / "debian-installer/amd64/grubx64.efi", tree / "grubx64.efi")
     grub = tree / "debian-installer/amd64/grub/grub.cfg"
     grub.write_text("serial --unit=0 --speed=115200\nterminal_input serial\nterminal_output serial\n"
-                    + grub.read_text().replace(" ---", " console=ttyS0,115200n8 ---"))
+                    + grub.read_text().replace(" quiet ", " ").replace(" ---", " console=ttyS0,115200n8 ---"))
     shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", work / "vars.fd")
     tls = ssl.create_default_context(cafile=str(root / "root.crt"))
     owner_key = (root / "owner-key").read_text().strip()
@@ -146,6 +146,35 @@ def main():
         del password
         if login.returncode or login.stdout.strip() != "qualification-owner":
             raise RuntimeError(f"Real LDAP SSH password login did not pass (exit {login.returncode}): {login.stderr.strip()[-400:]}")
+        # Owner keys added in Lucia must reach the node through heartbeats, and removal must revoke them.
+        # Restart the agent first: sssd rewrites its config modes, and only a healthy restarted agent can deliver keys.
+        restart = subprocess.run(ssh + ["sudo", "-n", "systemctl", "restart", "lucia-node-agent"], capture_output=True, text=True, timeout=60)
+        if restart.returncode:
+            raise RuntimeError(f"Managed agent restart failed (exit {restart.returncode}): {restart.stderr.strip()[-400:]}")
+        owner_ssh = work / "owner-ssh-key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "qualification", "-f", str(owner_ssh)], check=True, timeout=30)
+        added = api("/api/host/ssh-keys", "POST", {"publicKey": (work / "owner-ssh-key.pub").read_text().strip(), "label": None})
+        if added["username"] != "qualification-owner" or len(added["keys"]) != 1:
+            raise RuntimeError("The owner SSH key was not stored for the directory account.")
+        def key_login():
+            return subprocess.run(["ssh", "-p", "2222", "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes",
+                "-o", "UserKnownHostsFile=" + str(work / "known-hosts"), "-o", "PreferredAuthentications=publickey",
+                "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", str(owner_ssh),
+                "qualification-owner@127.0.0.1", "id", "-un"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        def wait_for(accepted):
+            until = time.monotonic() + 150
+            while True:
+                attempt = key_login()
+                if (attempt.returncode == 0 and attempt.stdout.strip() == "qualification-owner") == accepted: return
+                if time.monotonic() >= until:
+                    raise RuntimeError(f"Owner SSH key {'login' if accepted else 'revocation'} did not converge: {attempt.stderr.strip()[-400:]}")
+                time.sleep(10)
+        wait_for(True)
+        api("/api/host/ssh-keys/" + added["keys"][0]["id"], "DELETE")
+        wait_for(False)
+        active = subprocess.run(ssh + ["systemctl", "show", "-p", "NRestarts", "--value", "lucia-node-agent"], capture_output=True, text=True, timeout=60)
+        if active.returncode or active.stdout.strip() != "0":
+            raise RuntimeError(f"The restarted managed agent crashed and was restarted by systemd: {active.stdout.strip()} {active.stderr.strip()[-200:]}")
         guest.terminate()
         guest.wait(timeout=20)
         guest = None
@@ -157,7 +186,7 @@ def main():
             "backendSha256": hashlib.sha256((pathlib.Path(args.controller).parent / "Lucia.Homelab.Server.dll").read_bytes()).hexdigest(),
             "nativeEnrollmentSha256": hashlib.sha256((pathlib.Path(__file__).resolve().parents[1] / "nodes/enrollment_worker.py").read_bytes()
                 + b"\0" + (pathlib.Path(__file__).resolve().parents[1] / "nodes/prepare_directory.py").read_bytes()).hexdigest(),
-            "selectedDiskInstalled": True, "otherDiskUnchanged": True, "managedHeartbeatVerified": True, "directoryLoginVerified": True,
+            "selectedDiskInstalled": True, "otherDiskUnchanged": True, "managedHeartbeatVerified": True, "directoryLoginVerified": True, "ownerKeyLoginVerified": True,
             "recoverySshVerified": True, "unselectedDiskSha256": before, "fixtureOnly": True}
         (root / "installation-result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps({"qualificationPassed": True, "physicalDevicesModified": False}), flush=True)

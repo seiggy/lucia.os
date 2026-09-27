@@ -1,0 +1,33 @@
+# Lucia boot menu (GRUB gfxmenu). The stock Debian font.pf2 has ASCII, arrows
+# and a few box-drawing glyphs only, so the art below uses nothing else.
+title-text: ""
+desktop-color: "#121722"
+terminal-font: "GNU Unifont Regular 16"
+
++ label { top = 24% left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#eef2fa" text = "┃      ┃   ┃   ┏━━━   ┃   ┏━━━┓" }
++ label { top = 24%+16 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#eef2fa" text = "┃      ┃   ┃   ┃      ┃   ┃━━━┃" }
++ label { top = 24%+32 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#eef2fa" text = "┗━━━   ┗━━━┛   ┗━━━   ┃   ┃   ┃" }
++ label { top = 24%+60 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#f2cc8c" text = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" }
++ label { top = 24%+84 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#7d889c" text = "homelab node setup" }
+
++ boot_menu {
+    left = 50%-172
+    width = 360
+    top = 52%
+    height = 40
+    item_font = "GNU Unifont Regular 16"
+    selected_item_font = "GNU Unifont Regular 16"
+    item_color = "#b1bbcd"
+    selected_item_color = "#eef2fa"
+    item_height = 24
+    item_padding = 0
+    item_spacing = 8
+    icon_width = 0
+    icon_height = 0
+    item_icon_space = 0
+    scrollbar = false
+}
+
++ label { id = "__timeout__" top = 52%+56 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#b1bbcd" text = "Starting on its own in %d s. No keyboard needed." }
++ progress_bar { id = "__timeout__" top = 52%+84 left = 38% width = 24% height = 4 fg_color = "#97b3ff" bg_color = "#242c3c" border_color = "#242c3c" show_text = false }
++ label { top = 100%-48 left = 0 width = 100% height = 16 align = "center" font = "GNU Unifont Regular 16" color = "#7d889c" text = "Progress and a verification code appear next. Match the code in Lucia → Devices." }

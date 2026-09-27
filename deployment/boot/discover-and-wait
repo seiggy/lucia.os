@@ -1,28 +1,81 @@
 #!/bin/sh
 # This hook is fetched by network-preseed, never run by initrd-preseed.
+# Progress is drawn on tty5 and the owner never needs a keyboard.
 umask 077
 trap '' HUP INT TERM
-[ ! -c /dev/console ] || exec >/dev/console 2>&1
+. /usr/lib/lucia/screen.sh
+mkdir -p /run/lucia
+log=/run/lucia/agent.err
+: >"$log"
+serial=0
+set -- $(cat /sys/class/tty/console/active 2>/dev/null)
+eval "console=\${$#}"
+case $console in tty[0-9]*) ;; *) serial=1 ;; esac
+
+say()
+{
+    echo "Lucia: $*" >&2
+    [ "$serial" = 0 ] || echo "Lucia: $*" >/dev/console 2>/dev/null
+}
 
 block()
 {
-    echo "Lucia read-only discovery: $1. Installation is disabled." >&2
+    eval "s$1=fail"
+    PANEL=fail FAIL_WHAT=$2 FAIL_TODO=$3 NOTE1= NOTE2=
+    FAIL_DETAIL=$(sed '/^$/d' "$log" 2>/dev/null | tail -n 1)
+    screen_draw
+    screen_front
+    say "$2. $3 $FAIL_DETAIL"
     while :; do sleep 3600; done
 }
 
-[ -d /sys/firmware/efi ] || block "UEFI firmware was not detected"
-[ "$(uname -m)" = x86_64 ] || block "unsupported architecture"
-[ -r /etc/lucia/discovery.conf ] || block "missing discovery configuration"
+# Run the agent in the background so the active step's timer keeps moving.
+agent()
+{
+    row=$1 label=$2
+    shift 2
+    started=$(date +%s)
+    /usr/lib/lucia/agent/ld-linux-x86-64.so.2 \
+        --inhibit-cache --library-path /usr/lib/lucia/agent \
+        /usr/lib/lucia/agent/lucia-node-agent "$@" >/run/lucia/agent.out 2>>"$log" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        screen_detail "$row" "$label $(elapsed "$started")"
+        sleep 1
+    done
+    wait "$pid"
+}
+
+screen_open
+s1=run d1='reading disks and memory'
+NOTE1='Nothing to press here. This screen updates on its own.'
+screen_draw
+screen_front
+say "Starting node setup"
+reboot_hint='Restart this machine to try again.'
+
+[ -d /sys/firmware/efi ] || block 1 'this machine started in legacy BIOS mode' \
+    'Turn on UEFI boot in the firmware settings, then network-boot again.'
+[ "$(uname -m)" = x86_64 ] || block 1 'Lucia installs on 64-bit x86 machines only' \
+    'Use a different machine. It is safe to power this one off.'
+[ -r /etc/lucia/discovery.conf ] || block 1 'this boot image is incomplete' \
+    "Rebuild the boot files in Lucia. $reboot_hint"
 . /etc/lucia/discovery.conf
-[ "$(uname -r)" = "$LUCIA_KERNEL_ABI" ] || block "storage module ABI mismatch"
+host=${LUCIA_SERVER#https://}
+host=${host%%/*}
+[ "$(uname -r)" = "$LUCIA_KERNEL_ABI" ] || block 1 'this boot image does not match its drivers' \
+    "Rebuild the boot files in Lucia. $reboot_hint"
 
 # No anna-install: before retriever configuration that only queues packages.
 for module in nvme ahci ata_piix virtio_pci virtio_blk virtio_scsi sd_mod; do
-    modprobe "$module" || block "required storage module could not be loaded"
+    modprobe "$module" || block 1 "the $module storage driver would not load" \
+        "Check the disk controller mode (AHCI) in the firmware settings. $reboot_hint"
 done
 udevadm trigger --action=add --subsystem-match=block ||
-    block "block device enumeration failed"
-udevadm settle --timeout=30 || block "device enumeration timed out"
+    block 1 'the disks could not be listed' "$reboot_hint"
+udevadm settle --timeout=30 || block 1 'the disks took too long to appear' "$reboot_hint"
+s1=ok d1=$(hardware_line) s2=run d2=
+screen_draw
 
 export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 export DOTNET_EnableDiagnostics=0
@@ -32,18 +85,30 @@ set -- discover --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt \
 if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
     set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"
 fi
-run_agent()
-{
-    /usr/lib/lucia/agent/ld-linux-x86-64.so.2 \
-        --inhibit-cache --library-path /usr/lib/lucia/agent \
-        /usr/lib/lucia/agent/lucia-node-agent "$@"
-}
-run_agent "$@" ||
-    block "registration failed; no retry or installer continuation"
-if [ -f /etc/lucia/installation-enabled ]; then
-    shift
-    run_agent wait-install "$@" || block "owner approval was not received safely"
-    debconf-set-selections /run/lucia/install.cfg || block "approved installer configuration could not be applied"
-    exit 0
+agent 8 connecting "$@" || block 2 "Lucia did not register this machine" \
+    "In Lucia, open Devices and check discovery is on. $reboot_hint"
+CODE=$(sed -n 's/.*"verificationCode" *: *"\([A-Za-z0-9-]*\)".*/\1/p' /run/lucia/agent.out | head -n 1)
+s2=ok d2=registered s3=run d3=
+if [ ! -f /etc/lucia/installation-enabled ]; then
+    s3=wait d3='waiting for owner review' s4=off d4='off on this server' s5=off
+    NOTE1='Registered. Installation is turned off on this Lucia server.'
+    NOTE2='Review this machine in Lucia → Devices. It is safe to power off.'
+    screen_draw
+    say "Registered with code $CODE; installation is disabled"
+    while :; do sleep 3600; done
 fi
-block "registration submitted; match the displayed code with the owner"
+NOTE1='In Lucia, open Devices and approve this machine if the code matches.'
+NOTE2='Nothing to press here. This screen updates on its own.'
+screen_draw
+say "Registered with code $CODE; waiting for owner approval"
+shift
+agent 9 waiting wait-install "$@" || block 3 'approval did not arrive' \
+    "Approve it in Lucia → Devices while discovery is open. $reboot_hint"
+debconf-set-selections /run/lucia/install.cfg ||
+    block 3 'the approved install settings could not be applied' "$reboot_hint"
+s3=ok d3=approved s4=run d4='starting the installer' NOTE1= NOTE2=
+screen_draw
+say "Approved; starting the Debian installer"
+sleep 2
+screen_back
+exit 0

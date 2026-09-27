@@ -32,6 +32,8 @@ internal static class BootstrapPayload
         "deployment/boot/partitioner-guard",
         "deployment/boot/grub.cfg.in",
         "deployment/boot/finish-install",
+        "deployment/boot/screen.sh",
+        "deployment/boot/grub-theme.txt",
         "deployment/identity/start-ca.sh",
         "deployment/identity/renew-certificate.sh",
         "deployment/identity/install-node-trust.sh",

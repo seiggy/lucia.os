@@ -1,7 +1,19 @@
 set default=0
 set timeout=3
+set timeout_style=menu
+set menu_color_normal=light-gray/black
+set menu_color_highlight=white/blue
+if loadfont $prefix/font.pf2; then
+    set gfxmode=1024x768,auto
+    set gfxpayload=keep
+    insmod efi_gop
+    insmod gfxterm
+    insmod gfxmenu
+    terminal_output gfxterm
+    set theme=$prefix/lucia-theme.txt
+fi
 
-menuentry 'Lucia — read-only discovery (installation disabled)' {
-    linux /debian-installer/amd64/linux auto=true priority=critical netcfg/choose_interface=auto url=@DISCOVERY_URL@ ---
+menuentry 'Lucia: register only, installation is off' {
+    linux /debian-installer/amd64/linux auto=true priority=critical netcfg/choose_interface=auto url=@DISCOVERY_URL@ quiet fb=false vt.default_red=32,40,25,212,18,121,151,243,88,91,128,242,151,198,185,255 vt.default_grn=40,91,113,222,23,81,179,245,103,131,207,204,179,162,205,255 vt.default_blu=57,221,78,250,34,168,255,249,125,234,172,140,255,237,252,255 ---
     initrd /debian-installer/amd64/initrd.gz /lucia/lucia-overlay.cpio.gz
 }

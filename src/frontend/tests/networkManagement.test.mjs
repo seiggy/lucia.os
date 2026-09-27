@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { domainFailureSummary, parseAdGuardStatus, parseDomainPlan, parseDomainState, parseDomainZones, parseDomainOperations } from '../.checks/networkManagement.js'
+import { domainFailureSummary, parseAdGuardStatus, parseDomainPlan, parseDomainState, parseDomainZones, parseDomainOperations, parseUniFiStatus, parseDhcpReservations } from '../.checks/networkManagement.js'
 
 const plan = {
   id: '11111111-1111-4111-8111-111111111111', reviewHash: 'a'.repeat(64), expiresAt: '2026-09-23T18:00:00Z',
@@ -91,3 +91,13 @@ for (const change of [{ state: 'ProbablyFine' }, { totalRecords: 0 }, { records:
 assert.equal(parseDomainOperations({ ...operations, dnsError: 'Unavailable',
   dnsRecords: [{ ...operations.dnsRecords[0], state: 'Unavailable', records: [], totalRecords: 0 }] }).dnsRecords[0].state, 'Unavailable')
 console.log('DNS UI checks passed: safe review state, bounded support parsing, and one failure explanation without speculative unknown-cause advice.')
+
+const unifi = { configured: true, baseUrl: 'https://192.168.0.1', site: 'default', certificateSha256: 'c'.repeat(64),
+  networkVersion: '10.0.106', reserveNodeAddresses: true, lastVerifiedAt: '2026-09-23T18:00:00Z' }
+assert.equal(parseUniFiStatus(unifi).certificateSha256, 'c'.repeat(64))
+assert.throws(() => parseUniFiStatus({ ...unifi, certificateSha256: 'C'.repeat(64) }))
+assert.throws(() => parseUniFiStatus({ ...unifi, reserveNodeAddresses: 'yes' }))
+const dhcp = { enabled: true, checkedAt: '2026-09-23T18:00:00Z', error: null,
+  nodes: [{ hostname: 'lab01', address: '192.168.0.241', mac: 'a0:36:bc:ad:d8:29', state: 'Reserved', host: false }] }
+assert.equal(parseDhcpReservations(dhcp).nodes[0].state, 'Reserved')
+assert.throws(() => parseDhcpReservations({ ...dhcp, nodes: [{ ...dhcp.nodes[0], state: 'Pretend' }] }))

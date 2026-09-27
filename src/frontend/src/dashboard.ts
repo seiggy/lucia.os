@@ -23,7 +23,9 @@ export type Route =
   | { page: 'updates' }
   | { page: 'settings' }
   | { page: 'adguard-settings' }
+  | { page: 'unifi-settings' }
   | { page: 'domain-settings' }
+  | { page: 'ssh-key-settings' }
   | { page: 'ai' }
   | { page: 'ai-keys' }
   | { page: 'ai-models'; view?: 'library' | 'find' }
@@ -34,7 +36,9 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 0 || (parts.length === 1 && parts[0] === 'home')) return { page: 'home' }
   if (parts.length === 1 && parts[0] === 'settings') return { page: 'settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'adguard') return { page: 'adguard-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'unifi') return { page: 'unifi-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'domains') return { page: 'domain-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'ssh-keys') return { page: 'ssh-key-settings' }
   if (parts.length === 1 && parts[0] === 'ai') return { page: 'ai' }
   if (parts.length === 2 && parts[0] === 'ai' && parts[1] === 'keys') return { page: 'ai-keys' }
   if (parts.length === 2 && parts[0] === 'ai' && parts[1] === 'models') return { page: 'ai-models' }

@@ -4,9 +4,11 @@
 This guide covers a Dream Machine or another UniFi gateway managed through
 UniFi Network.
 
-Gateway configuration is a **manual, one-time prerequisite**. Neither Lucia's
-desktop setup app nor its dashboard currently changes UniFi settings. Use your
-own UniFi administrator account; do not give router credentials to Lucia.
+Gateway boot configuration is a **manual, one-time prerequisite**; Lucia never
+changes your DHCP boot options, networks or firewall. Never give Lucia your
+UniFi password. The one optional connection is a UniFi API key, used only to
+reserve managed servers' addresses (see
+[Keep managed servers' addresses](#keep-managed-servers-addresses)).
 
 The current onboarding milestone is **read-only discovery**. It reports
 hardware and displays a comparison code. OS installation, disk erasure, and
@@ -14,7 +16,9 @@ managed-node LDAP/certificate enrollment remain disabled.
 
 ## Before you begin
 
-- Give the Spark a stable IP address, preferably with a UniFi DHCP reservation.
+- Give the Spark a stable IP address. Once UniFi is connected, Lucia reserves
+  it for you (see
+  [Keep managed servers' addresses](#keep-managed-servers-addresses)).
 - Choose the network on which new servers will boot. The current qualified
   test arrangement puts the Spark and new hardware on the same LAN.
 - Use x86-64 UEFI network boot. Legacy BIOS, ARM64, and routed/cross-VLAN PXE
@@ -100,6 +104,48 @@ The hostname must match the server certificate, and the target's clock must
 be accurate. Do not bypass certificate verification or change the URL to an
 IP address that is absent from the certificate.
 
+### Names for managed servers
+
+Once your domain is active, Lucia adds an AdGuard rewrite for every managed
+server: `<hostname>.<namespace>`, such as `lucialab01.homelab.seiggy.com`.
+The address comes from the server's latest heartbeat, so it stays correct if
+DHCP hands out a new lease. Lucia never changes a rewrite it did not create;
+if one already exists for that name, **Domains** shows it as a conflict.
+
+To use the short name (`ssh lucialab01`), set the network's **Domain Name**
+in UniFi (Settings → Networks → your network) to the same namespace. DHCP
+clients then add that suffix automatically.
+
+### Keep managed servers' addresses
+
+Connect UniFi in **Settings → UniFi Network** and each server Lucia onboards
+keeps the address it got on first boot, so names, SSH and pinned services never
+move. Create the key in UniFi Network under **Settings → Control Plane →
+Integrations**, ideally as an admin limited to Network, then paste it with the
+gateway's HTTPS address (for example `https://192.168.1.1`) and site (usually
+`default`). UniFi gateways use a self-signed certificate: Lucia shows its
+SHA-256 fingerprint, and once you have compared it with the one your browser
+shows and trusted it, Lucia refuses any other certificate.
+
+With **Reserve managed-node addresses automatically** on (the default), Lucia
+sets a fixed IP on the UniFi client entries for the Spark's own boot address
+and for each managed server's current lease, within seconds of onboarding, then
+rechecks every five minutes. It only adds
+reservations: a server you already reserved elsewhere, or an address another
+device holds, is shown on the page and left alone. Turning the setting off or
+disconnecting keeps every existing reservation. The key is encrypted on the
+Spark and only sent to that gateway on your LAN.
+
+### Signing in to managed servers
+
+Sign in as your Lucia user: `ssh <username>@lucialab01`. Only members of
+`lucia-owners` can sign in, and sudo asks for your Lucia password. To skip
+the password, add your public keys once in **Settings → SSH keys**, either by
+pasting them or importing them from GitHub. Every managed server picks up the
+change at its next check-in, usually within a minute, and removing a key there
+revokes it everywhere. `lucia-recovery` only ever accepts the recovery key
+chosen when the server was approved.
+
 ## Each time you add hardware
 
 1. Sign in to Lucia as an Owner and open **Devices → Add hardware**. This
@@ -109,6 +155,26 @@ IP address that is absent from the certificate.
    in its firmware and select that boot option.
 3. Wait for the server to appear in Lucia. Match its displayed comparison code
    with the physical console, then inspect its reported hardware.
+
+### What the server's screen shows
+
+A monitor is optional. Every screen advances on its own and never waits for
+a key.
+
+![Lucia boot menu with a countdown](images/boot/1-boot-menu.png)
+*The boot menu starts on its own after 3 seconds.*
+
+![Lucia status screen while registering](images/boot/2-registering.png)
+*Lucia checks the hardware, then registers the server.*
+
+![Lucia status screen showing the verification code](images/boot/3-verification-code.png)
+*Match this code in **Devices** before you approve the server.*
+
+![Debian installer in Lucia colors](images/boot/4-installer.png)
+*After approval, the Debian installer runs unattended.*
+
+![Lucia status screen after setup stopped](images/boot/5-setup-stopped.png)
+*If setup stops, the screen says what to do and why. No disks were changed.*
 
 **No disk installation takes place in the current discovery-only profile.**
 Do not interpret discovery or an approval record as a completed installation.

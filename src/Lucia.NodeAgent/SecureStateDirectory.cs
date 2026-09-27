@@ -151,6 +151,20 @@ public sealed class SecureStateDirectory : IDisposable
         if (Stat(handle).UserId != GetEuid() || Fchmod(Fd(handle), 0x1c0) != 0) throw StorageError();
     }
 
+    // Root-owned and not writable by others, but readable: sshd opens authorized-keys files as the login user.
+    internal static void MakeReadableDirectory(string path)
+    {
+        using var handle = OpenDirectory(path, privateLeaf: false, createLeaf: true);
+        if (Stat(handle).UserId != GetEuid() || Fchmod(Fd(handle), 0x1ed) != 0) throw StorageError();
+    }
+
+    internal static void DeleteSystemFile(string path)
+    {
+        ValidatePath(path);
+        using var parent = OpenDirectory(Path.GetDirectoryName(path)!, privateLeaf: false, createLeaf: false);
+        if (UnlinkAt(Fd(parent), Path.GetFileName(path), 0) != 0 && Marshal.GetLastPInvokeError() != 2) throw StorageError();
+    }
+
     internal static void WriteSystemFile(string path, byte[] bytes, bool executable = false, bool publicRead = false, bool sudoers = false)
     {
         ValidatePath(path);

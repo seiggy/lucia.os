@@ -197,6 +197,7 @@ internal static class ManagedIdentity
     internal const string Ssh = """
         PermitRootLogin no
         PubkeyAuthentication yes
+        AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/lucia-authorized-keys/%u
         PasswordAuthentication yes
         KbdInteractiveAuthentication yes
         UsePAM yes
