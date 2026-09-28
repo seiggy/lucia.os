@@ -5,6 +5,7 @@ using Lucia.Homelab.Server.Telemetry;
 using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Packages;
+using Lucia.Homelab.Server.Stacks;
 
 if (args is ["--check-model-lease"])
 {
@@ -43,6 +44,7 @@ builder.AddHardwareOnboarding();
 builder.AddHardwareBoot();
 builder.Services.AddSingleton<ManagedNodeEnrollment>();
 builder.Services.AddSingleton<OwnerSshKeys>();
+builder.AddStacks();
 builder.Services.AddHostedService<ManagedNodeDns>();
 builder.Services.AddSingleton<ManagedNodeDhcp>();
 builder.Services.AddHostedService(services => services.GetRequiredService<ManagedNodeDhcp>());
@@ -70,6 +72,7 @@ app.MapHardwareOnboarding();
 app.MapHardwareBoot();
 app.MapManagedInstallation();
 app.MapOwnerSshKeys();
+app.MapStacks();
 app.MapSparkTelemetry();
 app.MapPackageUpdates();
 

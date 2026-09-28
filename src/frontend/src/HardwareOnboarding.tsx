@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import { ownerRequest } from './managementApi'
-import { formatBytes, formatCountdown, installationBlockers, isInstallableDisk, parseOnboardingSnapshot, parseManagedNodes, requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries } from './onboarding'
-import type { DevicePhase, InstallationTask, OnboardingAction, OnboardingDevice, OnboardingSnapshot, TaskPhase, ManagedNodeSummary } from './onboarding'
+import { cudaLines, cudaLineUnsupported, formatBytes, formatCountdown, installationBlockers, isInstallableDisk, parseOnboardingSnapshot, parseManagedNodes, requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries } from './onboarding'
+import type { CudaLine, DevicePhase, InstallationTask, OnboardingAction, OnboardingDevice, OnboardingSnapshot, TaskPhase, ManagedNodeSummary, NodeRuntimeSummary } from './onboarding'
 import './HardwareOnboarding.css'
 
 interface HardwareOnboardingProps {
@@ -241,7 +241,7 @@ function OwnerOnboarding({ session, refreshSession, view }: HardwareOnboardingPr
         </div>
         {devices.length > 0 ? <div className="surface hardware-list">{devices.map(device =>
           <DeviceEntry key={device.id} device={device} snapshot={snapshot} now={now} disabled={disabled} perform={perform}
-            session={session} refreshSession={refreshSession} managed={nodes.find(node => node.nodeId === device.id)} />)}</div>
+            session={session} refreshSession={refreshSession} managed={nodes.find(node => node.nodeId === device.id)} refresh={refresh} />)}</div>
           : !error && <div className="hardware-empty"><Icon name="devices" /><h3>{showDismissed ? 'No dismissed discoveries.' : dismissedCount > 0 ? 'No devices to show.' : 'No devices have been reported.'}</h3>
             <p>{showDismissed ? 'Dismissed discoveries stay rejected. Restoring a record only returns it to the device list.'
               : dismissedCount > 0 ? 'Your dismissed discoveries are kept out of this list. You can view or restore them from View dismissed.'
@@ -258,10 +258,114 @@ function OwnerOnboarding({ session, refreshSession, view }: HardwareOnboardingPr
 
 type Perform = (action: OnboardingAction, success: string) => Promise<void>
 
-function DeviceEntry({ device, snapshot, now, disabled, perform, session, refreshSession, managed }: {
+function containerSummary(runtime: NodeRuntimeSummary | null): string {
+  if (!runtime) return 'Not reported by this agent version'
+  if (runtime.state === 'Preparing') return 'Setting up Docker…'
+  if (runtime.state === 'Failed') return `Not ready. ${runtime.message ?? 'Docker setup failed.'} Lucia retries every 15 minutes.`
+  return [runtime.dockerVersion && `Docker ${runtime.dockerVersion}`, runtime.composeVersion && `Compose ${runtime.composeVersion}`]
+    .filter(Boolean).join(' · ') || 'Docker is running'
+}
+
+function GpuSection({ node, runtime, disabled, session, refreshSession, onSaved }: {
+  node: ManagedNodeSummary; runtime: NodeRuntimeSummary; disabled: boolean
+  session: AuthenticationSession; refreshSession: () => Promise<void>; onSaved: () => Promise<unknown>
+}) {
+  const saved = node.gpu
+  const single = runtime.gpus.length === 1
+  const [cudaLine, setCudaLine] = useState<CudaLine | null>(saved.cudaLine)
+  const [inference, setInference] = useState(saved.inference)
+  const [chosen, setChosen] = useState<string[]>(saved.inferenceGpus)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const pending = useRef<AbortController | null>(null)
+  useEffect(() => () => pending.current?.abort(), [])
+  const identified = runtime.gpus.flatMap(gpu => gpu.uuid ? [gpu.uuid] : [])
+  const picks = !inference ? [] : single ? identified : chosen.filter(uuid => identified.includes(uuid))
+  const changed = cudaLine !== saved.cudaLine || inference !== saved.inference
+    || picks.length !== saved.inferenceGpus.length || picks.some(uuid => !saved.inferenceGpus.includes(uuid))
+  const blocker = !inference ? null : cudaLine === null ? 'Choose a CUDA line to use this server for local AI.'
+    : !runtime.gpuContainers ? 'Containers on this server can’t use its GPUs yet, so local AI can’t use them either.'
+      : !identified.length ? 'Update the node agent so Lucia can tell this server’s GPUs apart.'
+        : !picks.length ? 'Choose at least one GPU for local AI.' : null
+  const locked = disabled || busy
+  const reasons = Object.fromEntries(cudaLines.map(({ line }) => [line, cudaLineUnsupported(line, runtime)])) as Record<CudaLine, string | null>
+  // A driver or agent problem rules out every line the same way; say it once instead of under each option.
+  const shared = reasons[12] && reasons[12] === reasons[13] ? reasons[12] : null
+  const id = `gpus-${node.nodeId}`
+  async function save() {
+    if (pending.current) return
+    const controller = new AbortController()
+    pending.current = controller
+    setBusy(true); setError(null); setNotice('')
+    try {
+      await ownerRequest(session, refreshSession, `/api/host/nodes/${node.nodeId}/gpu`, 'PUT',
+        { cudaLine, inference, inferenceGpus: picks }, controller.signal)
+      if (!controller.signal.aborted) { setNotice('GPU settings saved.'); await onSaved() }
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'GPU settings could not be saved.')
+    } finally {
+      if (pending.current === controller) pending.current = null
+      if (!controller.signal.aborted) setBusy(false)
+    }
+  }
+  return <section className="hardware-gpus" aria-labelledby={id}>
+    <h4 id={id}>GPUs</h4>
+    <ul className="hardware-detail-list">{runtime.gpus.map((gpu, index) => <li key={gpu.uuid ?? index}>
+      <strong>{gpu.model}{gpu.memoryBytes !== null && ` · ${formatBytes(gpu.memoryBytes)}`}</strong>
+      <span>Compute {gpu.computeCapability ?? 'not reported'} · {runtime.gpuContainers ? 'available to containers' : 'not available to containers yet'}</span>
+      {gpu.uuid && <span className="hardware-gpu-uuid">{gpu.uuid}</span>}
+    </li>)}</ul>
+    <p className="hardware-meta">NVIDIA driver {runtime.driverVersion ?? 'version not reported'}
+      {runtime.cudaVersion && ` · supports up to CUDA ${runtime.cudaVersion}`}</p>
+    {node.gpuWarning && <p className="status status-amber hardware-gpu-warning" role="alert"><Icon name="attention" />
+      <span>CUDA {saved.cudaLine} no longer works here. {node.gpuWarning} Apps that need it won’t be placed or moved here until then.</span></p>}
+    <fieldset className="hardware-choice" disabled={locked}><legend>CUDA line</legend>
+      <p className="hardware-meta">Apps that need CUDA use this version on this server. Lucia doesn’t change it when the driver updates.</p>
+      {shared && <p className="hardware-meta"><strong>{shared}</strong></p>}
+      {cudaLines.map(({ line, note }) => {
+        const reason = reasons[line]
+        return <label className="hardware-checkbox" key={line}>
+          <input type="radio" name={`${id}-cuda`} checked={cudaLine === line} disabled={!!reason && cudaLine !== line}
+            onChange={() => setCudaLine(line)} />
+          <span><strong>CUDA {line}</strong><span className="hardware-choice-note">{shared ? note : reason ?? note}</span></span>
+        </label>
+      })}
+      <label className="hardware-checkbox">
+        <input type="radio" name={`${id}-cuda`} checked={cudaLine === null} onChange={() => setCudaLine(null)} />
+        <span><strong>Not set</strong><span className="hardware-choice-note">Apps that need a CUDA line won’t be placed here.</span></span>
+      </label>
+    </fieldset>
+    <fieldset className="hardware-choice" disabled={locked}><legend>Local AI</legend>
+      <label className="hardware-checkbox">
+        <input type="checkbox" checked={inference} onChange={event => {
+          setInference(event.target.checked)
+          if (event.target.checked && !chosen.length) setChosen(identified)
+        }} />
+        <span><strong>Use this server for local AI</strong>
+          <span className="hardware-choice-note">Lucia’s inference service runs models on {single ? 'this GPU' : 'the GPUs you choose'}.</span></span>
+      </label>
+      {inference && !single && <div className="hardware-gpu-picks">{runtime.gpus.map((gpu, index) => <label className="hardware-checkbox" key={gpu.uuid ?? index}>
+        <input type="checkbox" disabled={!gpu.uuid} checked={!!gpu.uuid && chosen.includes(gpu.uuid)}
+          onChange={event => setChosen(list => event.target.checked ? [...list, gpu.uuid!] : list.filter(uuid => uuid !== gpu.uuid))} />
+        <span><strong>GPU {index + 1} · {gpu.model}</strong>
+          {!gpu.uuid && <span className="hardware-choice-note">Update the node agent to choose this GPU.</span>}</span>
+      </label>)}</div>}
+      {inference && <p className="hardware-meta">This version of Lucia can’t run the local AI service yet. Your choice is saved, and nothing uses {single ? 'this GPU' : 'these GPUs'} until an update adds it.</p>}
+    </fieldset>
+    {error && <p className="hardware-failure" role="alert">{error}</p>}
+    <div className="hardware-gpu-actions">
+      <button className="button secondary" type="button" disabled={locked || !changed || !!blocker} onClick={() => void save()}>
+        {busy ? 'Saving…' : 'Save GPU settings'}</button>
+      <p className="hardware-meta" role="status">{blocker && changed ? blocker : notice}</p>
+    </div>
+  </section>
+}
+
+function DeviceEntry({ device, snapshot, now, disabled, perform, session, refreshSession, managed, refresh }: {
   device: OnboardingDevice; snapshot: OnboardingSnapshot; now: number; disabled: boolean; perform: Perform
   session: AuthenticationSession; refreshSession: () => Promise<void>
-  managed?: ManagedNodeSummary
+  managed?: ManagedNodeSummary; refresh: () => Promise<unknown>
 }) {
   const hardware = device.hardware
   const task = snapshot.tasks.find(task => task.id === device.taskId)
@@ -288,8 +392,11 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
       <div><dt>Available root storage</dt><dd>{managed.status.storageAvailableBytes === null || managed.status.storageTotalBytes === null ? 'Not reported'
         : `${formatBytes(managed.status.storageAvailableBytes)} / ${formatBytes(managed.status.storageTotalBytes)}`}</dd></div>
       <div><dt>Load average</dt><dd>{managed.status.loadAverage?.toFixed(2) ?? 'Not reported'}</dd></div>
+      <div><dt>Containers</dt><dd>{containerSummary(managed.status.runtime)}</dd></div>
       <div><dt>Node certificate expires</dt><dd><DateTime value={managed.certificateExpiresAt} /></dd></div>
     </dl>}
+    {device.phase === 'Managed' && managed?.status?.runtime?.gpus.length ? <GpuSection node={managed} runtime={managed.status.runtime}
+      disabled={disabled} session={session} refreshSession={refreshSession} onSaved={refresh} /> : null}
     <details><summary>Hardware and network details</summary>
       {device.phase === 'Managed' && <p className="hardware-meta">Hardware and network addresses below were recorded during discovery. Agent readings above are reported separately.</p>}
       <dl className="fact-list">

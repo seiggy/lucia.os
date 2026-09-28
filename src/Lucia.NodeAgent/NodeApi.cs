@@ -98,6 +98,92 @@ public sealed partial class DiscoveryClient
         return value;
     }
 
+    internal async Task<NodeDesiredStack[]> StacksAsync(Guid node, string certificate, NodeStackReport report, ECDsa key,
+        CancellationToken token) =>
+        Deserialize<DesiredStacks>(await BoundAsync(node, certificate, "stacks", $"/api/nodes/{node:D}/stacks", report, key,
+            TimeSpan.FromSeconds(30), 4 * 1024 * 1024, token)).Stacks ?? [];
+
+    internal async Task<NodeRequest[]> RequestsAsync(Guid node, string certificate, ECDsa key, CancellationToken token) =>
+        Deserialize<PendingRequests>(await BoundAsync(node, certificate, "requests", $"/api/nodes/{node:D}/requests", new { }, key,
+            TimeSpan.FromSeconds(40), ResponseLimit, token)).Requests ?? [];
+
+    internal async Task AnswerAsync(Guid node, string certificate, NodeRequestResult result, ECDsa key, CancellationToken token) =>
+        await BoundAsync(node, certificate, "request-result", $"/api/nodes/{node:D}/requests/{result.RequestId:D}", result, key,
+            TimeSpan.FromSeconds(30), ResponseLimit, token);
+
+    /// <summary>
+    /// Signs a small proof that binds a larger body by its SHA-256, so the body isn't held to the 32 KiB report limit.
+    /// </summary>
+    private async Task<byte[]> BoundAsync<T>(Guid node, string certificate, string purpose, string path, T body, ECDsa key,
+        TimeSpan timeout, int limit, CancellationToken token)
+    {
+        ValidateHeartbeatDates(certificate);
+        var challenge = await NodeChallengeAsync(node, token);
+        var json = JsonSerializer.Serialize(body, AgentJson.Options);
+        var hash = Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json)));
+        var proof = SignReport(challenge, JsonSerializer.Serialize(new { nodeId = node, purpose, bodySha256 = hash }, AgentJson.Options), key);
+        var response = await SendReplyAsync(HttpMethod.Post, path,
+            JsonSerializer.SerializeToUtf8Bytes(new { certificatePem = certificate, proof, body = json }, AgentJson.Options), null, token,
+            timeout, limit);
+        if (response.Status != HttpStatusCode.OK) throw new NodeAgentException($"The server answered {purpose} with HTTP {(int)response.Status}.");
+        return response.Bytes;
+    }
+
+    /// <summary>Waits for the node a stack is leaving and hands its archive to <paramref name="consume"/> as it streams in.</summary>
+    internal async Task ReceiveTransferAsync(Guid node, string certificate, Guid move, ECDsa key,
+        Func<Stream, CancellationToken, Task> consume, CancellationToken token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/nodes/{node:D}/transfers/{move:D}");
+        request.Headers.Add("X-Lucia-Node-Proof", await TransferProofAsync(node, certificate, "transfer-receive", move, key, token));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TransferLimit);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new NodeAgentException($"The server answered the transfer with HTTP {(int)response.StatusCode}.");
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        await consume(stream, timeout.Token);
+    }
+
+    /// <summary>Uploads a stack's archive, written by <paramref name="produce"/>, for the node it's moving to.</summary>
+    internal async Task SendTransferAsync(Guid node, string certificate, Guid move, ECDsa key, long total,
+        Func<Stream, CancellationToken, Task> produce, CancellationToken token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/nodes/{node:D}/transfers/{move:D}")
+        { Content = new StreamingContent(produce) };
+        request.Content.Headers.ContentType = new("application/x-tar");
+        request.Headers.Add("X-Lucia-Node-Proof", await TransferProofAsync(node, certificate, "transfer-send", move, key, token));
+        request.Headers.Add("X-Lucia-Transfer-Bytes", total.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TransferLimit);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new NodeAgentException(response.StatusCode == HttpStatusCode.Conflict
+                ? "The receiving node didn't connect in time."
+                : $"The server answered the transfer with HTTP {(int)response.StatusCode}.");
+    }
+
+    // Moves run as long as the data takes; this only stops a connection that has silently died from holding the stack forever.
+    private static readonly TimeSpan TransferLimit = TimeSpan.FromHours(24);
+
+    private async Task<string> TransferProofAsync(Guid node, string certificate, string purpose, Guid move, ECDsa key, CancellationToken token)
+    {
+        ValidateHeartbeatDates(certificate);
+        var challenge = await NodeChallengeAsync(node, token);
+        var body = "move:" + move.ToString("D");
+        var hash = Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body)));
+        var proof = SignReport(challenge, JsonSerializer.Serialize(new { nodeId = node, purpose, bodySha256 = hash }, AgentJson.Options), key);
+        return Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new { certificatePem = certificate, proof, body }, AgentJson.Options));
+    }
+
+    private sealed class StreamingContent(Func<Stream, CancellationToken, Task> produce) : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => produce(stream, CancellationToken.None);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken token) => produce(stream, token);
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+    }
+
+    private sealed record DesiredStacks(NodeDesiredStack[]? Stacks);
+    private sealed record PendingRequests(NodeRequest[]? Requests);
     private sealed record HeartbeatResult(bool Accepted, Dictionary<string, string[]>? SshKeys = null);
     private sealed record PendingResult(string State);
 

@@ -36,6 +36,15 @@ internal static class NodeEnrollmentChecks
         check(true, "Valid managed metrics were rejected.");
         try { ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { UptimeSeconds = double.NaN }); throw new InvalidOperationException("NaN accepted"); }
         catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Invalid metrics rejected."); }
+        var runtime = new NodeRuntime("Ready", "26.1.5", "2.26.1", true, [new("nvidia", "NVIDIA CMP 170HX", 64L << 30, "8.0")]);
+        ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { Runtime = runtime });
+        check(true, "Valid container runtime was rejected.");
+        foreach (var bad in new[] { runtime with { State = "Maybe" }, runtime with { Gpus = [new("amd", "x", null, null)] },
+            runtime with { Message = "line\nbreak" }, runtime with { Gpus = [.. Enumerable.Repeat(runtime.Gpus[0], 17)] } })
+        {
+            try { ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { Runtime = bad }); throw new InvalidOperationException("Bad runtime accepted"); }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Invalid runtime rejected."); }
+        }
         var folder = Path.Combine(Path.GetTempPath(), "lucia-node-cert-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try

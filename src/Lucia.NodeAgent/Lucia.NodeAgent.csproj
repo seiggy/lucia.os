@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Lucia.NodeAgent.Checks" />
+    <EmbeddedResource Include="nvidia-container.asc" LogicalName="nvidia-container.asc" />
   </ItemGroup>
 </Project>

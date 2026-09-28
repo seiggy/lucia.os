@@ -69,11 +69,42 @@ export interface OnboardingSnapshot {
   tasks: InstallationTask[]
 }
 
+export interface NodeRuntimeSummary {
+  state: 'Preparing' | 'Ready' | 'Failed'; dockerVersion: string | null; composeVersion: string | null; gpuContainers: boolean
+  gpus: { vendor: string; model: string; memoryBytes: number | null; computeCapability: string | null; uuid: string | null }[]
+  message: string | null; driverVersion: string | null; cudaVersion: string | null
+}
+
 export interface ManagedNodeSummary {
   nodeId: string; hostname: string; state: 'Online' | 'Stale' | 'AwaitingHeartbeat'
   certificateExpiresAt: string; lastSeenAt: string | null
   status: { osVersion: string; uptimeSeconds: number; loadAverage: number | null; memoryTotalBytes: number
-    memoryAvailableBytes: number; storageTotalBytes: number | null; storageAvailableBytes: number | null } | null
+    memoryAvailableBytes: number; storageTotalBytes: number | null; storageAvailableBytes: number | null
+    runtime: NodeRuntimeSummary | null } | null
+  gpu: NodeGpuSettings; gpuWarning: string | null
+}
+
+export interface NodeGpuSettings { cudaLine: CudaLine | null; inference: boolean; inferenceGpus: string[] }
+export type CudaLine = 12 | 13
+export const cudaLines: { line: CudaLine; minimumCompute: number; note: string }[] = [
+  { line: 13, minimumCompute: 7.5, note: 'Newest. Needs compute 7.5 or newer (RTX 20 series and later).' },
+  { line: 12, minimumCompute: 5.0, note: 'For older GPUs, back to compute 5.0 (GTX 900 series).' },
+]
+
+/** Mirrors the server's CudaLines.Unsupported: why this server can't use the line, or null when it can. */
+export function cudaLineUnsupported(line: CudaLine, runtime: NodeRuntimeSummary | null): string | null {
+  const minimum = cudaLines.find(item => item.line === line)!.minimumCompute
+  if (!runtime?.gpus.length) return 'This server hasn’t reported an NVIDIA GPU.'
+  const supported = runtime.cudaVersion?.match(/^(\d+)\.\d+$/)
+  if (!supported) return 'The NVIDIA driver hasn’t reported which CUDA versions it supports. Update the node agent or check the driver.'
+  if (Number(supported[1]) < line) return `The NVIDIA driver supports up to CUDA ${runtime.cudaVersion}. Update the driver to use CUDA ${line}.`
+  for (const gpu of runtime.gpus) {
+    const compute = Number(gpu.computeCapability)
+    if (!gpu.computeCapability || !Number.isFinite(compute))
+      return `The ${gpu.model} didn’t report its compute capability, so Lucia can’t confirm it supports CUDA ${line}.`
+    if (compute < minimum) return `CUDA ${line} doesn’t support the ${gpu.model} (compute ${gpu.computeCapability}). It needs ${minimum.toFixed(1)} or newer.`
+  }
+  return null
 }
 
 const invalid = () => new Error('Lucia returned incomplete or invalid hardware status. No installation controls have been enabled.')
@@ -221,8 +252,27 @@ export function parseManagedNodes(value: unknown): ManagedNodeSummary[] {
           || storageTotal !== null && storageAvailable !== null && storageAvailable > storageTotal) throw invalid()
         return { osVersion: text(status.osVersion), uptimeSeconds: nonnegative(status.uptimeSeconds),
           loadAverage: nullable(status.loadAverage, nonnegative), memoryTotalBytes: total, memoryAvailableBytes: available,
-          storageTotalBytes: storageTotal, storageAvailableBytes: storageAvailable }
-      }) }
+          storageTotalBytes: storageTotal, storageAvailableBytes: storageAvailable,
+          runtime: status.runtime === undefined ? null : nullable(status.runtime, entry => {
+            const runtime = object(entry)
+            return { state: enumeration(runtime.state, ['Preparing', 'Ready', 'Failed'] as const),
+              dockerVersion: nullable(runtime.dockerVersion, text), composeVersion: nullable(runtime.composeVersion, text),
+              gpuContainers: boolean(runtime.gpuContainers), message: optionalText(runtime.message ?? null),
+              driverVersion: nullable(runtime.driverVersion ?? null, text), cudaVersion: nullable(runtime.cudaVersion ?? null, text),
+              gpus: array(runtime.gpus, entry => {
+                const gpu = object(entry)
+                return { vendor: text(gpu.vendor), model: text(gpu.model), memoryBytes: nullable(gpu.memoryBytes, integer),
+                  computeCapability: nullable(gpu.computeCapability, text), uuid: nullable(gpu.uuid ?? null, text) }
+              }) }
+          }) }
+      }),
+      gpu: node.gpu === undefined || node.gpu === null ? { cudaLine: null, inference: false, inferenceGpus: [] } : (() => {
+        const gpu = object(node.gpu)
+        return { cudaLine: nullable(gpu.cudaLine, line => { if (line !== 12 && line !== 13) throw invalid(); return line as CudaLine }),
+          inference: boolean(gpu.inference),
+          inferenceGpus: array(gpu.inferenceGpus, text) }
+      })(),
+      gpuWarning: nullable(node.gpuWarning ?? null, text) }
   })
 }
 

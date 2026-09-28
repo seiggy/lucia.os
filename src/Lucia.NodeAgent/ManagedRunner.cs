@@ -28,7 +28,8 @@ internal static class ManagedRunner
         if (disks.BootId() == plan.BootId)
             throw new NodeAgentException("Managed enrollment is not allowed in the installation boot.");
         disks.VerifyInstalledMount(new HardwareInspector().Inspect(), plan, "/");
-        if (DiskSafety.Read("/proc/sys/kernel/hostname", 128).Trim() != plan.Hostname)
+        // /etc/hostname, not the kernel name: dhcpcd may rewrite the latter to the DHCP-supplied FQDN.
+        if (DiskSafety.Read("/etc/hostname", 128).Trim() != plan.Hostname)
             throw new NodeAgentException("The installed hostname does not match the approved node identity.");
         using var key = state.LoadExistingKey();
         var csrBytes = state.ReadPrivate("node.csr", 8192, optional: true);
@@ -63,6 +64,10 @@ internal static class ManagedRunner
             }
             if (configuration is null) await Task.Delay(TimeSpan.FromSeconds(30), token);
         }
+        _ = Task.Run(() => NodeRuntime.RunAsync(token), token);
+        // The closures read the current configuration, so renewed certificates carry over.
+        _ = Task.Run(() => StackRunner.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
+        _ = Task.Run(() => NodeRequests.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
         var nextRenewal = DateTimeOffset.MinValue;
         var renewalFailures = 0;
         var directoryConfigured = false;
@@ -229,6 +234,6 @@ internal static class ManagedRunner
         var memoryAvailable = Memory("MemAvailable");
         if (memoryAvailable > memoryTotal) memoryAvailable = null;
         return new(plan.DeviceId, plan.Hostname, version, FirstNumber("uptime"), FirstNumber("loadavg"),
-            memoryTotal, memoryAvailable, total, available);
+            memoryTotal, memoryAvailable, total, available, NodeRuntime.Current);
     }
 }

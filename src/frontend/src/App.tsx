@@ -12,6 +12,7 @@ import { UniFiSettings } from './UniFiSettings'
 import { SshKeySettings } from './SshKeySettings'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
+import { Stacks } from './Stacks'
 import { routeDestination } from './navigation'
 import { useAuthentication } from './useAuthentication'
 import { inferenceConnection } from './authentication'
@@ -176,6 +177,7 @@ function App() {
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
       : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
+      : route.page === 'apps' ? <Stacks key={`${route.view}-${route.name ?? ''}`} session={session} refreshSession={authentication.refresh} view={route.view} name={route.name} />
       : route.page === 'settings' ? settings()
         : route.page === 'unifi-settings' ? <UniFiSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />

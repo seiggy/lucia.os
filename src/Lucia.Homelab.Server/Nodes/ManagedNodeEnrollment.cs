@@ -15,7 +15,13 @@ public sealed record NodeEnrollmentPayload(Guid NodeId, Guid TaskId, string CsrP
 public sealed record NodeEnrollmentSubmission(Guid TaskId, SignedDiscovery Proof);
 public sealed record NodeSignedSubmission(string CertificatePem, SignedDiscovery Proof);
 public sealed record NodeHeartbeat(Guid NodeId, string Hostname, string OsVersion, double UptimeSeconds,
-    double? LoadAverage, long MemoryTotalBytes, long MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes);
+    double? LoadAverage, long MemoryTotalBytes, long MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
+    NodeRuntime? Runtime = null);
+public sealed record NodeGpu(string Vendor, string Model, long? MemoryBytes, string? ComputeCapability, string? Uuid = null);
+/// <summary>The node's container host: Docker, Compose and whether containers can use its GPUs. <c>CudaVersion</c> is the
+/// newest CUDA runtime the NVIDIA driver supports.</summary>
+public sealed record NodeRuntime(string State, string? DockerVersion, string? ComposeVersion, bool GpuContainers, NodeGpu[] Gpus,
+    string? Message = null, string? DriverVersion = null, string? CudaVersion = null);
 public sealed record NodeEnrollmentConfiguration(string Hostname, string CertificatePem, string CaPem, string LdapUri,
     string LdapBaseDn, string LdapBindDn, string LdapBindPassword, string OwnerGroupDn)
 {
@@ -27,8 +33,9 @@ internal sealed record NativeNodeResponse(int SchemaVersion, Guid NodeId, Guid? 
     bool Success, string Message, DateTimeOffset CheckedAt, NodeEnrollmentConfiguration? Configuration);
 internal sealed record ManagedNodeRecord(Guid NodeId, Guid TaskId, string Hostname, string PublicKeyFingerprint,
     string CertificatePem, DateTimeOffset CertificateExpiresAt, DateTimeOffset? LastSeenAt, NodeHeartbeat? Status,
-    string? Address = null);
+    string? Address = null, NodeGpuSettings? Gpu = null);
 public sealed record ManagedNodeAddress(string Hostname, string Address, Guid NodeId = default);
+public sealed record ManagedNodeFacts(Guid NodeId, string Hostname, bool Online, NodeHeartbeat? Status, NodeGpuSettings? Gpu = null);
 
 public sealed class ManagedNodeEnrollment(
     HardwareOnboardingStore onboarding, IOptions<HardwareOnboardingOptions> options, HostAuthenticationOptions authentication)
@@ -46,12 +53,46 @@ public sealed class ManagedNodeEnrollment(
         var records = await Records(ct);
         return records.Select(node => new { node.NodeId, node.TaskId, node.Hostname, node.CertificateExpiresAt, node.LastSeenAt,
             state = node.LastSeenAt is null ? "AwaitingHeartbeat" : node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2) ? "Online" : "Stale",
-            node.Address, node.Status }).ToArray();
+            node.Address, node.Status, gpu = node.Gpu ?? NodeGpuSettings.None,
+            // A driver change can drop support for the pinned line; the owner decides what to do about it.
+            gpuWarning = node.Gpu?.CudaLine is { } line && node.Status?.Runtime is { } runtime ? CudaLines.Unsupported(line, runtime) : null }).ToArray();
     }
 
     public async Task<ManagedNodeAddress[]> Addresses(CancellationToken ct) =>
         (await Records(ct)).Where(node => node.Address is not null)
             .Select(node => new ManagedNodeAddress(node.Hostname, node.Address!, node.NodeId)).ToArray();
+
+    public async Task<(Guid NodeId, string Hostname)[]> Names(CancellationToken ct) =>
+        (await Records(ct)).Select(node => (node.NodeId, node.Hostname)).ToArray();
+
+    /// <summary>What placement needs to know about each node: its last report and whether it's checking in.</summary>
+    public async Task<ManagedNodeFacts[]> Facts(CancellationToken ct) =>
+        (await Records(ct)).Select(node => new ManagedNodeFacts(node.NodeId, node.Hostname,
+            node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2), node.Status, node.Gpu)).ToArray();
+
+    public async Task<NodeGpuSettings> SaveGpu(Guid id, SaveNodeGpuRequest request, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var path = NodePath(id);
+            DomainOnboardingStore.RejectLinks(path);
+            if (!File.Exists(path)) throw new HardwareOnboardingException(404, "unknown_node", "That server isn't managed by Lucia.");
+            var node = Read<ManagedNodeRecord>(path);
+            var settings = CudaLines.Validate(request, node.Status?.Runtime);
+            await DomainOnboardingStore.WriteJson(path, node with { Gpu = settings }, ct);
+            return settings;
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Checks a node's current certificate and signing key; returns its approved hostname.</summary>
+    public async Task<string> Authenticate(Guid id, string certificatePem, string fingerprint, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try { return Verify(id, certificatePem, fingerprint).Hostname; }
+        finally { _gate.Release(); }
+    }
 
     private async Task<ManagedNodeRecord[]> Records(CancellationToken ct)
     {
@@ -167,7 +208,7 @@ public sealed class ManagedNodeEnrollment(
                         if (existing is not null && (existing.TaskId != payload.TaskId || existing.Hostname != hostname
                             || existing.PublicKeyFingerprint != fingerprint)) throw Denied();
                         var record = new ManagedNodeRecord(payload.NodeId, payload.TaskId, hostname, fingerprint,
-                            configuration.CertificatePem, expiry, existing?.LastSeenAt, existing?.Status, existing?.Address);
+                            configuration.CertificatePem, expiry, existing?.LastSeenAt, existing?.Status, existing?.Address, existing?.Gpu);
                         await DomainOnboardingStore.WriteJson(NodePath(payload.NodeId), record, ct);
                         return configuration;
                     }
@@ -283,6 +324,25 @@ public sealed class ManagedNodeEnrollment(
                 || report.StorageTotalBytes > 0 && report.StorageAvailableBytes >= 0 && report.StorageAvailableBytes <= report.StorageTotalBytes),
             "Managed-node metrics are invalid.");
         HardwareInventoryValidation.Text(report.OsVersion, 256, true);
+        if (report.Runtime is { } runtime)
+        {
+            HardwareInventoryValidation.Require(runtime.State is "Preparing" or "Ready" or "Failed" && runtime.Gpus is { Length: <= 16 }
+                && runtime.Gpus.All(gpu => gpu is { Vendor: "nvidia" } && (gpu.MemoryBytes is null or > 0)
+                    && (gpu.Uuid is null || System.Text.RegularExpressions.Regex.IsMatch(gpu.Uuid,
+                        @"\AGPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z")))
+                && runtime.Gpus.Select(gpu => gpu.Uuid).OfType<string>().CountBy(uuid => uuid).All(entry => entry.Value == 1)
+                && (runtime.CudaVersion is null || System.Text.RegularExpressions.Regex.IsMatch(runtime.CudaVersion, @"\A[0-9]{1,2}\.[0-9]{1,2}\z")),
+                "Managed-node runtime is invalid.");
+            HardwareInventoryValidation.Text(runtime.DockerVersion, 64);
+            HardwareInventoryValidation.Text(runtime.ComposeVersion, 64);
+            HardwareInventoryValidation.Text(runtime.Message, 512);
+            HardwareInventoryValidation.Text(runtime.DriverVersion, 32);
+            foreach (var gpu in runtime.Gpus)
+            {
+                HardwareInventoryValidation.Text(gpu.Model, 128, true);
+                HardwareInventoryValidation.Text(gpu.ComputeCapability, 16);
+            }
+        }
     }
 
     private static HardwareOnboardingException Denied() => new(403, "node_identity_invalid",

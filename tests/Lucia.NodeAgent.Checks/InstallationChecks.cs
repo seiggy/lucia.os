@@ -485,6 +485,70 @@ internal static class InstallationChecks
         var unavailable = ManagedRunner.ReadMetrics(plan, metricsProc, os + "-missing", () => throw new IOException());
         Check(unavailable.LoadAverage is null && unavailable.MemoryTotalBytes is null && unavailable.StorageTotalBytes is null && unavailable.OsVersion is null,
             "Unavailable metrics were invented.");
+        var gpus = NodeRuntime.ParseNvidiaGpus("NVIDIA CMP 170HX, 65536, 8.0, GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981\n"
+            + "NVIDIA GeForce RTX 4090, [N/A], [N/A], [N/A]\nbroken line\n");
+        Check(gpus.Length == 2 && gpus[0] == new GpuReport("nvidia", "NVIDIA CMP 170HX", 65536L * 1024 * 1024, "8.0", "GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981")
+            && gpus[1] is { Model: "NVIDIA GeForce RTX 4090", MemoryBytes: null, ComputeCapability: null, Uuid: null }, "nvidia-smi GPU parsing invented or lost values.");
+        Check(NodeRuntime.ParseNvidiaHeader("| NVIDIA-SMI 610.43.03    KMD Version: 610.43.03     CUDA UMD Version: 13.3     |") == ("610.43.03", "13.3")
+            && NodeRuntime.ParseNvidiaHeader("| NVIDIA-SMI 550.54.14    Driver Version: 550.54.14      CUDA Version: 12.4     |") == ("550.54.14", "12.4")
+            && NodeRuntime.ParseNvidiaHeader("NVIDIA-SMI has failed") == (null, null), "nvidia-smi driver or CUDA version parsing is wrong.");
+        Check(NodeRuntime.DaemonConfig.Contains("172.16.0.0/12", StringComparison.Ordinal)
+            && System.Text.Json.JsonDocument.Parse(NodeRuntime.DaemonConfig).RootElement.GetProperty("log-driver").GetString() == "local",
+            "Docker daemon config must keep container networks off home LAN ranges.");
+
+        var tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+            + "   0: 0100007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0 0 1 1\n"
+            + "   1: 00000000:7E90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0 0 2 1\n"
+            + "   2: F100A8C0:0016 0B00A8C0:D431 01 00000000:00000000 00:00000000 00000000   0 0 3 1\n";
+        var tcpListeners = StackRunner.ParseListeners(tcp, "tcp").ToArray();
+        Check(tcpListeners.SequenceEqual([new NodeListener("tcp", "127.0.0.1", 53), new NodeListener("tcp", "0.0.0.0", 32400)]),
+            "TCP listener parsing lost a listener or reported an established connection.");
+        var tcp6 = "  sl  local_address rem_address st\n   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A\n"
+            + "   1: 00000000000000000000000001000000:0277 00000000000000000000000000000000:0000 0A\n";
+        Check(StackRunner.ParseListeners(tcp6, "tcp").SequenceEqual([new NodeListener("tcp", "::", 8080), new NodeListener("tcp", "::1", 631)]),
+            "IPv6 listener addresses were decoded in the wrong byte order.");
+        var udp = "  sl  local_address rem_address   st\n   0: 00000000:076C 00000000:0000 07\n   1: F100A8C0:A1B2 0B00A8C0:0035 01\n";
+        Check(StackRunner.ParseListeners(udp, "udp").SequenceEqual([new NodeListener("udp", "0.0.0.0", 1900)]),
+            "UDP parsing must report only unconnected bound sockets.");
+        var containerId = new string('c', 64);
+        var owned = StackRunner.ParseListeners(tcp.Replace("0 0 3 1", "0 0 3 1\n   3: 00000000:0801 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0 0 0 1"), "tcp",
+            new Dictionary<long, SocketOwner> { [2] = new("plex", containerId) }).ToArray();
+        Check(owned.SequenceEqual([new NodeListener("tcp", "127.0.0.1", 53, "kernel"), new NodeListener("tcp", "0.0.0.0", 32400, "plex", containerId),
+            new NodeListener("tcp", "0.0.0.0", 2049, "kernel")]), "Listener owners must come from the socket inode; unowned sockets are the kernel's.");
+        Check(StackRunner.CgroupContainer($"0::/system.slice/docker-{containerId}.scope\n") == containerId && StackRunner.CgroupContainer($"12:pids:/docker/{containerId}\n") == containerId
+            && StackRunner.CgroupContainer("0::/system.slice/ssh.service\n") is null, "Container cgroups were not recognized.");
+
+        var ps = """
+            {"Command":"\"/init\"","ID":"%ID%","Image":"lscr.io/linuxserver/sonarr:latest","Labels":"com.docker.compose.project=lucia-media,com.docker.compose.service=sonarr,org.opencontainers.image.title=sonarr","Names":"lucia-media-sonarr-1","Ports":"0.0.0.0:8989->8989/tcp","State":"running","Status":"Up 3 hours (healthy)"}
+            {"ID":"%ID2%","Image":"hello-world","Labels":"","Names":"eager_turing","Ports":"","State":"exited","Status":"Exited (137) 2 days ago"}
+            not json
+            {"ID":"../../etc","Image":"x","Names":"bad","State":"running"}
+            """.Replace("%ID%", new string('a', 64)).Replace("%ID2%", new string('b', 64));
+        var containers = StackRunner.ParseContainers(ps);
+        Check(containers.Length == 2 && containers[0] is { Project: "lucia-media", Service: "sonarr", State: "running", Ports: "0.0.0.0:8989->8989/tcp" }
+            && containers[1] is { Project: null, Service: null, Name: "eager_turing" }, "docker ps parsing lost or invented container fields.");
+        Check(StackRunner.Health(containers[0].Status) == "healthy" && StackRunner.ExitCode(containers[1].Status) == 137
+            && StackRunner.ExitCode(containers[0].Status) is null, "Container health or exit code parsing is wrong.");
+
+        var composeConfig = """
+            {"name":"lucia-media","services":{},"volumes":{"config":{"name":"lucia-media_config"},"shared":{"name":"shared","external":true},
+             "nfs":{"name":"lucia-media_nfs","driver":"local","driver_opts":{"type":"nfs"}},"plugin":{"name":"p","driver":"rexray"}}}
+            """;
+        var redirect = StackRunner.VolumeOverride(composeConfig, "/srv/lucia/stacks/media");
+        Check(redirect is { } value && value.Paths.SequenceEqual(["/srv/lucia/stacks/media/volumes/config"])
+            && System.Text.Json.JsonDocument.Parse(value.Json).RootElement.GetProperty("volumes").EnumerateObject().Select(item => item.Name)
+                .SequenceEqual(["config"])
+            && value.Json.Contains("\"device\":\"/srv/lucia/stacks/media/volumes/config\"", StringComparison.Ordinal),
+            "Only plain named volumes may be redirected to the stack directory.");
+        Check(StackRunner.VolumeOverride("""{"services":{}}""", "/srv/lucia/stacks/x") is null, "A stack without volumes needs no override.");
+
+        var merged = NodeRequests.MergeLogs("2024-05-01T10:00:00.5Z out two\n2024-05-01T10:00:00.123456789Z \u001b[32mout one\u001b[0m\n",
+            "2024-05-01T10:00:00.2Z err\u0007 one\n");
+        Check(merged == "2024-05-01T10:00:00.123456789Z out one\n2024-05-01T10:00:00.2Z err one\n2024-05-01T10:00:00.5Z out two",
+            "Log merging must order by timestamp and strip terminal escapes.");
+        var refused = await NodeRequests.AnswerAsync(new(Guid.NewGuid(), "exec", "plex", 10), CancellationToken.None);
+        var unsafeName = await NodeRequests.AnswerAsync(new(Guid.NewGuid(), "logs", "-f", 10), CancellationToken.None);
+        Check(refused is { Success: false } && unsafeName is { Success: false }, "The node accepted a request outside the allowlist.");
 
         if (OperatingSystem.IsLinux())
             count += await DiskChecksAsync(fixture, report, plan, credentials, grant, challenge, identity);

@@ -275,7 +275,9 @@ var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
     .WithArgs("-c",
         "while ! (cd /certificates && sha256sum -c ready.sha256 >/dev/null 2>&1); do sleep 1; done; " +
         "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.ldaps.address=:8636 " +
-        (hostSettings is not null ? "--entrypoints.host.address=:8444 " : "") +
+        // No read timeout on the host entrypoint: a stack move's upload can wait minutes for its receiver and then stream for
+        // hours. Kestrel still enforces header timeouts and minimum body rates on every other route.
+        (hostSettings is not null ? "--entrypoints.host.address=:8444 --entrypoints.host.transport.respondingTimeouts.readTimeout=0 " : "") +
         "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
     .WithBindMount(StatePath("gateway"), "/config", isReadOnly: true)
     .WithBindMount(StatePath("certificates"), "/certificates", isReadOnly: true)

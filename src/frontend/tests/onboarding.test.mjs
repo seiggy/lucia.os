@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   formatBytes, formatCountdown, installationBlockers, isInstallableDisk, onboardingRequest, parseOnboardingSnapshot,
-  requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries, parseManagedNodes,
+  requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries, parseManagedNodes, cudaLineUnsupported,
 } from '../.checks/onboarding.js'
 
 const now = Date.parse('2026-09-22T16:00:00Z')
@@ -120,9 +120,34 @@ const read = onboardingRequest(owner, { kind: 'snapshot' })
 assert.equal(onboardingRequest(owner, { kind: 'managed' }).url, '/api/host/nodes')
 const managedNode = { nodeId: deviceId, hostname: 'dev-server', state: 'Online', certificateExpiresAt: expiry, lastSeenAt: device.lastSeenAt,
   status: { osVersion: 'Debian GNU/Linux 13', uptimeSeconds: 60, loadAverage: 0.3, memoryTotalBytes: 8192, memoryAvailableBytes: 4096,
-    storageTotalBytes: 102400, storageAvailableBytes: 51200 } }
+    storageTotalBytes: 102400, storageAvailableBytes: 51200, runtime: null },
+  gpu: { cudaLine: null, inference: false, inferenceGpus: [] }, gpuWarning: null }
 assert.deepEqual(parseManagedNodes([managedNode]), [managedNode])
+const { gpu: _gpu, gpuWarning: _warning, ...olderServer } = managedNode
+assert.deepEqual(parseManagedNodes([olderServer]), [managedNode])
+const pinned = { ...managedNode, gpu: { cudaLine: 13, inference: true, inferenceGpus: ['GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981'] }, gpuWarning: 'Update the driver.' }
+assert.deepEqual(parseManagedNodes([pinned]), [pinned])
+assert.throws(() => parseManagedNodes([{ ...pinned, gpu: { ...pinned.gpu, cudaLine: 11 } }]))
+const { runtime: _omitted, ...olderStatus } = managedNode.status
+assert.deepEqual(parseManagedNodes([{ ...managedNode, status: olderStatus }]), [managedNode])
+const runtime = { state: 'Ready', dockerVersion: '26.1.5', composeVersion: '2.26.1', gpuContainers: true, message: null,
+  driverVersion: '610.43.03', cudaVersion: '13.3',
+  gpus: [{ vendor: 'nvidia', model: 'NVIDIA CMP 170HX', memoryBytes: 68719476736, computeCapability: '8.0', uuid: 'GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981' }] }
+const gpuNode = { ...managedNode, status: { ...managedNode.status, runtime } }
+assert.deepEqual(parseManagedNodes([gpuNode]), [gpuNode])
+const { driverVersion: _driver, cudaVersion: _cuda, ...olderRuntime } = runtime
+const { uuid: _uuid, ...olderGpu } = runtime.gpus[0]
+assert.deepEqual(parseManagedNodes([{ ...gpuNode, status: { ...gpuNode.status, runtime: { ...olderRuntime, gpus: [olderGpu] } } }])[0].status.runtime,
+  { ...runtime, driverVersion: null, cudaVersion: null, gpus: [{ ...olderGpu, uuid: null }] })
+assert.throws(() => parseManagedNodes([{ ...gpuNode, status: { ...gpuNode.status, runtime: { ...runtime, state: 'Healthy' } } }]))
 assert.throws(() => parseManagedNodes([{ ...managedNode, state: 'InventedHealthy' }]))
+const cudaRuntime = { ...runtime, cudaVersion: '13.3', gpus: [{ ...runtime.gpus[0], computeCapability: '12.1' }] }
+assert.equal(cudaLineUnsupported(13, cudaRuntime), null)
+assert.match(cudaLineUnsupported(13, { ...cudaRuntime, cudaVersion: '12.8' }), /supports up to CUDA 12\.8/)
+assert.match(cudaLineUnsupported(13, { ...cudaRuntime, gpus: [{ ...cudaRuntime.gpus[0], computeCapability: '6.1' }] }), /needs 7\.5/)
+assert.equal(cudaLineUnsupported(12, { ...cudaRuntime, gpus: [{ ...cudaRuntime.gpus[0], computeCapability: '6.1' }] }), null)
+assert.notEqual(cudaLineUnsupported(12, { ...cudaRuntime, cudaVersion: null }), null)
+assert.notEqual(cudaLineUnsupported(12, { ...cudaRuntime, gpus: [] }), null)
 assert.throws(() => parseManagedNodes([{ ...managedNode, status: { ...managedNode.status, memoryAvailableBytes: 9000 } }]))
 assert.equal(read.url, '/api/host/onboarding')
 assert.deepEqual(read.init, { method: 'GET', credentials: 'same-origin', cache: 'no-store' })

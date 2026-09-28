@@ -33,7 +33,8 @@ internal sealed record ManagedConfiguration(string Hostname, string CertificateP
     string LdapBaseDn, string LdapBindDn, string LdapBindPassword, string OwnerGroupDn);
 internal sealed record ManagedOrigin(string Server);
 internal sealed record NodeMetrics(Guid NodeId, string Hostname, string? OsVersion, double? UptimeSeconds,
-    double? LoadAverage, long? MemoryTotalBytes, long? MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes);
+    double? LoadAverage, long? MemoryTotalBytes, long? MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
+    RuntimeReport? Runtime = null);
 
 public sealed class NodeAgentException(string message) : Exception(message);
 

@@ -58,7 +58,7 @@
 .hardware-recovery-key { display: block; margin-top: 20px; font-size: 14px; font-weight: 650; }
 .hardware-recovery-key textarea { display: block; width: 100%; min-width: 0; padding: 12px; margin-top: 8px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; resize: vertical; font: inherit; }
 .hardware-key-fingerprint { overflow-wrap: anywhere; }
-.hardware-recovery input[type="radio"] { width: 20px; min-height: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
+.hardware-onboarding input[type="radio"] { width: 20px; min-height: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
 .hardware-onboarding input:disabled, .hardware-onboarding select:disabled { cursor: not-allowed; background: var(--surface-subtle); }
 .hardware-selected-disk { margin-top: 16px; font-size: 14px; }
 .hardware-selected-disk span { display: block; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
@@ -66,6 +66,21 @@
 .hardware-erasure p { font-size: 14px; }
 .hardware-checkbox { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; margin-top: 20px; font-size: 14px; cursor: pointer; }
 .hardware-checkbox input { width: 20px; height: 20px; flex-shrink: 0; margin: 2px 0 0; accent-color: var(--accent); }
+.hardware-checkbox:has(input:disabled) { cursor: not-allowed; }
+.hardware-checkbox strong { font-weight: 600; }
+.hardware-gpus { border-top: 1px solid var(--line); margin-top: 26px; }
+.hardware-gpu-uuid { font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.status.hardware-gpu-warning { display: flex; align-items: flex-start; margin-top: 14px; max-width: 72ch; }
+.hardware-gpu-warning svg { flex-shrink: 0; margin-top: 2px; }
+.hardware-choice { border: 0; padding: 0; margin: 24px 0 0; min-width: 0; }
+.hardware-choice legend { padding: 0; font-size: 14px; font-weight: 650; }
+.hardware-choice > .hardware-meta { max-width: 72ch; }
+.hardware-choice .hardware-checkbox { margin-top: 10px; }
+.hardware-choice-note { display: block; margin-top: 2px; color: var(--muted); }
+.hardware-gpu-picks { padding-left: 32px; margin-top: 6px; }
+.hardware-choice .hardware-gpu-picks .hardware-checkbox { margin-top: 0; }
+.hardware-gpu-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 22px; }
+.hardware-gpu-actions .hardware-meta { margin: 0; }
 .hardware-confirmation { max-width: 300px; margin: 16px 0 22px; }
 .hardware-reject { display: flex; align-items: center; justify-content: space-between; gap: 24px; border-top: 1px solid var(--line); margin-top: 26px; padding-top: 24px; }
 .hardware-reject p { color: var(--muted); font-size: 14px; max-width: 52ch; }

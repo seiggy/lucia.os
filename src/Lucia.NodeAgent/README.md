@@ -212,8 +212,74 @@ issues 24-hour node leaves; no CA claims or defaults are expanded. Below six
 hours remaining validity the agent requests renewal with the same CSR/key. Pending or failed renewals
 back off from 30 seconds to 15 minutes while heartbeats continue with the valid
 identity. Invalid identities fail closed; expired identities are restricted to
-the recovery-renewal path below. This path executes no LLM,
-cloud workload, additional server command, or package update.
+the recovery-renewal path below. This path executes no LLM, cloud workload or
+additional server command.
+
+Once enrolled, every managed node becomes a container host. Every 15 minutes the
+agent checks that Debian's `docker.io`, `docker-cli` and `docker-compose` (Compose
+v2) packages
+are installed and installs any that are missing (`apt-get install
+--no-install-recommends`). `/etc/docker/daemon.json` is Lucia-owned: container
+networks come from `172.16.0.0/12` in /24s (Docker's own fallback,
+`192.168.0.0/16`, collides with home LANs) and logs use the size-capped `local`
+driver. When an NVIDIA driver is loaded (`/proc/driver/nvidia/version`), the
+agent also adds NVIDIA's container-toolkit repository, signed by the key embedded
+in the agent (`nvidia-container.asc`, fingerprint
+`C95B321B61E88C1809C4F759DDCAE044F796ECB0`), installs `nvidia-container-toolkit`
+and restarts Docker so that Compose GPU reservations work. The GPU driver stays
+owner-managed. Heartbeats carry the result: the Docker and Compose versions, the
+NVIDIA GPUs from `nvidia-smi` (model, memory, compute capability, UUID), the driver
+version and the newest CUDA version it supports, whether
+containers can use them, and the last setup failure. The commands and their
+arguments are fixed; nothing comes from the server.
+
+### Stacks
+
+Once Docker is ready, the agent syncs **stacks** with Lucia every 20 seconds.
+It reports:
+
+- the state of its stacks;
+- every container on the node, not only Lucia's;
+- every listening TCP socket and bound UDP socket, from `/proc/net`.
+
+Lucia answers with the compose file, env file and desired state of each stack
+placed on this node.
+
+**This is a deliberate trust change: a Lucia owner can run any container on a
+managed node, so owner access to Lucia is root on every node.** Compose runs as
+root, and a compose file can mount the host filesystem or run privileged
+containers. The requests are authenticated like heartbeats: node certificate,
+node key and a fresh challenge. The signed proof binds the request body by
+SHA-256, so bodies aren't held to the 32 KiB report limit.
+
+Each stack lives in `/srv/lucia/stacks/<name>/` (root-only, `0700`):
+
+- `compose.yaml`: the owner's file.
+- `.env` (`0600`): used for `${VAR}` interpolation only. To pass the variables
+  into containers, the compose file must say `env_file: .env`.
+- `compose.lucia.json`: points each plain named volume at a bind directory under
+  `volumes/<key>`, so data is visible on disk and easy to back up. External
+  volumes and volumes with their own driver or options are left alone.
+- `.lucia-applied.json`: the revision and action counters last applied.
+
+The compose project is `lucia-<name>`. Actions map to Compose commands:
+
+| Action | Compose command |
+|---|---|
+| Stopped | `down --remove-orphans` |
+| Update | `pull`, then `up -d` |
+| Restart | `up -d --force-recreate` |
+| Any other change | `up -d --remove-orphans` |
+
+A failed apply is reported with its error and retried after two minutes. When a
+stack is deleted in Lucia, the node takes it down and deletes its compose and env
+files. Its data directories are kept.
+
+The agent also holds a long-poll open for **read-only requests**. Today the only
+one is container logs: `docker logs --tail N --timestamps`, capped at 5000
+lines. The agent merges stdout and stderr, strips terminal escapes and returns
+at most 96 KiB. Unknown request kinds, container names that aren't plain Docker
+names, and out-of-range tails are refused. The server can't send commands.
 
 If a previously enrolled node's 24-hour leaf expires while the controller is
 offline, its cached certificate is used **only** for recovery renewal, never

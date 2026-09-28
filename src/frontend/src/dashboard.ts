@@ -26,6 +26,7 @@ export type Route =
   | { page: 'unifi-settings' }
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
+  | { page: 'apps'; view: 'list' | 'containers' | 'new' | 'app'; name?: string }
   | { page: 'ai' }
   | { page: 'ai-keys' }
   | { page: 'ai-models'; view?: 'library' | 'find' }
@@ -46,6 +47,12 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 1 && parts[0] === 'devices') return { page: 'devices' }
   if (parts.length === 1 && parts[0] === 'tasks') return { page: 'tasks' }
   if (parts.length === 1 && parts[0] === 'updates') return { page: 'updates' }
+  if (parts[0] === 'apps' && parts.length === 1) return { page: 'apps', view: 'list' }
+  if (parts[0] === 'apps' && parts.length === 2) {
+    if (parts[1] === 'containers') return { page: 'apps', view: 'containers' }
+    if (parts[1] === 'new') return { page: 'apps', view: 'new' }
+    if (/^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(parts[1])) return { page: 'apps', view: 'app', name: parts[1] }
+  }
   return { page: 'not-found' }
 }
 

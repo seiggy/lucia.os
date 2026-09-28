@@ -12,7 +12,7 @@ export interface Destination {
 }
 export const areas: { id: AreaId; label: string; description: string }[] = [
   { id: 'overview', label: 'Overview', description: 'Your host and a place to begin' },
-  { id: 'lab', label: 'Your lab', description: 'Hardware and installation work' },
+  { id: 'lab', label: 'Your lab', description: 'Hardware, apps, and installation work' },
   { id: 'ai', label: 'Local AI', description: 'Conversations, models, and app access' },
   { id: 'settings', label: 'Settings', description: 'Appearance, connections, and your domain' },
 ]
@@ -20,6 +20,7 @@ export const destinations: Destination[] = [
   { page: 'home', area: 'overview', label: 'Home', description: 'Spark health and available tools', href: '#/', keywords: 'dashboard metrics health gpu cpu memory' },
   { page: 'devices', area: 'lab', label: 'Devices', description: 'Discover and review hardware', href: '#/devices', ownerOnly: true, keywords: 'pxe servers onboarding hardware' },
   { page: 'tasks', area: 'lab', label: 'Installation tasks', description: 'Hardware approvals and observations', href: '#/tasks', ownerOnly: true, keywords: 'progress approvals jobs installation' },
+  { page: 'apps', area: 'lab', label: 'Apps', description: 'Run container apps on your servers', href: '#/apps', ownerOnly: true, keywords: 'stacks docker compose containers services self-hosted logs ports listening' },
   { page: 'updates', area: 'lab', label: 'Spark updates', description: 'OS and platform package updates', href: '#/updates', ownerOnly: true, keywords: 'apt packages security kernel nvidia cuda driver reboot restart schedule maintenance upgrade' },
   { page: 'ai', area: 'ai', label: 'Playground', description: 'Talk to your hosted model', href: '#/ai', keywords: 'chat conversation llm inference responses endpoint' },
   { page: 'ai-models', area: 'ai', label: 'Models', description: 'Your library, downloads, and Hugging Face', href: '#/ai/models', ownerOnly: true, keywords: 'llm embeddings quantization context hugging face token download load unload' },

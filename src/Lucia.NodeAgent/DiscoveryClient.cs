@@ -88,7 +88,8 @@ public sealed partial class DiscoveryClient : IDisposable
             UseProxy = false,
             ConnectTimeout = TimeSpan.FromSeconds(10),
             MaxResponseHeadersLength = 16,
-            MaxConnectionsPerServer = 2,
+            // Heartbeats, stack syncs, the request long-poll and a move's send and receive run side by side.
+            MaxConnectionsPerServer = 6,
             SslOptions = new SslClientAuthenticationOptions { CertificateChainPolicy = policy }
         };
         if (connectAddress is not null)
@@ -124,8 +125,12 @@ public sealed partial class DiscoveryClient : IDisposable
             || key.KeySize != 256 || key.ExportParameters(false).Curve.Oid.Value != "1.2.840.10045.3.1.7")
             throw new NodeAgentException("Cannot sign an invalid or expired challenge or non-P256 identity.");
         var message = Encoding.UTF8.GetBytes("lucia-discovery-v1\n" + challenge.ChallengeId + "\n" + challenge.Nonce + "\n" + reportJson);
-        var signature = key.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        return new(challenge.ChallengeId, key.ExportSubjectPublicKeyInfoPem(), reportJson, Convert.ToBase64String(signature));
+        // Several loops share one ECDsa instance, which isn't thread-safe.
+        lock (key)
+        {
+            var signature = key.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+            return new(challenge.ChallengeId, key.ExportSubjectPublicKeyInfoPem(), reportJson, Convert.ToBase64String(signature));
+        }
     }
 
     public async Task<DiscoveryRegistration> RegisterAsync(string reportJson, ECDsa key, CancellationToken cancellationToken)
@@ -172,12 +177,12 @@ public sealed partial class DiscoveryClient : IDisposable
         (await SendReplyAsync(method, path, body, token, cancellationToken)).Bytes;
 
     private async Task<(HttpStatusCode Status, byte[] Bytes)> SendReplyAsync(HttpMethod method, string path, byte[]? body,
-        string? token, CancellationToken cancellationToken)
+        string? token, CancellationToken cancellationToken, TimeSpan? requestTimeout = null, int responseLimit = ResponseLimit)
     {
         for (var attempt = 0; ; attempt++)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(RequestTimeout);
+            timeout.CancelAfter(requestTimeout ?? RequestTimeout);
             using var request = new HttpRequestMessage(method, path);
             if (body is not null)
             {
@@ -202,17 +207,17 @@ public sealed partial class DiscoveryClient : IDisposable
                         _ when (int)response.StatusCode is >= 300 and < 400 => "Discovery redirects are refused. Supply the final trusted HTTPS origin.",
                         _ => $"Discovery server returned HTTP {(int)response.StatusCode}. Check server readiness and logs."
                     });
-                if (response.Content.Headers.ContentLength > ResponseLimit)
-                    throw new NodeAgentException("The discovery response exceeds the 64 KiB limit.");
+                if (response.Content.Headers.ContentLength > responseLimit)
+                    throw new NodeAgentException($"The server response exceeds the {responseLimit / 1024} KiB limit.");
                 using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
                 using var output = new MemoryStream();
                 var buffer = new byte[4096];
                 int count;
-                while ((count = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, ResponseLimit + 1 - (int)output.Length)),
+                while ((count = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, responseLimit + 1 - (int)output.Length)),
                            timeout.Token)) > 0)
                 {
                     output.Write(buffer, 0, count);
-                    if (output.Length > ResponseLimit) throw new NodeAgentException("The discovery response exceeds the 64 KiB limit.");
+                    if (output.Length > responseLimit) throw new NodeAgentException($"The server response exceeds the {responseLimit / 1024} KiB limit.");
                 }
                 return (response.StatusCode, output.ToArray());
             }

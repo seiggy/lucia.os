@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -16,6 +17,68 @@ import time
 import urllib.error
 import urllib.request
 from prepare import installation_payload_sha256
+
+MARKER = b"LUCIA-UNSELECTED-DISK-MUST-NOT-CHANGE\n"
+# Guest-visible fixture services: the controller and the gateway's LDAPS.
+FIXTURE_PORTS = (19443, 8636)
+
+
+class KvmHost:
+    """Runs the disposable VM on a remote x86 KVM host (for example a Proxmox node) instead of emulating it.
+
+    The VM keeps QEMU user networking, so it never joins the LAN. SSH carries the fixture's controller and
+    LDAPS ports to the remote loopback that user networking maps to the fixture host, and brings the guest's
+    SSH back to this container's loopback. The remote work directory is deleted afterwards.
+    """
+    OVMF = "/usr/share/pve-edk2-firmware"
+
+    def __init__(self, target, keys):
+        self.target = target
+        self.ssh = ["ssh", "-i", str(keys / "id_ed25519"), "-o", "UserKnownHostsFile=" + str(keys / "known_hosts"),
+                    "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4"]
+        self.directory = None
+
+    def run(self, script, stdin=None, timeout=120):
+        result = subprocess.run(self.ssh + [self.target, script], stdin=stdin, capture_output=True, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError(f"KVM host command failed (exit {result.returncode}): {result.stderr.decode(errors='replace')[-400:]}")
+        return result.stdout.decode().strip()
+
+    def prepare(self, tree):
+        self.directory = self.run("mktemp -d /var/tmp/lucia-qual.XXXXXXXX")
+        d = shlex.quote(self.directory)
+        self.run(f"cd {d} && truncate -s 16G selected.raw && truncate -s 64M unselected.raw"
+                 f" && printf %s {shlex.quote(MARKER.decode())} | dd of=unselected.raw conv=notrunc status=none"
+                 f" && cp {self.OVMF}/OVMF_VARS_4M.fd vars.fd")
+        with subprocess.Popen(["tar", "-C", str(tree.parent), "-cf", "-", tree.name], stdout=subprocess.PIPE) as archive:
+            self.run(f"tar -C {d} -xf -", stdin=archive.stdout, timeout=300)
+        return pathlib.PurePosixPath(self.directory)
+
+    def digest(self):
+        return self.run(f"sha256sum {shlex.quote(self.directory)}/unselected.raw").split()[0]
+
+    def start(self, qemu, log):
+        forwards = [arg for port in FIXTURE_PORTS for arg in ("-R", f"127.0.0.1:{port}:127.0.0.1:{port}")]
+        remote = f"cd {shlex.quote(self.directory)} && exec timeout 5400 {shlex.join(qemu)}"
+        return subprocess.Popen(self.ssh + ["-o", "ExitOnForwardFailure=yes", *forwards, "-L", "127.0.0.1:2222:127.0.0.1:2222",
+                                            self.target, remote], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+
+    def stop(self, guest):
+        try: self.run(f"kill $(cat {shlex.quote(self.directory)}/qemu.pid) 2>/dev/null || true")
+        finally:
+            try: guest.wait(timeout=30)
+            except subprocess.TimeoutExpired: guest.kill(); guest.wait(timeout=10)
+
+    def cleanup(self, work):
+        if self.directory is None: return
+        d = shlex.quote(self.directory)
+        try:
+            with (work / "serial.log").open("wb") as serial:
+                subprocess.run(self.ssh + [self.target, f"cat {d}/serial.log"], stdout=serial, timeout=120)
+        finally:
+            self.run(f"pkill -F {d}/qemu.pid 2>/dev/null; rm -rf -- {d}")
+            self.directory = None
 
 
 def main():
@@ -31,21 +94,35 @@ def main():
     os.umask(0o077)
     work = root / "vm"
     work.mkdir(mode=0o700)
-    disk = work / "selected.raw"
-    other = work / "unselected.raw"
-    for path, size in ((disk, 16 * 1024 ** 3), (other, 64 * 1024 ** 2)):
-        with path.open("xb") as stream:
-            stream.truncate(size)
-    with other.open("r+b") as stream:
-        stream.write(b"LUCIA-UNSELECTED-DISK-MUST-NOT-CHANGE\n")
-    before = hashlib.file_digest(other.open("rb"), "sha256").hexdigest()
+    target = os.environ.get("LUCIA_QUAL_KVM_HOST")
+    kvm = KvmHost(target, pathlib.Path(os.environ["LUCIA_QUAL_KVM_KEYS"])) if target else None
     tree = work / "tftp"
     shutil.copytree(bundle / "public", tree)
     shutil.copyfile(tree / "debian-installer/amd64/grubx64.efi", tree / "grubx64.efi")
     grub = tree / "debian-installer/amd64/grub/grub.cfg"
     grub.write_text("serial --unit=0 --speed=115200\nterminal_input serial\nterminal_output serial\n"
                     + grub.read_text().replace(" quiet ", " ").replace(" ---", " console=ttyS0,115200n8 ---"))
-    shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", work / "vars.fd")
+    if kvm:
+        vm = kvm.prepare(tree)
+        firmware = KvmHost.OVMF + "/OVMF_CODE_4M.fd"
+        digest = kvm.digest
+    else:
+        vm = work
+        firmware = "/usr/share/OVMF/OVMF_CODE_4M.fd"
+        for name, size in (("selected.raw", 16 * 1024 ** 3), ("unselected.raw", 64 * 1024 ** 2)):
+            with (work / name).open("xb") as stream:
+                stream.truncate(size)
+        with (work / "unselected.raw").open("r+b") as stream:
+            stream.write(MARKER)
+        shutil.copyfile("/usr/share/OVMF/OVMF_VARS_4M.fd", work / "vars.fd")
+        digest = lambda: hashlib.file_digest((work / "unselected.raw").open("rb"), "sha256").hexdigest()
+    before = digest()
+
+    def stop(guest):
+        if kvm: return kvm.stop(guest)
+        guest.terminate()
+        try: guest.wait(timeout=20)
+        except subprocess.TimeoutExpired: guest.kill(); guest.wait(timeout=10)
     tls = ssl.create_default_context(cafile=str(root / "root.crt"))
     owner_key = (root / "owner-key").read_text().strip()
 
@@ -79,22 +156,28 @@ def main():
                 if time.monotonic() >= until: raise
                 time.sleep(1)
         api("/api/host/onboarding/window", "POST", {"minutes": 60})
-        serial = work / "serial.log"
+        serial = vm / "serial.log"
         qemu_log = (work / "qemu.log").open("xb")
         command = [
-            "qemu-system-x86_64", "-machine", "q35,accel=tcg", "-cpu", "max", "-smp", "2", "-m", "3072",
+            "qemu-system-x86_64", "-machine", "q35,accel=" + ("kvm" if kvm else "tcg"), "-cpu", "host" if kvm else "max",
+            "-smp", "4" if kvm else "2", "-m", "3072",
             "-uuid", "6190bd33-c7a1-4ffc-a9f5-5d46bc7c1221", "-display", "none", "-monitor", "none",
-            "-serial", "file:" + str(serial), "-boot", "once=n,order=c",
-            "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
-            "-drive", f"if=pflash,format=raw,file={work / 'vars.fd'}",
-            "-drive", f"if=none,id=selected,format=raw,file={disk}",
+            "-serial", "file:" + str(serial), "-boot", "once=n,order=c", "-pidfile", str(vm / "qemu.pid"),
+            "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
+            "-drive", f"if=pflash,format=raw,file={vm / 'vars.fd'}",
+            "-drive", f"if=none,id=selected,format=raw,file={vm / 'selected.raw'}",
             "-device", "virtio-blk-pci,drive=selected,serial=LUCIA-INSTALL-TARGET",
-            "-drive", f"if=none,id=unselected,format=raw,file={other}",
+            "-drive", f"if=none,id=unselected,format=raw,file={vm / 'unselected.raw'}",
             "-device", "virtio-blk-pci,drive=unselected,serial=LUCIA-DO-NOT-TOUCH",
-            "-netdev", f"user,id=net0,net=192.168.0.0/23,host=192.168.0.222,dhcpstart=192.168.1.100,dns=192.168.0.221,tftp={tree},bootfile=debian-installer/amd64/bootnetx64.efi,hostfwd=tcp:127.0.0.1:2222-:22",
+            "-netdev", f"user,id=net0,net=192.168.0.0/23,host=192.168.0.222,dhcpstart=192.168.1.100,dns=192.168.0.221,tftp={vm / 'tftp'},bootfile=debian-installer/amd64/bootnetx64.efi,hostfwd=tcp:127.0.0.1:2222-:22"
+            # A KVM host's resolver may return AAAA records that slirp cannot reach; the installer's wget would not fall back.
+            + (",ipv6=off" if kvm else ""),
             "-device", "virtio-net-pci,netdev=net0,romfile="
         ]
-        guest = subprocess.Popen(command, stdout=qemu_log, stderr=subprocess.STDOUT)
+        if kvm:
+            # OVMF's PXE stack needs a secure RNG; hosts without RDRAND (older Xeons) otherwise get no network boot entry.
+            command += ["-device", "virtio-rng-pci"]
+        guest = kvm.start(command, qemu_log) if kvm else subprocess.Popen(command, stdout=qemu_log, stderr=subprocess.STDOUT)
         until = time.monotonic() + 3600  # A full network install of trixie takes ~30 minutes before enrollment.
         approved = None
         last_phase = None
@@ -175,11 +258,9 @@ def main():
         active = subprocess.run(ssh + ["systemctl", "show", "-p", "NRestarts", "--value", "lucia-node-agent"], capture_output=True, text=True, timeout=60)
         if active.returncode or active.stdout.strip() != "0":
             raise RuntimeError(f"The restarted managed agent crashed and was restarted by systemd: {active.stdout.strip()} {active.stderr.strip()[-200:]}")
-        guest.terminate()
-        guest.wait(timeout=20)
+        stop(guest)
         guest = None
-        after = hashlib.file_digest(other.open("rb"), "sha256").hexdigest()
-        if after != before: raise RuntimeError("The unselected disposable disk changed.")
+        if digest() != before: raise RuntimeError("The unselected disposable disk changed.")
         receipt = json.loads((bundle / "receipt.json").read_text())
         result = {"schemaVersion": 1, "artifacts": receipt["artifacts"], "publicCaDerSha256": receipt["controller"]["publicCaDerSha256"],
             "installationPayloadSha256": installation_payload_sha256(receipt),
@@ -191,10 +272,10 @@ def main():
         (root / "installation-result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps({"qualificationPassed": True, "physicalDevicesModified": False}), flush=True)
     finally:
-        if guest is not None and guest.poll() is None:
-            guest.terminate()
-            try: guest.wait(timeout=20)
-            except subprocess.TimeoutExpired: guest.kill(); guest.wait(timeout=10)
+        try:
+            if guest is not None and guest.poll() is None: stop(guest)
+        finally:
+            if kvm: kvm.cleanup(work)
         controller.terminate()
         try: controller.wait(timeout=15)
         except subprocess.TimeoutExpired: controller.kill(); controller.wait(timeout=10)

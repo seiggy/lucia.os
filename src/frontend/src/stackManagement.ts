@@ -1,0 +1,349 @@
+export type StackTone = 'green' | 'amber' | 'failed' | 'muted' | 'accent'
+export interface StackService { service: string; state: string; health: string | null; image: string | null; exitCode: number | null }
+export interface NodeContainer { id: string; name: string; image: string; state: string; status: string | null; project: string | null; service: string | null; ports: string | null }
+export interface NodeListener { protocol: 'tcp' | 'udp'; address: string; port: number; process: string | null; containerId: string | null }
+export interface StackStatus { name: string; state: string; appliedRevision: number | null; message: string | null; services: StackService[] }
+export interface StackPlacement { node: string | null; require: string[] }
+export interface StackMove {
+  from: string; to: string; startedAt: string; startedBy: string
+  progress: { bytes: number; total: number | null } | null; target: StackStatus | null
+}
+export interface StackSummary {
+  name: string; node: string; nodeId: string | null; desired: 'Running' | 'Stopped'; revision: number
+  createdAt: string; updatedAt: string; updatedBy: string; reportedAt: string | null
+  status: StackStatus | null; containers: NodeContainer[]; placement: StackPlacement; move: StackMove | null
+}
+export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement }
+export interface NodeInventory { reportedAt: string; containers: NodeContainer[]; listeners: NodeListener[] }
+
+export const stackNamePattern = /^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/
+export const logLineChoices = [200, 1000, 5000] as const
+
+const invalid = () => new Error('Lucia returned app information it could not read.')
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid()
+  return value as Record<string, unknown>
+}
+function text(value: unknown): string { if (typeof value !== 'string') throw invalid(); return value }
+function optional(value: unknown): string | null { return value === null || value === undefined ? null : text(value) }
+function integer(value: unknown): number { if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw invalid(); return value }
+function list<T>(value: unknown, parse: (item: unknown) => T, limit = 1024): T[] {
+  if (!Array.isArray(value) || value.length > limit) throw invalid()
+  return value.map(parse)
+}
+function timestamp(value: unknown): string { const result = text(value); if (Number.isNaN(Date.parse(result))) throw invalid(); return result }
+
+export function parseContainer(value: unknown): NodeContainer {
+  const item = object(value)
+  return { id: text(item.id), name: text(item.name), image: text(item.image), state: text(item.state), status: optional(item.status),
+    project: optional(item.project), service: optional(item.service), ports: optional(item.ports) }
+}
+
+function absent(value: unknown): boolean { return value === null || value === undefined }
+
+function parseStatus(value: unknown): StackStatus {
+  const entry = object(value)
+  return { name: text(entry.name), state: text(entry.state),
+    appliedRevision: absent(entry.appliedRevision) ? null : integer(entry.appliedRevision),
+    message: optional(entry.message),
+    services: list(entry.services, service => {
+      const row = object(service)
+      return { service: text(row.service), state: text(row.state), health: optional(row.health), image: optional(row.image),
+        exitCode: absent(row.exitCode) ? null : integer(row.exitCode) }
+    }, 64) }
+}
+
+function parsePlacement(value: unknown): StackPlacement {
+  const item = absent(value) ? {} : object(value)
+  return { node: optional(item.node), require: absent(item.require) ? [] : list(item.require, text, 16) }
+}
+
+function parseMove(value: unknown): StackMove | null {
+  if (absent(value)) return null
+  const item = object(value)
+  const progress = absent(item.progress) ? null : object(item.progress)
+  return { from: text(item.from), to: text(item.to), startedAt: timestamp(item.startedAt), startedBy: text(item.startedBy),
+    progress: progress && { bytes: integer(progress.bytes), total: absent(progress.total) ? null : integer(progress.total) },
+    target: absent(item.target) ? null : parseStatus(item.target) }
+}
+
+export function parseStackSummary(value: unknown): StackSummary {
+  const item = object(value)
+  const name = text(item.name)
+  if (!stackNamePattern.test(name) || (item.desired !== 'Running' && item.desired !== 'Stopped')) throw invalid()
+  return { name, node: text(item.node), nodeId: optional(item.nodeId), desired: item.desired, revision: integer(item.revision),
+    createdAt: timestamp(item.createdAt), updatedAt: timestamp(item.updatedAt), updatedBy: text(item.updatedBy),
+    reportedAt: absent(item.reportedAt) ? null : timestamp(item.reportedAt),
+    status: absent(item.status) ? null : parseStatus(item.status),
+    containers: absent(item.containers) ? [] : list(item.containers, parseContainer, 256),
+    placement: parsePlacement(item.placement), move: parseMove(item.move) }
+}
+
+export function parseStackList(value: unknown): StackSummary[] {
+  return list(object(value).stacks, parseStackSummary, 64)
+}
+
+export function parseStackDetail(value: unknown): StackDetail {
+  const item = object(value)
+  return { stack: parseStackSummary(item.stack), compose: text(item.compose), env: text(item.env),
+    placement: parsePlacement(object(item.manifest).placement) }
+}
+
+export function parseInventory(value: unknown): NodeInventory {
+  const item = object(value)
+  return { reportedAt: timestamp(item.reportedAt), containers: list(item.containers, parseContainer, 256),
+    listeners: list(item.listeners, entry => {
+      const row = object(entry)
+      if (row.protocol !== 'tcp' && row.protocol !== 'udp') throw invalid()
+      return { protocol: row.protocol, address: text(row.address), port: integer(row.port), process: optional(row.process), containerId: optional(row.containerId) }
+    }) }
+}
+
+export interface PortRow { port: number; protocol: 'tcp' | 'udp'; addresses: string[]; owner: PortOwner }
+export interface PortOwner { label: string; detail: string; app: string | null; known: boolean }
+
+const systemPrograms: Record<string, [string, string]> = {
+  'sshd': ['SSH', 'Remote sign-in to this server.'],
+  'sshd-session': ['SSH', 'Remote sign-in to this server.'],
+  'rpcbind': ['NFS port mapper', 'Lets this server use NFS shares, such as your NAS. Normal when network storage is connected.'],
+  'rpc.statd': ['NFS status monitor', 'Part of NFS. Keeps file locks consistent across restarts.'],
+  'rpc.mountd': ['NFS mounts', 'Part of an NFS server.'],
+  'kernel': ['Linux kernel', 'Opened by the system itself, usually for NFS file locking or sharing.'],
+  'dhclient': ['DHCP client', 'How this server gets its network address from your router.'],
+  'dhcpcd': ['DHCP client', 'How this server gets its network address from your router.'],
+  'systemd-network': ['DHCP client', 'How this server gets its network address from your router.'],
+  'NetworkManager': ['DHCP client', 'How this server gets its network address from your router.'],
+  'avahi-daemon': ['Local discovery (mDNS)', 'Announces this server by name on your local network.'],
+  'systemd-resolve': ['DNS cache', 'Looks up names for programs on this server.'],
+  'chronyd': ['Time sync', 'Keeps this server\'s clock correct.'],
+  'ntpd': ['Time sync', 'Keeps this server\'s clock correct.'],
+  'systemd-timesyn': ['Time sync', 'Keeps this server\'s clock correct.'],
+  'lucia-node-agent': ['Lucia agent', 'Lucia\'s management service on this server.'],
+  'dockerd': ['Docker', 'The container engine.'],
+  'containerd': ['Docker', 'The container runtime.'],
+  'docker-proxy': ['Docker published port', 'Forwards this port to a container.'],
+  'cupsd': ['Printing', 'The print service.'],
+  'cups-browsed': ['Printer discovery', 'Finds printers on your network.'],
+  'smbd': ['Windows file sharing', 'Shares folders with Windows and macOS (SMB).'],
+  'nmbd': ['Windows file sharing', 'Announces SMB shares by name.'],
+  'exim4': ['Mail', 'Sends system mail.'],
+  'snmpd': ['SNMP', 'Lets monitoring tools read this server\'s status.'],
+}
+
+function appOf(container: NodeContainer): string | null {
+  return container.project?.startsWith('lucia-') ? container.project.slice(6) : null
+}
+
+/** Who opened a port, in words an owner who didn't set it up can follow. */
+export function portOwner(listener: NodeListener, containers: NodeContainer[]): PortOwner {
+  const published = new RegExp(`:${listener.port}->\\d+/${listener.protocol}\\b`)
+  const container = containers.find(item => listener.containerId !== null && item.id === listener.containerId)
+    ?? containers.find(item => item.ports !== null && published.test(item.ports))
+  if (container) {
+    const app = appOf(container)
+    return { label: container.service ?? container.name, known: true, app,
+      detail: app ? `Container in the app ${app}.` : `Container ${container.name}, not started by Lucia.` }
+  }
+  const program = listener.process === 'systemd' && listener.port === 111 ? systemPrograms.rpcbind
+    : listener.process ? systemPrograms[listener.process] : undefined
+  if (program) return { label: program[0], detail: program[1], app: null, known: true }
+  if (listener.process) return { label: listener.process, detail: 'A program running on this server, outside any container.', app: null, known: false }
+  return { label: 'Unknown', detail: 'The server didn\'t say which program opened this port.', app: null, known: false }
+}
+
+/** One row per port, protocol and owner; IPv4 and IPv6 sockets for the same thing are merged. */
+export function portRows(inventory: NodeInventory): PortRow[] {
+  const rows = new Map<string, PortRow>()
+  for (const listener of inventory.listeners) {
+    const owner = portOwner(listener, inventory.containers)
+    const key = `${listener.protocol}/${listener.port}/${owner.label}`
+    const row = rows.get(key)
+    if (row) { if (!row.addresses.includes(listener.address)) row.addresses.push(listener.address) }
+    else rows.set(key, { port: listener.port, protocol: listener.protocol, addresses: [listener.address], owner })
+  }
+  return [...rows.values()].sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol))
+}
+
+/** The plain-language state an owner sees for an app. */
+export function stackState(stack: StackSummary): { label: string; tone: StackTone; detail: string } {
+  if (stack.move) return moveState(stack.move, stack.status)
+  const services = stack.status?.services ?? []
+  const running = services.filter(service => service.state === 'running' && service.health !== 'unhealthy').length
+  const count = services.length === 1 ? '1 container' : `${services.length} containers`
+  if (!stack.nodeId) return { label: 'Server not found', tone: 'amber', detail: `No managed server is named ${stack.node}. Choose another server.` }
+  if (!stack.status) return stack.reportedAt
+    ? { label: 'Waiting for server', tone: 'muted', detail: `${stack.node} will pick this up at its next check-in.` }
+    : { label: 'Server not reporting', tone: 'amber', detail: `${stack.node} hasn't checked in recently. It may be offline or need an agent update.` }
+  const state = stack.status.state
+  if (state === 'Failed') return { label: 'Failed', tone: 'failed', detail: stack.status.message ?? 'The server could not apply this app.' }
+  if (state === 'Removing') return { label: 'Removing', tone: 'muted', detail: 'Taking the containers down.' }
+  if (state === 'Applying' || state === 'Pending' || stack.status.appliedRevision !== stack.revision)
+    return { label: 'Applying changes', tone: 'accent', detail: `${stack.node} is pulling images and starting containers.` }
+  if (stack.desired === 'Stopped') return running > 0
+    ? { label: 'Stopping', tone: 'accent', detail: `${stack.node} is taking the containers down.` }
+    : { label: 'Stopped', tone: 'muted', detail: 'Its containers are down. Data is kept.' }
+  if (state === 'Stopped') return { label: 'Starting', tone: 'accent', detail: `${stack.node} is starting the containers.` }
+  if (state === 'Running') return { label: 'Running', tone: 'green', detail: `${count} running on ${stack.node}.` }
+  return { label: 'Needs attention', tone: 'amber',
+    detail: services.length === 0 ? 'No containers are running.' : `${running} of ${count} running. Check the logs.` }
+}
+
+export function containerState(container: { state: string; status: string | null }): { label: string; tone: StackTone } {
+  const status = container.status ?? ''
+  if (container.state === 'running' && status.includes('(unhealthy)')) return { label: 'Unhealthy', tone: 'failed' }
+  if (container.state === 'running' && status.includes('(health: starting)')) return { label: 'Starting', tone: 'accent' }
+  if (container.state === 'running') return { label: 'Running', tone: 'green' }
+  if (container.state === 'restarting') return { label: 'Restarting', tone: 'amber' }
+  if (container.state === 'exited' || container.state === 'dead') {
+    const code = /^Exited \((-?\d+)\)/.exec(status)?.[1]
+    return { label: code && code !== '0' ? `Exited (${code})` : 'Stopped', tone: code && code !== '0' ? 'failed' : 'muted' }
+  }
+  return { label: container.state.charAt(0).toUpperCase() + container.state.slice(1), tone: 'muted' }
+}
+
+export function validateStackDraft(name: string, node: string | null, compose: string): string | null {
+  if (!stackNamePattern.test(name)) return 'Use up to 40 lowercase letters, digits and hyphens, starting with a letter.'
+  if (node === '') return 'Choose the server this app runs on.'
+  if (!compose.trim()) return 'Paste a Docker Compose file.'
+  if (new TextEncoder().encode(compose).length > 128 * 1024) return 'The compose file is larger than 128 KiB.'
+  return null
+}
+
+export function formatBytes(bytes: number): string {
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes, unit = 0
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++ }
+  return unit === 0 ? `${bytes} bytes` : `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`
+}
+
+/** Where a move is, from the two servers' reports and how much data has crossed. */
+export function moveState(move: StackMove, source: StackStatus | null = null): { label: string; tone: StackTone; detail: string; percent: number | null } {
+  const target = move.target
+  const percent = move.progress?.total ? Math.min(99, Math.floor(move.progress.bytes * 100 / move.progress.total)) : null
+  if (target?.state === 'Failed') return { label: 'Move stalled', tone: 'failed', percent,
+    detail: `${move.to} couldn't take the app: ${target.message ?? 'no reason given'}. Lucia retries every 2 minutes, or cancel to keep it on ${move.from}.` }
+  if (source?.state === 'Failed') return { label: 'Move stalled', tone: 'failed', percent,
+    detail: `${move.from} couldn't send the app: ${source.message ?? 'no reason given'}. Lucia retries every 2 minutes, or cancel to keep it on ${move.from}.` }
+  if (move.progress && move.progress.bytes > 0) return { label: 'Moving', tone: 'accent', percent,
+    detail: `Copying data to ${move.to}: ${formatBytes(move.progress.bytes)}${move.progress.total ? ` of about ${formatBytes(move.progress.total)}` : ''}.` }
+  if (source?.state === 'Sending' || target?.state === 'Receiving') return { label: 'Moving', tone: 'accent', percent,
+    detail: `${move.from} has stopped the app and is connecting to ${move.to}.` }
+  return { label: 'Moving', tone: 'accent', percent, detail: `Stopping the app on ${move.from} before copying its data to ${move.to}.` }
+}
+
+export interface RequirementFacts {
+  memoryTotalBytes: number
+  runtime: { state: string; gpuContainers: boolean; gpus: { vendor: string; model: string; memoryBytes: number | null; computeCapability: string | null }[] } | null
+}
+
+const requirementPattern = /^(gpu(?:\.(?:vendor|model|vram|compute))?|memory|cuda)(?:\s*(>=|<=|!=|=|~)\s*(.+))?$/
+const sizePattern = /^(\d{1,6}(?:\.\d{1,3})?)\s*(M|MB|G|GB|T|TB)?$/i
+
+function sizeMatches(actual: number, op: string, value: string): boolean {
+  const match = sizePattern.exec(value)
+  if (!match) return false
+  const unit = (match[2] ?? 'G').toUpperCase()
+  const bytes = Number(match[1]) * (unit.startsWith('M') ? 2 ** 20 : unit.startsWith('T') ? 2 ** 40 : 2 ** 30)
+  return op === '>=' ? actual >= bytes * 0.95 : actual <= bytes
+}
+
+/** The first requirement a server doesn't meet, or null. Mirrors the server's check so the editor can preview eligibility. */
+export function unmetRequirement(requirements: string[], facts: RequirementFacts | null,
+  settings: { gpu: { cudaLine: number | null }; gpuWarning: string | null } | null = null): string | null {
+  if (requirements.length === 0) return null
+  if (!facts) return requirements[0]
+  const parsed = requirements.map(text => { const match = requirementPattern.exec(text.trim()); return { text, key: match?.[1] ?? '', op: match?.[2] ?? '', value: match?.[3]?.trim() ?? '' } })
+  for (const item of parsed) if (item.key === 'memory' && !sizeMatches(facts.memoryTotalBytes, item.op, item.value)) return item.text
+  for (const item of parsed) if (item.key === 'cuda' && (settings?.gpu.cudaLine === null || settings?.gpu.cudaLine === undefined
+    || String(settings.gpu.cudaLine) !== item.value || settings.gpuWarning)) return item.text
+  const gpu = parsed.filter(item => item.key.startsWith('gpu'))
+  if (gpu.length === 0) return null
+  if (!facts.runtime?.gpuContainers) return gpu[0].text
+  let closest: string | null = null
+  for (const card of facts.runtime.gpus) {
+    const miss = gpu.find(item => {
+      const textMatch = (actual: string) => item.op === '=' ? actual.toLowerCase() === item.value.toLowerCase()
+        : item.op === '!=' ? actual.toLowerCase() !== item.value.toLowerCase() : actual.toLowerCase().includes(item.value.toLowerCase())
+      switch (item.key) {
+        case 'gpu': return false
+        case 'gpu.vendor': return !textMatch(card.vendor)
+        case 'gpu.model': return !textMatch(card.model)
+        case 'gpu.vram': return card.memoryBytes === null || !sizeMatches(card.memoryBytes, item.op, item.value)
+        case 'gpu.compute': {
+          const actual = Number(card.computeCapability), wanted = Number(item.value)
+          return card.computeCapability === null || Number.isNaN(actual)
+            || !(item.op === '>=' ? actual >= wanted : item.op === '<=' ? actual <= wanted : Math.abs(actual - wanted) < 1e-9)
+        }
+        default: return true
+      }
+    })
+    if (!miss) return null
+    closest ??= miss.text
+  }
+  return closest ?? gpu[0].text
+}
+
+const vendorNames: Record<string, string> = { nvidia: 'NVIDIA', amd: 'AMD', intel: 'Intel' }
+
+/** A requirement a server misses, as a reason an owner can read. */
+export function describeUnmet(requirement: string): string {
+  const match = requirementPattern.exec(requirement.trim())
+  const [key, op, value] = [match?.[1], match?.[2], match?.[3]?.trim() ?? '']
+  const size = value.replace(/\s*(G|GB)$/i, ' GB').replace(/\s*(M|MB)$/i, ' MB').replace(/\s*(T|TB)$/i, ' TB').replace(/^(\d+(?:\.\d+)?)$/, '$1 GB')
+  if (key === 'gpu') return 'no GPU that containers can use'
+  if (key === 'gpu.vendor') return op === '!=' ? `only ${vendorNames[value.toLowerCase()] ?? value} GPUs` : `no ${vendorNames[value.toLowerCase()] ?? value} GPU`
+  if (key === 'gpu.model') return `no GPU matching “${value}”`
+  if (key === 'gpu.vram') return op === '>=' ? `no GPU with ${size} of memory` : `every GPU has more than ${size}`
+  if (key === 'gpu.compute') return `no GPU with compute capability ${op === '>=' ? `${value} or newer` : op === '<=' ? `${value} or older` : value}`
+  if (key === 'memory') return op === '>=' ? `less than ${size} of memory` : `more than ${size} of memory`
+  if (key === 'cuda') return `not set to CUDA ${value}`
+  return `doesn't meet ${requirement}`
+}
+
+export interface RequirementForm { gpu: boolean; vendor: string; model: string; vram: string; compute: string; cuda: '' | '12' | '13'; memory: string; other: string[] }
+
+/** Splits requirements into the editor's fields; anything the fields can't show is kept as-is. */
+export function requirementForm(requirements: string[]): RequirementForm {
+  const form: RequirementForm = { gpu: false, vendor: '', model: '', vram: '', compute: '', cuda: '', memory: '', other: [] }
+  for (const requirement of requirements) {
+    const match = requirementPattern.exec(requirement.trim())
+    const [key, op, value] = [match?.[1], match?.[2], match?.[3]?.trim() ?? '']
+    const gigabytes = /^(\d{1,6}(?:\.\d{1,3})?)\s*(?:G|GB)?$/i.exec(value)?.[1]
+    if (key === 'gpu' && !op) form.gpu = true
+    else if (key === 'gpu.vendor' && op === '=' && !form.vendor) { form.gpu = true; form.vendor = value.toLowerCase() }
+    else if (key === 'gpu.model' && op === '~' && !form.model) { form.gpu = true; form.model = value }
+    else if (key === 'gpu.vram' && op === '>=' && gigabytes && !form.vram) { form.gpu = true; form.vram = gigabytes }
+    else if (key === 'gpu.compute' && op === '>=' && !form.compute) { form.gpu = true; form.compute = value }
+    else if (key === 'cuda' && op === '=' && (value === '12' || value === '13') && !form.cuda) { form.gpu = true; form.cuda = value }
+    else if (key === 'memory' && op === '>=' && gigabytes && !form.memory) form.memory = gigabytes
+    else form.other.push(requirement)
+  }
+  return form
+}
+
+export function requirementList(form: RequirementForm): string[] {
+  const list: string[] = []
+  if (form.gpu) {
+    list.push('gpu')
+    if (form.vendor) list.push(`gpu.vendor=${form.vendor}`)
+    if (form.model.trim()) list.push(`gpu.model~${form.model.trim()}`)
+    if (form.vram.trim()) list.push(`gpu.vram>=${form.vram.trim()}G`)
+    if (form.compute.trim()) list.push(`gpu.compute>=${form.compute.trim()}`)
+    if (form.cuda) list.push(`cuda=${form.cuda}`)
+  }
+  if (form.memory.trim()) list.push(`memory>=${form.memory.trim()}G`)
+  return [...list, ...form.other.filter(item => form.gpu || !item.startsWith('gpu') && !item.startsWith('cuda'))]
+}
+
+export const composeExample = `services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    env_file: .env
+    volumes:
+      - data:/usr/share/nginx/html
+volumes:
+  data:
+`

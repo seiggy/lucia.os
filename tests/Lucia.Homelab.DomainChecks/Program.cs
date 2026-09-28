@@ -122,4 +122,5 @@ await SupportChecks.Run(Check);
 await OperationsChecks.Run(Check);
 await NodeEnrollmentChecks.Run(Check);
 await DhcpChecks.Run(Check);
+await StackChecks.Run(Check);
 Console.WriteLine($"Domain naming, review, and recovery checks passed ({count} assertions). No live DNS or certificates changed.");
