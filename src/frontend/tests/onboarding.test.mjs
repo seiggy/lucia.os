@@ -119,12 +119,13 @@ for (const key of ['', '-----BEGIN PRIVATE KEY-----', 'command="anything" ' + re
 const read = onboardingRequest(owner, { kind: 'snapshot' })
 assert.equal(onboardingRequest(owner, { kind: 'managed' }).url, '/api/host/nodes')
 const managedNode = { nodeId: deviceId, hostname: 'dev-server', state: 'Online', certificateExpiresAt: expiry, lastSeenAt: device.lastSeenAt,
+  address: '192.168.0.241', dnsName: 'dev-server.homelab.example.com',
   status: { osVersion: 'Debian GNU/Linux 13', uptimeSeconds: 60, loadAverage: 0.3, memoryTotalBytes: 8192, memoryAvailableBytes: 4096,
     storageTotalBytes: 102400, storageAvailableBytes: 51200, runtime: null },
   gpu: { cudaLine: null }, gpuWarning: null }
 assert.deepEqual(parseManagedNodes([managedNode]), [managedNode])
-const { gpu: _gpu, gpuWarning: _warning, ...olderServer } = managedNode
-assert.deepEqual(parseManagedNodes([olderServer]), [managedNode])
+const { gpu: _gpu, gpuWarning: _warning, address: _address, dnsName: _dnsName, ...olderServer } = managedNode
+assert.deepEqual(parseManagedNodes([olderServer]), [{ ...managedNode, address: null, dnsName: null }])
 const pinned = { ...managedNode, gpu: { cudaLine: 13 }, gpuWarning: 'Update the driver.' }
 assert.deepEqual(parseManagedNodes([pinned]), [pinned])
 assert.throws(() => parseManagedNodes([{ ...pinned, gpu: { ...pinned.gpu, cudaLine: 11 } }]))

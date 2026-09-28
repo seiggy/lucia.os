@@ -92,7 +92,8 @@ public static class InstallationEndpoints
             var configuration = await enrollment.Renew(id, payload, input.CertificatePem, proof.PublicKeyFingerprint, ct);
             return configuration is null ? Results.Json(new { state = "Pending" }, statusCode: 202) : Results.Json(configuration);
         });
-        app.MapGet("/api/host/nodes", (ManagedNodeEnrollment enrollment, CancellationToken ct) => enrollment.Snapshot(ct))
+        app.MapGet("/api/host/nodes", async (ManagedNodeEnrollment enrollment, Domains.DomainOnboardingStore domains, CancellationToken ct) =>
+                await enrollment.Snapshot(await ManagedNodeDns.ActiveNaming(domains, ct), ct))
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
     }
 }

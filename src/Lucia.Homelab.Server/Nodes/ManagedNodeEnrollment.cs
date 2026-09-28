@@ -48,12 +48,18 @@ public sealed class ManagedNodeEnrollment(
     /// <summary>Raised when a heartbeat arrives from a node address Lucia has not recorded yet.</summary>
     public event Action? AddressChanged;
 
-    public async Task<object> Snapshot(CancellationToken ct)
+    /// <param name="naming">The active domain's naming, which gives each node the DNS name <see cref="ManagedNodeDns"/> publishes.</param>
+    public async Task<object> Snapshot(DomainNamingPlan? naming, CancellationToken ct)
     {
         var records = await Records(ct);
+        var names = naming is null ? [] : ManagedNodeDns.Wanted(naming, records.Where(node => node.Address is not null)
+            .Select(node => new ManagedNodeAddress(node.Hostname, node.Address!, node.NodeId))).Select(record => record.Domain).ToHashSet();
+        string? DnsName(string hostname) =>
+            naming is null ? null : names.FirstOrDefault(name => name == $"{hostname}.{naming.Namespace}".ToLowerInvariant());
         return records.Select(node => new { node.NodeId, node.TaskId, node.Hostname, node.CertificateExpiresAt, node.LastSeenAt,
             state = node.LastSeenAt is null ? "AwaitingHeartbeat" : node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2) ? "Online" : "Stale",
-            node.Address, node.Status, gpu = node.Gpu ?? NodeGpuSettings.None,
+            node.Address, dnsName = DnsName(node.Hostname),
+            node.Status, gpu = node.Gpu ?? NodeGpuSettings.None,
             // A driver change can drop support for the pinned line; the owner decides what to do about it.
             gpuWarning = node.Gpu?.CudaLine is { } line && node.Status?.Runtime is { } runtime ? CudaLines.Unsupported(line, runtime) : null }).ToArray();
     }

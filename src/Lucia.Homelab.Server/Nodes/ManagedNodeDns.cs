@@ -48,12 +48,14 @@ public sealed class ManagedNodeDns : BackgroundService
     }
 
     /// <summary>The records Lucia wants for managed nodes under the active domain, or null without one.</summary>
-    public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct)
+    public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct) =>
+        await ActiveNaming(_domains, ct) is { } naming ? Wanted(naming, await _nodes.Addresses(ct)) : null;
+
+    internal static async Task<DomainNamingPlan?> ActiveNaming(DomainOnboardingStore domains, CancellationToken ct)
     {
-        var job = (await _domains.Read(ct)).Job;
-        var profile = DomainActivationConfiguration.Read(_domains.Root);
-        if (profile is null || job is null || job.Id != profile.ProfileId) return null;
-        return Wanted(job.Plan.Naming, await _nodes.Addresses(ct));
+        var job = (await domains.Read(ct)).Job;
+        var profile = DomainActivationConfiguration.Read(domains.Root);
+        return profile is null || job is null || job.Id != profile.ProfileId ? null : job.Plan.Naming;
     }
 
     internal static AdGuardRewrite[] Wanted(DomainNamingPlan naming, IEnumerable<ManagedNodeAddress> nodes) =>

@@ -363,6 +363,7 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
       <div><dt>Secure Boot</dt><dd>{hardware.secureBoot === null ? 'Unknown — not reported' : hardware.secureBoot ? 'On' : 'Off'}</dd></div>
     </dl>
     {device.phase === 'Managed' && managed?.status && <dl className="hardware-specs">
+      <div><dt>Address</dt><dd>{managed.dnsName ? <>{managed.dnsName} · {managed.address}</> : managed.address ?? 'Not reported'}</dd></div>
       <div><dt>Operating system</dt><dd>{managed.status.osVersion}</dd></div>
       <div><dt>Uptime</dt><dd>{Math.floor(managed.status.uptimeSeconds / 3600)} hours, {Math.floor(managed.status.uptimeSeconds / 60) % 60} minutes</dd></div>
       <div><dt>Available memory</dt><dd>{formatBytes(managed.status.memoryAvailableBytes)} / {formatBytes(managed.status.memoryTotalBytes)}</dd></div>
@@ -375,7 +376,7 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
     {device.phase === 'Managed' && managed?.status?.runtime?.gpus.length ? <GpuSection node={managed} runtime={managed.status.runtime}
       disabled={disabled} session={session} refreshSession={refreshSession} onSaved={refresh} /> : null}
     <details><summary>Hardware and network details</summary>
-      {device.phase === 'Managed' && <p className="hardware-meta">Hardware and network addresses below were recorded during discovery. Agent readings above are reported separately.</p>}
+      {device.phase === 'Managed' && <p className="hardware-meta">Recorded when the device was discovered. Its current address is with the agent readings above.</p>}
       <dl className="fact-list">
         <div><dt>Device ID</dt><dd>{device.id}</dd></div>
         <div><dt>Serial number</dt><dd>{hardware.serialNumber || 'Not reported'}</dd></div>
@@ -384,7 +385,7 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
         <div><dt>Discovered</dt><dd><DateTime value={device.discoveredAt} /></dd></div>
         <div><dt>Last heartbeat</dt><dd>{device.lastHeartbeatAt ? <DateTime value={device.lastHeartbeatAt} /> : 'Not reported'} · {device.heartbeatFreshness.toLowerCase()}</dd></div>
       </dl>
-      <h4>Network interfaces</h4>
+      <h4>{device.phase === 'Managed' ? 'Network interfaces at discovery' : 'Network interfaces'}</h4>
       <ul className="hardware-detail-list">{hardware.interfaces.map(nic => <li key={nic.name}><strong>{nic.name}</strong> · {nic.macAddress ?? 'MAC address not reported'}<span>{nic.addresses.join(', ') || 'No address reported'}</span></li>)}</ul>
       <h4>Reported disks</h4>
       {hardware.disks.length ? <ul className="hardware-detail-list">{hardware.disks.map(disk => <li key={disk.path}>

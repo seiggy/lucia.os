@@ -78,6 +78,8 @@ export interface NodeRuntimeSummary {
 export interface ManagedNodeSummary {
   nodeId: string; hostname: string; state: 'Online' | 'Stale' | 'AwaitingHeartbeat'
   certificateExpiresAt: string; lastSeenAt: string | null
+  /** The address its latest heartbeat came from, and the DNS name Lucia publishes for it under the active domain. */
+  address: string | null; dnsName: string | null
   status: { osVersion: string; uptimeSeconds: number; loadAverage: number | null; memoryTotalBytes: number
     memoryAvailableBytes: number; storageTotalBytes: number | null; storageAvailableBytes: number | null
     runtime: NodeRuntimeSummary | null } | null
@@ -242,6 +244,7 @@ export function parseManagedNodes(value: unknown): ManagedNodeSummary[] {
     return { nodeId: uuid(node.nodeId), hostname: text(node.hostname),
       state: enumeration(node.state, ['Online', 'Stale', 'AwaitingHeartbeat'] as const),
       certificateExpiresAt: timestamp(node.certificateExpiresAt), lastSeenAt: nullable(node.lastSeenAt, timestamp),
+      address: nullable(node.address ?? null, text), dnsName: nullable(node.dnsName ?? null, text),
       status: nullable(node.status, entry => {
         const status = object(entry)
         const total = integer(status.memoryTotalBytes)
