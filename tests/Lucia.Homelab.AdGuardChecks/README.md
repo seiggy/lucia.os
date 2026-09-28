@@ -167,6 +167,7 @@ scheme `basicAuth` (`type:http`, `scheme:basic`).
 | List, after profile | GET `/control/rewrite/list` |
 | Add | POST `/control/rewrite/add`, JSON `{domain,answer}` |
 | Delete | POST `/control/rewrite/delete`, JSON `{domain,answer}` |
+| Certificate push (owner opt-in), after profile | GET `/control/tls/status`; POST `/control/tls/configure` with the same settings plus `enabled`, `server_name` and base64 `certificate_chain`/`private_key`, skipped when AdGuard already serves the chain |
 
 Save/verify require a named authenticated profile, the documented status fields
 with `running:true`, a well-formed rewrite list and valid rewrite settings.

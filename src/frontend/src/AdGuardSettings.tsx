@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { Icon } from './Icon'
-import { parseAdGuardStatus } from './networkManagement'
-import type { AdGuardStatus } from './networkManagement'
+import { parseAdGuardCertificate, parseAdGuardStatus } from './networkManagement'
+import type { AdGuardCertificate, AdGuardStatus } from './networkManagement'
 import './NetworkSettings.css'
 
 export function AdGuardSettings({ session, refreshSession }: {
@@ -69,6 +69,8 @@ export function AdGuardSettings({ session, refreshSession }: {
         <div className="network-actions"><button className="button secondary" disabled={busy} onClick={() => void change('DELETE')}>Disconnect AdGuard</button>
           <button className="text-link" disabled={busy} onClick={() => setDisconnect(false)}>Keep connection</button></div></div>}
     </section>}
+    {status?.configured && status.baseUrl && <CertificateSection key={status.baseUrl} host={new URL(status.baseUrl).hostname}
+      session={session} refreshSession={refreshSession} />}
     <section className="surface network-section">
       <h2>{status?.configured ? 'Replace connection settings' : 'Connect AdGuard Home'}</h2>
       <form onSubmit={event => { event.preventDefault(); void change('PUT') }}>
@@ -85,4 +87,66 @@ export function AdGuardSettings({ session, refreshSession }: {
       </form>
     </section>
   </>
+}
+
+function CertificateSection({ host, session, refreshSession }: {
+  host: string; session: AuthenticationSession; refreshSession: () => Promise<void>
+}) {
+  const [certificate, setCertificate] = useState<AdGuardCertificate | null>(null)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const endpoint = '/api/host/connections/adguard/certificate'
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const value = parseAdGuardCertificate(await (await ownerRequest(session, refreshSession, endpoint, 'GET', undefined, signal)).json())
+      if (!signal?.aborted) setCertificate(value)
+    } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : 'Certificate status is unavailable.') }
+  }, [session, refreshSession])
+  useEffect(() => {
+    const controller = new AbortController()
+    void load(controller.signal)
+    return () => controller.abort()
+  }, [load])
+  const issuing = certificate?.enabled && !certificate.error && !certificate.pushedAt
+  useEffect(() => {
+    if (!issuing) return
+    const timer = window.setTimeout(() => void load(), 5000)
+    return () => window.clearTimeout(timer)
+  }, [issuing, certificate, load])
+  async function save(enabled: boolean, name?: string) {
+    setBusy(true); setError(null)
+    try {
+      const value = parseAdGuardCertificate(await (await ownerRequest(session, refreshSession, endpoint, 'PUT',
+        name === undefined ? { enabled } : { enabled, name: name === host ? '' : name })).json())
+      setCertificate(value); setDraft(null)
+    }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'The certificate setting was not saved.') }
+    finally { setBusy(false) }
+  }
+  const name = certificate?.name ?? host
+  const value = draft ?? name
+  const moving = certificate?.enabled && certificate.pushedAt && !certificate.error && name !== host
+  return <section className="surface network-section">
+    <h2>HTTPS certificate</h2>
+    <p className="section-note">Lucia issues a Let’s Encrypt certificate with your domain setup, installs it in AdGuard for HTTPS and encrypted DNS, and renews it before it expires.</p>
+    {error && <p className="network-error" role="alert">{error}</p>}
+    <label className="network-checkbox"><input type="checkbox" checked={certificate?.enabled ?? false} disabled={busy || !certificate}
+      onChange={event => void save(event.target.checked)} />
+      <span><strong>Manage AdGuard’s certificate</strong><br />This replaces the certificate AdGuard serves now. Turning it off keeps the last one installed.</span></label>
+    {certificate?.enabled && <form className="adguard-name-form" onSubmit={event => { event.preventDefault(); void save(true, value.trim().toLowerCase()) }}>
+      <label>Name devices use<input value={value} onChange={event => setDraft(event.target.value)} required maxLength={253}
+        autoComplete="off" spellCheck={false} disabled={busy} aria-describedby="adguard-name-hint" /></label>
+      <p id="adguard-name-hint" className="section-note">For AdGuard’s web page and encrypted DNS. To move AdGuard to a new name, enter it here first; the certificate keeps covering {host} until you change the connection.</p>
+      {draft !== null && draft.trim().toLowerCase() !== name && <div className="network-actions">
+        <button className="button primary" disabled={busy || !draft.trim()}>Save name</button>
+        <button type="button" className="text-link" disabled={busy} onClick={() => setDraft(null)}>Cancel</button></div>}
+    </form>}
+    {certificate?.enabled && <p className={certificate.error ? 'network-warning' : 'section-note'} role="status">
+      {certificate.error ? `${certificate.error} Lucia tries again in 30 minutes.`
+        : certificate.notAfter && certificate.pushedAt
+          ? `AdGuard serves ${certificate.coveredNames.join(' and ')} with a certificate valid until ${new Date(certificate.notAfter).toLocaleDateString()}. Installed ${new Date(certificate.pushedAt).toLocaleString()}.`
+          : `Issuing a certificate for ${name}. This takes a few minutes while DNS checks propagate.`}</p>}
+    {moving && <p className="network-warning">To finish the move, replace the connection’s API origin below with <code>https://{name}</code>. The next renewal then drops {host}.</p>}
+  </section>
 }

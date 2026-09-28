@@ -19,7 +19,12 @@ public sealed record StackPlacement(string? Node = null, string[]? Require = nul
 /// Lucia's glue around a compose project. Every Lucia-specific behaviour belongs here, never only in UI state, so
 /// templates, the onboarding agent and hand edits all produce the same document.
 /// </summary>
-public sealed record StackManifest(int SchemaVersion, StackPlacement Placement, StackTemplate? Template = null);
+/// <param name="Address">
+/// An IPv4 address of its own on your network, taken by the server it runs on. The compose binds ports to <c>${LUCIA_ADDRESS}</c>.
+/// Saving without one keeps the current address; an empty one removes it.
+/// </param>
+public sealed record StackManifest(int SchemaVersion, StackPlacement Placement, StackTemplate? Template = null, StackBackup? Backup = null,
+    string? Address = null);
 /// <param name="Compose">Ignored for catalog apps: Lucia renders their compose and environment.</param>
 public sealed record SaveStackRequest(string? Compose, string? Env, StackManifest Manifest, long? ExpectedRevision = null);
 public sealed record CatalogPreviewRequest(string Node, Dictionary<string, string>? Settings);
@@ -32,23 +37,30 @@ public sealed record StackMove(Guid Id, string From, string To, string Desired, 
 
 public sealed record StackServiceStatus(string Service, string State, string? Health, string? Image, int? ExitCode);
 /// <param name="Received">The move whose data this node has finished receiving for the stack.</param>
+/// <param name="Restored">The restore this node has finished for the stack.</param>
 public sealed record NodeStackStatus(string Name, string State, long? AppliedRevision, string? Message, StackServiceStatus[] Services,
-    Guid? Received = null);
+    Guid? Received = null, NodeBackupStatus? Backup = null, Guid? Restored = null);
 public sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
     string? Service, string? Ports);
 public sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 /// <summary>What a node reports on each stack sync: its Lucia stacks, every container, every listening socket and its NAS mounts.</summary>
+/// <param name="Snapshots">Every Lucia snapshot in the backup repository, as this node last listed it.</param>
+/// <param name="RepositoryError">Why this node couldn't list the backup repository.</param>
 public sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
-    NodeMountStatus[]? Mounts = null);
+    NodeMountStatus[]? Mounts = null, NodeSnapshot[]? Snapshots = null, string? RepositoryError = null, NodeAddressStatus[]? Addresses = null);
 /// <param name="Send">Stream the stack's data for this move once it's stopped.</param>
 /// <param name="Receive">Receive the stack's data for this move before applying it.</param>
+/// <param name="Backup">Back the stack up once for this request.</param>
+/// <param name="Restore">Replace the stack's data with this snapshot before applying it.</param>
+/// <param name="Address">Take this address while the stack runs. Sent only to the node the stack has settled on.</param>
 public sealed record NodeDesiredStack(string Name, long Revision, string Desired, long RestartCount, long PullCount,
-    string Compose, string Env, Guid? Send = null, Guid? Receive = null);
+    string Compose, string Env, Guid? Send = null, Guid? Receive = null, NodeBackupRequest? Backup = null, NodeRestoreRequest? Restore = null,
+    string? Address = null);
 
 /// <param name="Node">The node the stack runs on. Older state kept it only in the manifest's pin.</param>
 internal sealed record StoredStack(string Name, string Compose, string ProtectedEnv, StackManifest Manifest, string Desired,
     long Revision, long RestartCount, long PullCount, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string UpdatedBy,
-    string? Node = null, StackMove? Move = null)
+    string? Node = null, StackMove? Move = null, StackRestore? Restore = null)
 {
     [System.Text.Json.Serialization.JsonIgnore] public string Assigned => Node ?? Manifest.Placement.Node!;
 }
@@ -127,6 +139,13 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             var existing = stacks.FirstOrDefault(stack => stack.Name == name);
             if (request.ExpectedRevision is { } expected && expected != (existing?.Revision ?? 0))
                 throw new HardwareOnboardingException(409, "stack_changed", "Someone else changed this stack. Reload it before saving.");
+            manifest = manifest with
+            {
+                Backup = request.Manifest.Backup is { } backup ? ValidBackup(backup) : existing?.Manifest.Backup,
+                Address = request.Manifest.Address is null ? existing?.Manifest.Address : await ValidAddress(request.Manifest.Address, name, stacks, ct),
+            };
+            if (app is { UsesAddress: true } && manifest.Address is null)
+                throw new HardwareOnboardingException(400, "address_required", $"{app.Name} needs an address of its own on your network.");
             if (existing is null && stacks.Count >= MaxStacks)
                 throw new HardwareOnboardingException(409, "too_many_stacks", $"Lucia runs up to {MaxStacks} stacks. Delete one first.");
             string node;
@@ -204,6 +223,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     {
         if (stack.Move is not null)
             throw new HardwareOnboardingException(409, "stack_moving", "This app is moving. Wait for the move to finish, or cancel it.");
+        if (stack.Restore is not null)
+            throw new HardwareOnboardingException(409, "stack_restoring", "This app is being restored. Wait for the restore to finish, or cancel it.");
     }
 
     /// <summary>start, stop, restart, or update (pull newer images, then recreate what changed).</summary>
@@ -225,7 +246,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 "restart" or "update" => throw new HardwareOnboardingException(409, "stack_stopped", "Start the stack first."),
                 "cancel-move" when stack.Move is { } move => CancelMove(stack, move),
                 "cancel-move" => throw new HardwareOnboardingException(409, "not_moving", "This app isn't moving."),
-                _ => throw new HardwareOnboardingException(404, "unknown_action", "Use start, stop, restart, update or cancel-move."),
+                "cancel-restore" when stack.Restore is not null => stack with { Restore = null },
+                "cancel-restore" => throw new HardwareOnboardingException(409, "not_restoring", "This app isn't being restored."),
+                _ => throw new HardwareOnboardingException(404, "unknown_action", "Use start, stop, restart, update, cancel-move or cancel-restore."),
             } with { UpdatedAt = time.GetUtcNow(), UpdatedBy = actor };
             stacks[stacks.IndexOf(stack)] = changed;
             await Write(stacks, ct);
@@ -309,32 +332,45 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         finally { _gate.Release(); }
     }
 
-    /// <summary>Records a node's report, finishes any move whose data it has received, and returns the stacks for it.</summary>
+    /// <summary>
+    /// Records a node's report, finishes any move or restore it has completed, closes and schedules its backups, and
+    /// returns the stacks for it.
+    /// </summary>
     public async Task<NodeDesiredStack[]> Sync(Guid nodeId, string hostname, NodeStackReport report, CancellationToken ct)
     {
         ValidateReport(report);
         _reports[nodeId] = (time.GetUtcNow(), report);
         var received = report.Stacks.Where(item => item.Received is not null).GroupBy(item => item.Name)
             .ToDictionary(group => group.Key, group => group.First().Received);
+        var restored = report.Stacks.Where(item => item.Restored is not null).GroupBy(item => item.Name)
+            .ToDictionary(group => group.Key, group => group.First().Restored);
         await _gate.WaitAsync(ct);
         try
         {
             var stacks = ReadUnlocked();
             var finished = false;
             for (var i = 0; i < stacks.Length; i++)
+            {
                 if (stacks[i].Move is { } move && move.To == hostname && received.GetValueOrDefault(stacks[i].Name) == move.Id)
                 {
                     stacks[i] = stacks[i] with { Node = move.To, Desired = move.Desired, Move = null, UpdatedAt = time.GetUtcNow() };
                     transfers.Forget(move.Id);
                     finished = true;
                 }
+                if (stacks[i].Restore is { } restore && stacks[i].Assigned == hostname && restored.GetValueOrDefault(stacks[i].Name) == restore.Id)
+                {
+                    stacks[i] = stacks[i] with { Restore = null, UpdatedAt = time.GetUtcNow() };
+                    finished = true;
+                }
+            }
             if (finished) await Write(stacks, ct);
-            return stacks.Select(stack => Desired(stack, hostname)).OfType<NodeDesiredStack>().ToArray();
+            var backups = await SyncBackups(stacks, hostname, report, ct);
+            return stacks.Select(stack => Desired(stack, hostname, backups.GetValueOrDefault(stack.Name))).OfType<NodeDesiredStack>().ToArray();
         }
         finally { _gate.Release(); }
     }
 
-    private NodeDesiredStack? Desired(StoredStack stack, string hostname)
+    private NodeDesiredStack? Desired(StoredStack stack, string hostname, NodeBackupRequest? backup = null)
     {
         (string? Desired, Guid? Send, Guid? Receive) plan = stack.Move switch
         {
@@ -343,8 +379,12 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             null when stack.Assigned == hostname => (stack.Desired, null, null),
             _ => (null, null, null),
         };
+        var settled = stack.Move is null && stack.Assigned == hostname;
         return plan.Desired is null ? null : new(stack.Name, stack.Revision, plan.Desired, stack.RestartCount, stack.PullCount,
-            stack.Compose, _protector.Unprotect(stack.ProtectedEnv), plan.Send, plan.Receive);
+            stack.Compose, NodeEnv(_protector.Unprotect(stack.ProtectedEnv), stack.Manifest), plan.Send, plan.Receive,
+            settled && stack.Restore is null ? backup : null,
+            settled && stack.Restore is { } restore ? new NodeRestoreRequest(restore.Id, restore.Snapshot, Policy(stack).Exclude) : null,
+            settled ? stack.Manifest.Address : null);
     }
 
     /// <summary>Every container and listening socket a node reported in its last sync.</summary>
@@ -375,6 +415,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             status = entry?.Report.Stacks.FirstOrDefault(item => item.Name == stack.Name),
             containers = entry?.Report.Containers.Where(container => container.Project == "lucia-" + stack.Name).ToArray(),
             move,
+            restore = stack.Restore,
+            appAddress = stack.Manifest.Address is { } ip
+                ? new { ip, status = entry?.Report.Addresses?.FirstOrDefault(item => item.Address == ip) } : null,
             template = stack.Manifest.Template is { } template && StackCatalog.Apps.FirstOrDefault(app => app.Id == template.Id) is var app
                 ? new { template.Id, template.Version, latest = app?.Version, name = app?.Name, template.Settings, serverBound = app?.ServerBound ?? false }
                 : null,
@@ -389,7 +432,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         {
             apps = StackCatalog.Apps.Select(app => new
             {
-                app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound,
+                app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound, app.UsesAddress,
                 servers = facts.Select(node => StackCatalog.Server(app, node)).ToArray(),
             }).ToArray(),
         };
@@ -547,6 +590,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             var trimmed = entry.Trim();
             if (trimmed.Length > 0 && !trimmed.StartsWith('#') && !EnvPattern().IsMatch(trimmed))
                 throw new HardwareOnboardingException(400, "invalid_environment", $"Environment line {line} must look like NAME=value.");
+            if (trimmed.StartsWith(AddressVariable + "=", StringComparison.Ordinal))
+                throw new HardwareOnboardingException(400, "invalid_environment", $"Lucia sets {AddressVariable} from the app's address. Remove line {line}.");
         }
     }
 
@@ -559,8 +604,10 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         {
             HardwareInventoryValidation.Require(NamePattern().IsMatch(stack.Name ?? "") && stack.AppliedRevision is null or >= 0
                 && stack.State is "Pending" or "Applying" or "Running" or "Degraded" or "Stopped" or "Failed" or "Removing" or "Sending" or "Receiving"
+                    or "Restoring"
                 && stack.Services is { Length: <= 64 }, "The stack report is invalid.");
             Text(stack.Message, 1024);
+            ValidateBackupStatus(stack.Backup);
             foreach (var service in stack.Services)
             {
                 Text(service.Service, 128, true);
@@ -588,6 +635,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             Text(listener.Process, 64);
         }
         ValidateMounts(report.Mounts);
+        ValidateSnapshots(report.Snapshots);
+        ValidateAddresses(report.Addresses);
+        Text(report.RepositoryError, 1024);
     }
 
     private async Task<StoredStack[]> Read(CancellationToken ct)

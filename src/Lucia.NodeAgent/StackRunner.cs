@@ -11,15 +11,16 @@ namespace Lucia.NodeAgent;
 
 internal sealed record StackServiceStatus(string Service, string State, string? Health, string? Image, int? ExitCode);
 internal sealed record NodeStackStatus(string Name, string State, long? AppliedRevision, string? Message, StackServiceStatus[] Services,
-    Guid? Received = null);
+    Guid? Received = null, NodeBackupStatus? Backup = null, Guid? Restored = null);
 internal sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
     string? Service, string? Ports);
 internal sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 internal sealed record SocketOwner(string Process, string? ContainerId);
 internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
-    NodeMountStatus[] Mounts);
+    NodeMountStatus[] Mounts, NodeSnapshot[]? Snapshots = null, string? RepositoryError = null, NodeAddressStatus[]? Addresses = null);
 internal sealed record NodeDesiredStack(string Name, long Revision, string Desired, long RestartCount, long PullCount,
-    string Compose, string Env, Guid? Send = null, Guid? Receive = null);
+    string Compose, string Env, Guid? Send = null, Guid? Receive = null, NodeBackupRequest? Backup = null, NodeRestoreRequest? Restore = null,
+    string? Address = null);
 internal sealed record AppliedStack(long Revision, string Desired, long RestartCount, long PullCount);
 internal sealed record NodeLink(DiscoveryClient Client, Guid Node, Func<string> Certificate, System.Security.Cryptography.ECDsa Key);
 
@@ -37,8 +38,10 @@ internal static partial class StackRunner
     private static readonly ConcurrentDictionary<string, (string Key, DateTimeOffset At, string Message)> failures = new();
     private static string[] known = [];
     private const string ReceivedMarker = ".lucia-received", SentMarker = ".lucia-sent";
+    internal const string RestoredMarker = ".lucia-restored";
     // Lucia's own files are rewritten from the definition on the receiving node; only the app's data travels.
-    private static readonly string[] NotMoved = ["compose.yaml", ".env", "compose.lucia.json", ".lucia-applied.json", ReceivedMarker, SentMarker];
+    private static readonly string[] NotMoved = ["compose.yaml", ".env", "compose.lucia.json", ".lucia-applied.json", ReceivedMarker, SentMarker,
+        ".lucia-backup.json", RestoredMarker];
 
     internal static async Task RunAsync(DiscoveryClient client, Guid node, Func<string> certificate, System.Security.Cryptography.ECDsa key,
         CancellationToken token)
@@ -55,6 +58,17 @@ internal static partial class StackRunner
                 var desired = await client.StacksAsync(node, certificate(), Report(containers), key, token);
                 // Older servers send no mounts; leave existing units alone rather than removing them.
                 if (desired.Mounts is { } mounts) NasMounts.Reconcile(mounts, token);
+                ResticBackups.Configure(desired.Backup, token);
+                try
+                {
+                    await StackAddresses.ReconcileAsync((desired.Stacks ?? []).Where(stack => stack.Desired == "Running" && stack.Send is null)
+                        .Select(stack => stack.Address).OfType<string>(), token);
+                }
+                // Apps with an address wait for it; the rest carry on.
+                catch (Exception ex) when (ex is NodeAgentException or IOException or UnauthorizedAccessException or JsonException)
+                {
+                    Console.Error.WriteLine("Couldn't reconcile app addresses. " + ex.Message);
+                }
                 Reconcile(desired.Stacks ?? [], link, token);
                 lastError = null;
             }
@@ -75,16 +89,20 @@ internal static partial class StackRunner
                 new StackServiceStatus(item.Service ?? item.Name, item.State, Health(item.Status), item.Image, ExitCode(item.Status))).ToArray();
             var applied = ReadApplied(name);
             var received = ReadMarker(name, ReceivedMarker);
-            if (busy.TryGetValue(name, out var working)) return new NodeStackStatus(name, working, applied?.Revision, null, services, received);
+            var backup = ResticBackups.Status(name);
+            var restored = ReadMarker(name, RestoredMarker);
+            // A backup doesn't change what the app is doing, so it reports its usual state.
+            if (busy.TryGetValue(name, out var working) && working != BackingUp)
+                return new NodeStackStatus(name, working, applied?.Revision, null, services, received, backup, restored);
             if (failures.TryGetValue(name, out var failure))
-                return new NodeStackStatus(name, "Failed", applied?.Revision, failure.Message, services, received);
+                return new NodeStackStatus(name, "Failed", applied?.Revision, failure.Message, services, received, backup, restored);
             var running = services.Count(item => item.State == "running" && item.Health != "unhealthy");
             var state = applied is null ? "Pending"
                 : applied.Desired == "Stopped" ? "Stopped"
                 : services.Length > 0 && running == services.Length ? "Running" : "Degraded";
-            return new NodeStackStatus(name, state, applied?.Revision, null, services, received);
+            return new NodeStackStatus(name, state, applied?.Revision, null, services, received, backup, restored);
         }).ToArray();
-        return new(stacks, containers, Listeners(), NasMounts.Report());
+        return new(stacks, containers, Listeners(), NasMounts.Report(), ResticBackups.Snapshots, ResticBackups.Error, StackAddresses.Report());
     }
 
     private static void Reconcile(NodeDesiredStack[] desired, NodeLink link, CancellationToken token)
@@ -105,6 +123,13 @@ internal static partial class StackRunner
                     Start(stack.Name, "Receiving", () => ReceiveAsync(link, stack.Name, incoming, token), "receive:" + incoming);
                 continue;
             }
+            // A restore swaps the snapshot's data in first; the stack then applies onto it like a fresh one.
+            if (stack.Restore is { } restore && ReadMarker(stack.Name, RestoredMarker) != restore.Id)
+            {
+                if (Due(stack.Name, "restore:" + restore.Id))
+                    Start(stack.Name, "Restoring", () => RestoreAsync(stack.Name, restore, token), "restore:" + restore.Id);
+                continue;
+            }
             if (applied == target)
             {
                 // A sending node stops the stack first (the target below says Stopped), then streams it once.
@@ -113,10 +138,18 @@ internal static partial class StackRunner
                     if (Due(stack.Name, "send:" + outgoing))
                         Start(stack.Name, "Sending", () => SendAsync(link, stack.Name, outgoing, token), "send:" + outgoing);
                 }
-                else failures.TryRemove(stack.Name, out _);
+                else
+                {
+                    failures.TryRemove(stack.Name, out _);
+                    if (stack.Backup is { } backup && ResticBackups.Status(stack.Name)?.Id != backup.Id) StartBackup(stack.Name, backup, applied, token);
+                }
                 continue;
             }
             var key = JsonSerializer.Serialize(target);
+            // Waiting on an address shouldn't cost the usual backoff once it's taken; DNS is down until the app starts.
+            if (stack.Address is { } address && StackAddresses.Held(address) && failures.TryGetValue(stack.Name, out var waiting)
+                && waiting.Message.StartsWith(StackAddresses.Waiting, StringComparison.Ordinal))
+                failures.TryRemove(stack.Name, out _);
             if (Due(stack.Name, key)) Start(stack.Name, "Applying", () => ApplyAsync(stack, applied, token), key);
         }
         if (Directory.Exists(Root))
@@ -132,6 +165,23 @@ internal static partial class StackRunner
     private static bool Due(string name, string key) =>
         !(failures.TryGetValue(name, out var failure) && failure.Key == key && DateTimeOffset.UtcNow - failure.At < RetryAfterFailure);
 
+    private const string BackingUp = "BackingUp";
+
+    private static void StartBackup(string name, NodeBackupRequest backup, AppliedStack applied, CancellationToken token)
+    {
+        if (!busy.TryAdd(name, BackingUp)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ResticBackups.BackupAsync(name, backup, arguments => ComposeAsync(name, arguments, TimeSpan.FromMinutes(5), token),
+                    stop: backup.Mode == "stop" && applied.Desired == "Running", token);
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"Backup of {name} failed. {ex.Message}"); }
+            finally { busy.TryRemove(name, out _); }
+        });
+    }
+
     private static void Start(string name, string state, Func<Task> work, string key)
     {
         if (!busy.TryAdd(name, state)) return;
@@ -142,7 +192,7 @@ internal static partial class StackRunner
                 await work();
                 failures.TryRemove(name, out _);
                 Console.Error.WriteLine($"Stack {name}: " + state switch
-                    { "Removing" => "removed.", "Sending" => "sent.", "Receiving" => "received.", _ => "applied." });
+                    { "Removing" => "removed.", "Sending" => "sent.", "Receiving" => "received.", "Restoring" => "restored.", _ => "applied." });
             }
             // Any failure is recorded so it's reported and retried on the backoff; an unobserved fault would retry at once, silently.
             catch (Exception ex)
@@ -178,6 +228,7 @@ internal static partial class StackRunner
             // Docker would bind the empty mount point, and the app wouldn't see the share once it mounted.
             if (NasMounts.Unmounted(stack.Compose) is { } share)
                 throw new NodeAgentException($"Waiting for the NAS share {share} to mount on this server.");
+            if (stack.Address is { } address && !StackAddresses.Held(address)) throw new NodeAgentException(StackAddresses.Problem(address));
             if (applied is not null && stack.PullCount != applied.PullCount)
                 await ComposeAsync(stack.Name, ["pull", "--quiet"], TimeSpan.FromMinutes(30), token);
             string[] up = applied is not null && stack.RestartCount != applied.RestartCount
@@ -250,6 +301,59 @@ internal static partial class StackRunner
         File.SetUnixFileMode(incoming, Private);
         Directory.Move(incoming, directory);
         WritePrivate(Path.Combine(directory, ReceivedMarker), move.ToString("D"));
+    }
+
+    /// <summary>
+    /// Restores the snapshot beside the stack, then swaps it in the way a move does: the current data is kept aside as
+    /// <c>.replaced-&lt;name&gt;-&lt;time&gt;</c>, never merged or deleted.
+    /// </summary>
+    private static async Task RestoreAsync(string name, NodeRestoreRequest restore, CancellationToken token)
+    {
+        if (!OperatingSystem.IsLinux()) throw new NodeAgentException("Stacks run only on Linux nodes.");
+        const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        Directory.CreateDirectory(Root, Private);
+        var directory = Path.Combine(Root, name);
+        var incoming = Path.Combine(Root, ".restore-" + name);
+        if (Directory.Exists(incoming)) Directory.Delete(incoming, recursive: true);
+        try { await ResticBackups.RestoreAsync(name, restore.Snapshot, incoming, token); }
+        catch
+        {
+            try { if (Directory.Exists(incoming)) Directory.Delete(incoming, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            throw;
+        }
+        if (!Directory.Exists(incoming)) Directory.CreateDirectory(incoming, Private);
+        if (Directory.Exists(directory))
+        {
+            if (File.Exists(Path.Combine(directory, "compose.yaml")))
+                await ComposeAsync(name, ["down", "--remove-orphans"], TimeSpan.FromMinutes(5), token);
+            // Skipped paths, such as downloaded models, aren't in the snapshot; keep the current copies instead of losing them.
+            foreach (var path in ResticBackups.Declared(restore.Keep ?? []))
+            {
+                var from = Path.Combine(directory, path);
+                var to = Path.Combine(incoming, path);
+                if (!Path.Exists(from) || Path.Exists(to) || ThroughLink(incoming, path) || ThroughLink(directory, path)) continue;
+                Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                if (Directory.Exists(from)) Directory.Move(from, to); else File.Move(from, to);
+            }
+            Directory.Move(directory, Path.Combine(Root, $".replaced-{name}-{DateTime.UtcNow:yyyyMMddTHHmmssZ}"));
+        }
+        File.SetUnixFileMode(incoming, Private);
+        Directory.Move(incoming, directory);
+        // Nothing of the old apply state came back, so the stack applies from scratch onto the restored data.
+        File.Delete(Path.Combine(directory, ".lucia-applied.json"));
+        WritePrivate(Path.Combine(directory, RestoredMarker), restore.Id.ToString("D"));
+    }
+
+    /// <summary>Whether a restored folder on the way to <paramref name="path"/> is a symlink, which could point outside the app.</summary>
+    private static bool ThroughLink(string root, string path)
+    {
+        var current = root;
+        foreach (var part in path.Split('/')[..^1])
+        {
+            current = Path.Combine(current, part);
+            if (new DirectoryInfo(current) is { Exists: true, LinkTarget: not null } || File.Exists(current)) return true;
+        }
+        return false;
     }
 
     private static Guid? ReadMarker(string name, string marker)
@@ -416,7 +520,7 @@ internal static partial class StackRunner
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { return null; }
     }
 
-    private static void WritePrivate(string path, string text)
+    internal static void WritePrivate(string path, string text)
     {
         var temporary = path + ".tmp";
         File.WriteAllText(temporary, text);
@@ -450,7 +554,7 @@ internal static class Commands
         (await CaptureAsync(executable, arguments, limit, token, keep, failOnError: true)).Stdout;
 
     internal static async Task<(int Exit, string Stdout, string Stderr)> CaptureAsync(string executable, string[] arguments,
-        TimeSpan limit, CancellationToken token, int keep, bool failOnError)
+        TimeSpan limit, CancellationToken token, int keep, bool failOnError, IReadOnlyDictionary<string, string>? environment = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(limit);
@@ -459,6 +563,7 @@ internal static class Commands
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         start.Environment["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin";
         start.Environment["HOME"] = "/root";
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>()) start.Environment[name] = value;
         using var process = Process.Start(start) ?? throw new NodeAgentException($"'{Path.GetFileName(executable)}' could not start.");
         process.StandardInput.Close();
         try

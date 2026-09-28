@@ -47,6 +47,57 @@ internal static class StackChecks
         Rejects(() => StackStore.ValidateReport(report with { Listeners = [new("tcp", "0.0.0.0", 70000)] }),
             "An out-of-range port was accepted.");
 
+        var snapshot = new string('c', 64);
+        StackStore.ValidateReport(report with
+        {
+            Stacks = [report.Stacks[0] with { Backup = new(Guid.NewGuid(), "Succeeded", DateTimeOffset.UtcNow, Snapshot: snapshot, Added: 10, Total: 20) }],
+            Snapshots = [new(snapshot, "plex", "lucialab01", DateTimeOffset.UtcNow, 20)],
+        });
+        check(true, "A valid backup report was rejected.");
+        Rejects(() => StackStore.ValidateReport(report with { Stacks = [report.Stacks[0] with { Backup = new(Guid.NewGuid(), "Exploded", DateTimeOffset.UtcNow) }] }),
+            "An unknown backup state was accepted.");
+        Rejects(() => StackStore.ValidateReport(report with { Snapshots = [new("abc", "plex", "lucialab01", DateTimeOffset.UtcNow)] }),
+            "A malformed snapshot id was accepted.");
+        Rejects(() => StackStore.ValidateReport(report with { Snapshots = [new(snapshot, "../etc", "lucialab01", DateTimeOffset.UtcNow)] }),
+            "A snapshot of an invalid stack name was accepted.");
+        Rejects(() => StackStore.ValidBackup(new(true, "pause")), "An unknown backup mode was accepted.");
+
+        check(StackStore.ValidAddress(" 192.168.1.230 ") == "192.168.1.230" && StackStore.ValidAddress("") is null,
+            "A valid app address was rejected.");
+        foreach (var bad in new[] { "8.8.8.8", "192.168.1.0", "192.168.1.255", "192.168.01.5", "192.168.1", "::1", "fd00::53", "10.0.0.5/24" })
+            Rejects(() => StackStore.ValidAddress(bad), $"The app address '{bad}' was accepted.");
+        Rejects(() => StackStore.ValidateEnv("LUCIA_ADDRESS=192.168.1.9"), "An environment that sets Lucia's address was accepted.");
+        var manifest = new StackManifest(1, new(), Address: "192.168.1.230");
+        check(StackStore.NodeEnv("TZ=UTC\n", manifest) == "TZ=UTC\nLUCIA_ADDRESS=192.168.1.230\n"
+            && StackStore.NodeEnv("", manifest) == "LUCIA_ADDRESS=192.168.1.230\n" && StackStore.NodeEnv("TZ=UTC\n", manifest with { Address = null }) == "TZ=UTC\n",
+            "The node must get the app's address in its environment.");
+        var adguard = StackCatalog.Find("adguard");
+        var adguardCompose = adguard.Render(StackCatalog.Settings(adguard, null), null!, new Dictionary<string, string>()).Compose;
+        check(adguard.UsesAddress && !adguard.ServerBound && adguardCompose.Contains("      - \"${LUCIA_ADDRESS}:53:53/udp\"\n", StringComparison.Ordinal)
+            && adguardCompose.Contains("      - \"${LUCIA_ADDRESS}:853:853/tcp\"\n", StringComparison.Ordinal)
+            && !System.Text.RegularExpressions.Regex.IsMatch(adguardCompose, @"- ""\d"), "AdGuard must publish every port on its own address only.");
+        StackStore.ValidateReport(report with { Addresses = [new("192.168.1.230", "Held"), new("192.168.1.231", "InUse", "aa:bb:cc:dd:ee:ff")] });
+        check(true, "A valid address report was rejected.");
+        Rejects(() => StackStore.ValidateReport(report with { Addresses = [new("192.168.1.230", "Stolen")] }), "An unknown address state was accepted.");
+        Rejects(() => StackStore.ValidateReport(report with { Addresses = [new("eth0; rm", "Held")] }), "A malformed reported address was accepted.");
+        check(StackStore.ValidBackup(new(false, "stop")) == new StackBackup(false, "stop"), "A valid backup setting was rejected.");
+
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
+        check(StackStore.NextRun(DateTimeOffset.Parse("2025-06-01T12:00:00Z"), chicago) == DateTimeOffset.Parse("2025-06-02T08:00:00Z")
+            && StackStore.NextRun(DateTimeOffset.Parse("2025-06-02T07:59:00Z"), chicago) == DateTimeOffset.Parse("2025-06-02T08:00:00Z")
+            && StackStore.NextRun(DateTimeOffset.Parse("2025-06-02T08:00:00Z"), chicago) == DateTimeOffset.Parse("2025-06-03T08:00:00Z"),
+            "Backups must run at the next 03:00 in the owner's zone, never at the instant the last one was asked for.");
+        check(StackStore.NextRun(DateTimeOffset.Parse("2025-03-08T10:00:00Z"), chicago) == DateTimeOffset.Parse("2025-03-09T08:00:00Z")
+            && StackStore.NextRun(DateTimeOffset.Parse("2025-11-01T09:00:00Z"), chicago) == DateTimeOffset.Parse("2025-11-02T09:00:00Z"),
+            "Backups must follow 03:00 local time across daylight-saving changes.");
+        // A zone whose clocks jump from 03:00 to 04:00 has no 03:00 that day; the backup runs an hour later instead of skipping it.
+        var jump = TimeZoneInfo.CreateCustomTimeZone("Jump", TimeSpan.Zero, "Jump", "Jump", "Jump Summer",
+            [TimeZoneInfo.AdjustmentRule.CreateAdjustmentRule(new DateTime(2020, 1, 1), new DateTime(2030, 12, 31), TimeSpan.FromHours(1),
+                TimeZoneInfo.TransitionTime.CreateFixedDateRule(new DateTime(1, 1, 1, 3, 0, 0), 3, 30),
+                TimeZoneInfo.TransitionTime.CreateFixedDateRule(new DateTime(1, 1, 1, 3, 0, 0), 10, 26))]);
+        check(StackStore.NextRun(DateTimeOffset.Parse("2025-03-29T12:00:00Z"), jump) == DateTimeOffset.Parse("2025-03-30T03:00:00Z"),
+            "A day without a 03:00 must still get its backup.");
+
         var requests = new NodeRequests();
         var node = Guid.NewGuid();
         var logs = requests.Logs(node, "lucia-plex-plex-1", 50, CancellationToken.None);

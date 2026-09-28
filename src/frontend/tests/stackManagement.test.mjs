@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { containerState, describeUnmet, mountLabel, nasDraftProblem, parseNasList, shareNameFrom, shareState, moveState, parseInventory, parseStackDetail, parseStackList, portRows, requirementForm, requirementList, stackState, unmetRequirement, validateStackDraft } from '../.checks/stackManagement.js'
+import { appAddressProblem, appAddressState, containerState, describeUnmet, mountLabel, nasDraftProblem, parseNasList, shareNameFrom, shareState, moveState, parseInventory, parseStackDetail, parseStackList, portRows, requirementForm, requirementList, stackState, unmetRequirement, validateStackDraft } from '../.checks/stackManagement.js'
 import { parseRoute } from '../.checks/dashboard.js'
 
 const at = '2026-09-22T16:00:00Z'
@@ -186,3 +186,67 @@ console.log('stacks checks passed')
   assert.equal(unmetRequirement(['nas=unas/Media'], { memoryTotalBytes: 1, runtime: null }), null)
   assert.deepEqual(parseRoute('#/settings/storage'), { page: 'storage-settings' })
 }
+
+{
+  const { parseBackups, parseBackupRecovery, backupState, backupOrder, backupFolderProblem, ago } = await import('../.checks/stackManagement.js')
+  const now = Date.parse(at)
+  const snapshot = 'c'.repeat(64)
+  const done = { id: nodeId, state: 'Succeeded', startedAt: '2026-09-22T08:00:00Z', finishedAt: '2026-09-22T08:05:00Z', snapshot, added: 10, total: 2048 }
+  const app = { name: 'media', node: 'lucialab01', enabled: true, mode: 'live', exclude: [], requested: null, running: null,
+    last: done, lastNode: 'lucialab01', lastSuccess: done, nextRun: '2026-09-23T08:00:00Z',
+    snapshots: [{ id: snapshot, stack: 'media', host: 'lucialab01', time: '2026-09-22T08:00:00Z', size: 2048 }] }
+  const overview = parseBackups({
+    destination: { nas: 'unas', share: 'Backups', folder: 'lucia', path: '/mnt/lucia/nas/unas/Backups/lucia', source: '192.168.0.172:/var/nfs/shared/Backups/lucia',
+      timeZone: 'America/Chicago', updatedAt: at, updatedBy: 'zack',
+      mounts: [{ node: 'lucialab01', status: { nas: 'unas', share: 'Backups', state: 'Mounted' }, repositoryError: null }, { node: 'old', status: null, repositoryError: null }] },
+    schedule: { time: '03:00', keepDaily: 7, keepWeekly: 4, keepMonthly: 6 },
+    shares: [{ nas: 'unas', share: 'Backups', mountPath: '/mnt/lucia/nas/unas/Backups' }],
+    apps: [app, { ...app, name: 'ai', mode: 'stop', exclude: ['volumes/models'], last: { ...done, state: 'Failed', message: 'share not mounted' } },
+      { ...app, name: 'zed', last: null, lastSuccess: null, snapshots: [] }],
+  })
+  const destination = overview.destination
+  assert.deepEqual(destination.nodes.map(node => node.state), ['Mounted', null])
+  assert.equal(overview.apps[1].exclude[0], 'volumes/models')
+  assert.throws(() => parseBackups({ ...overview, destination: null, apps: [{ ...app, mode: 'pause' }] }))
+  assert.throws(() => parseBackups({ ...overview, destination: null, apps: [{ ...app, last: { ...done, state: 'Exploded' } }] }))
+
+  assert.deepEqual(backupState(overview.apps[0], destination, now), { label: 'Backed up', tone: 'green', detail: '8 hours ago, 2.0 KB.' })
+  assert.match(backupState(overview.apps[1], destination, now).detail, /^share not mounted Last good backup 8 hours ago/)
+  assert.equal(backupState(overview.apps[0], destination, now + 3 * 86400000).label, 'Overdue')
+  assert.equal(backupState({ ...overview.apps[0], requested: { at, by: 'zack' } }, destination, now).label, 'Queued')
+  assert.equal(backupState({ ...overview.apps[0], running: { ...done, state: 'Running' } }, destination, now).label, 'Backing up')
+  assert.equal(backupState({ ...overview.apps[0], enabled: false }, destination, now).label, 'Off')
+  assert.equal(backupState(overview.apps[2], destination, now).label, 'Not backed up yet')
+  assert.equal(backupState(overview.apps[0], null, now).label, 'Not set up')
+  assert.deepEqual(backupOrder(overview.apps, destination, now).map(item => item.name), ['ai', 'zed', 'media'])
+
+  assert.equal(backupFolderProblem('lucia'), null)
+  assert.equal(backupFolderProblem('/lab/lucia/'), null)
+  assert.equal(backupFolderProblem(''), null)
+  assert.match(backupFolderProblem('../etc'), /letters/)
+  assert.match(backupFolderProblem('my backups'), /letters/)
+  assert.equal(ago('2026-09-22T15:59:40Z', now), 'just now')
+  assert.equal(ago('2026-09-21T16:00:00Z', now), 'yesterday')
+  assert.equal(parseBackupRecovery({ repository: '/mnt/x', source: null, kind: 'nfs', password: 'abcde-fghjk', updatedAt: at }).password, 'abcde-fghjk')
+  assert.throws(() => parseBackupRecovery({ repository: '/mnt/x', kind: 'ftp', password: 'x', updatedAt: at }))
+
+  const restoring = parseStackList({ stacks: [{ ...summary, restore: { id: nodeId, snapshot, startedAt: at, startedBy: 'zack' } }] })[0]
+  assert.equal(stackState(restoring).label, 'Restoring')
+  assert.equal(stackState({ ...restoring, status: { ...restoring.status, state: 'Failed', message: 'Snapshot isn’t a backup of media.' } }).label, 'Restore stalled')
+  assert.equal(stack.restore, null)
+  assert.deepEqual(parseRoute('#/apps/backups'), { page: 'apps', view: 'backups' })
+}
+const addressed = (appAddress, extra = {}) => appAddressState(parseStackList({ stacks: [{ ...summary, appAddress, ...extra }] })[0])
+assert.equal(stack.appAddress, null)
+assert.equal(appAddressState(stack), null)
+assert.equal(addressed({ ip: '192.168.1.230', status: { state: 'Held' } }).label, 'Active')
+assert.equal(addressed({ ip: '192.168.1.230', status: null }).label, 'Waiting')
+assert.equal(addressed({ ip: '192.168.1.230', status: null }, { desired: 'Stopped' }).label, 'Not taken')
+const taken = addressed({ ip: '192.168.1.230', status: { state: 'InUse', message: 'The device aa:bb:cc:dd:ee:ff answers for it.' } })
+assert.equal(taken.tone, 'failed')
+assert.match(taken.detail, /aa:bb:cc:dd:ee:ff.*lucialab01 can take it/)
+assert.throws(() => addressed({ ip: '192.168.1.230', status: { state: 'Stolen' } }))
+assert.equal(appAddressProblem(' 192.168.1.230 '), null)
+for (const bad of ['', '8.8.8.8', '192.168.1.0', '192.168.1.255', '192.168.01.5', '192.168.1', '10.0.0.5/24', 'fd00::53'])
+  assert.notEqual(appAddressProblem(bad), null, bad)
+assert.equal(stackState(parseStackList({ stacks: [{ ...summary, status: { ...summary.status, state: 'Failed', message: 'Waiting for this server to take the address 192.168.1.230.' } }] })[0]).label, 'Waiting')

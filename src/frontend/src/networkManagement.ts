@@ -95,6 +95,16 @@ export function parseAdGuardStatus(value: unknown): AdGuardStatus {
   return { configured: boolean(x.configured), baseUrl: optional(x.baseUrl, text), username: optional(x.username, text),
     allowInsecureHttp: boolean(x.allowInsecureHttp), version: optional(x.version, text), lastVerifiedAt: optional(x.lastVerifiedAt, date) }
 }
+export interface AdGuardCertificate {
+  enabled: boolean; name: string | null; notAfter: string | null; checkedAt: string | null; pushedAt: string | null; error: string | null
+  coveredNames: string[]
+}
+export function parseAdGuardCertificate(value: unknown): AdGuardCertificate {
+  const x = object(value)
+  return { enabled: boolean(x.enabled), name: optional(x.name, text), notAfter: optional(x.notAfter, date),
+    checkedAt: optional(x.checkedAt, date), pushedAt: optional(x.pushedAt, date), error: optional(x.error, text),
+    coveredNames: optional(x.coveredNames, strings) ?? [] }
+}
 export interface UniFiStatus {
   configured: boolean; baseUrl: string | null; site: string | null; certificateSha256: string | null
   networkVersion: string | null; reserveNodeAddresses: boolean; lastVerifiedAt: string | null

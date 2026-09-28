@@ -14,8 +14,11 @@ export interface StackSummary {
   name: string; node: string; nodeId: string | null; desired: 'Running' | 'Stopped'; revision: number
   createdAt: string; updatedAt: string; updatedBy: string; reportedAt: string | null
   status: StackStatus | null; containers: NodeContainer[]; placement: StackPlacement; move: StackMove | null
-  template: StackTemplateInfo | null
+  template: StackTemplateInfo | null; restore: StackRestore | null; appAddress: AppAddress | null
 }
+/** The app's own address on the network. `status` is the server's last report, missing until it tries to take it. */
+export interface AppAddress { ip: string; status: { state: 'Held' | 'InUse' | 'NoSubnet'; message: string | null } | null }
+export interface StackRestore { id: string; snapshot: string; startedAt: string; startedBy: string }
 export interface CatalogOption { value: string; label: string; help: string }
 /** `when` is `id=value` or `id=one|other`: the field applies only while that setting has one of those values. Hidden fields are set by Lucia's own screens. */
 export interface CatalogField {
@@ -26,7 +29,7 @@ export interface CatalogGpu { uuid: string; model: string; memoryBytes: number |
 export interface CatalogServer { nodeId: string; hostname: string; unmet: string | null; reason: string | null; gpus: CatalogGpu[] | null }
 export interface CatalogApp {
   id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
-  serverBound: boolean; servers: CatalogServer[]
+  serverBound: boolean; usesAddress: boolean; servers: CatalogServer[]
 }
 export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null }
 export interface NodeInventory { reportedAt: string; containers: NodeContainer[]; listeners: NodeListener[] }
@@ -91,7 +94,45 @@ export function parseStackSummary(value: unknown): StackSummary {
     reportedAt: absent(item.reportedAt) ? null : timestamp(item.reportedAt),
     status: absent(item.status) ? null : parseStatus(item.status),
     containers: absent(item.containers) ? [] : list(item.containers, parseContainer, 256),
-    placement: parsePlacement(item.placement), move: parseMove(item.move), template: parseTemplate(item.template) }
+    placement: parsePlacement(item.placement), move: parseMove(item.move), template: parseTemplate(item.template),
+    restore: parseRestore(item.restore), appAddress: parseAppAddress(item.appAddress) }
+}
+
+function parseAppAddress(value: unknown): AppAddress | null {
+  if (absent(value)) return null
+  const item = object(value)
+  const status = absent(item.status) ? null : object(item.status)
+  if (status && status.state !== 'Held' && status.state !== 'InUse' && status.state !== 'NoSubnet') throw invalid()
+  return { ip: text(item.ip), status: status && { state: status.state as 'Held' | 'InUse' | 'NoSubnet', message: optional(status.message) } }
+}
+
+const quad = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
+/** Mirrors the server: a private IPv4 address that isn't a subnet's .0 or .255. */
+export function appAddressProblem(value: string): string | null {
+  const address = value.trim()
+  if (!address) return 'Enter an address, such as 192.168.1.53.'
+  const [a, b, , d] = address.split('.').map(Number)
+  if (!quad.test(address) || !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) || d === 0 || d === 255)
+    return 'Use a private IPv4 address on your network, such as 192.168.1.53.'
+  return null
+}
+
+/** How the app's address stands, for its page. */
+export function appAddressState(stack: StackSummary): { label: string; tone: StackTone; detail: string } | null {
+  const address = stack.appAddress
+  if (!address) return null
+  if (stack.move) return { label: 'Released', tone: 'muted', detail: `Given up while the app moves. ${stack.move.to} takes it when the move finishes.` }
+  if (stack.desired === 'Stopped') return { label: 'Not taken', tone: 'muted', detail: `${stack.node} takes it when the app starts.` }
+  if (!address.status) return { label: 'Waiting', tone: 'amber', detail: `${stack.node} takes it on its next check-in.` }
+  if (address.status.state === 'Held') return { label: 'Active', tone: 'green', detail: `${stack.node} answers for it.` }
+  return { label: address.status.state === 'InUse' ? 'In use' : 'Wrong network', tone: 'failed',
+    detail: `${address.status.message ?? ''} The app starts once ${stack.node} can take it.`.trim() }
+}
+
+function parseRestore(value: unknown): StackRestore | null {
+  if (absent(value)) return null
+  const item = object(value)
+  return { id: text(item.id), snapshot: text(item.snapshot), startedAt: timestamp(item.startedAt), startedBy: text(item.startedBy) }
 }
 
 function settingsOf(value: unknown): Record<string, string> {
@@ -110,7 +151,7 @@ export function parseCatalog(value: unknown): CatalogApp[] {
   return list(object(value).apps, entry => {
     const app = object(entry)
     return { id: text(app.id), version: integer(app.version), name: text(app.name), summary: text(app.summary), needs: text(app.needs),
-      require: list(app.require, text, 16), serverBound: app.serverBound === true,
+      require: list(app.require, text, 16), serverBound: app.serverBound === true, usesAddress: app.usesAddress === true,
       fields: list(app.fields, field => {
         const row = object(field)
         if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'hidden') throw invalid()
@@ -268,6 +309,11 @@ export function portRows(inventory: NodeInventory): PortRow[] {
 /** The plain-language state an owner sees for an app. */
 export function stackState(stack: StackSummary): { label: string; tone: StackTone; detail: string } {
   if (stack.move) return moveState(stack.move, stack.status)
+  if (stack.restore) return stack.status?.state === 'Failed'
+    ? { label: 'Restore stalled', tone: 'failed', detail: `${stack.status.message ?? 'The restore failed.'} Lucia retries every 2 minutes, or cancel the restore.` }
+    : { label: 'Restoring', tone: 'accent', detail: stack.status?.state === 'Restoring'
+      ? `${stack.node} is copying the snapshot back and will start the app on it.`
+      : `${stack.node} starts the restore at its next check-in.` }
   const services = stack.status?.services ?? []
   const running = services.filter(service => service.state === 'running' && service.health !== 'unhealthy').length
   const count = services.length === 1 ? '1 container' : `${services.length} containers`
@@ -276,6 +322,8 @@ export function stackState(stack: StackSummary): { label: string; tone: StackTon
     ? { label: 'Waiting for server', tone: 'muted', detail: `${stack.node} will pick this up at its next check-in.` }
     : { label: 'Server not reporting', tone: 'amber', detail: `${stack.node} hasn't checked in recently. It may be offline or need an agent update.` }
   const state = stack.status.state
+  // The agent reports waits on a NAS share or the app's address as failures; they clear themselves once the thing arrives.
+  if (state === 'Failed' && stack.status.message?.startsWith('Waiting for ')) return { label: 'Waiting', tone: 'amber', detail: stack.status.message }
   if (state === 'Failed') return { label: 'Failed', tone: 'failed', detail: stack.status.message ?? 'The server could not apply this app.' }
   if (state === 'Removing') return { label: 'Removing', tone: 'muted', detail: 'Taking the containers down.' }
   if (state === 'Applying' || state === 'Pending' || stack.status.appliedRevision !== stack.revision)
@@ -527,5 +575,125 @@ export function nasDraftProblem(draft: NasDraft, saved: NasServer | null): strin
   }
   const names = draft.shares.map(share => share.name.trim().toLowerCase())
   if (new Set(names).size !== names.length) return 'Give each share a different folder name.'
+  return null
+}
+export type BackupState = 'Running' | 'Succeeded' | 'Failed'
+export interface BackupStatus {
+  id: string; state: BackupState; startedAt: string; finishedAt: string | null; snapshot: string | null
+  added: number | null; total: number | null; message: string | null
+}
+export interface BackupSnapshot { id: string; stack: string; host: string; time: string; size: number | null }
+export interface BackupApp {
+  name: string; node: string; enabled: boolean; mode: 'live' | 'stop'; exclude: string[]
+  requested: { at: string; by: string } | null; running: BackupStatus | null
+  last: BackupStatus | null; lastNode: string | null; lastSuccess: BackupStatus | null; nextRun: string | null; snapshots: BackupSnapshot[]
+}
+export interface BackupNode { node: string; state: MountState | null; message: string | null; repositoryError: string | null }
+export interface BackupDestination {
+  nas: string; share: string; folder: string; path: string; source: string | null; timeZone: string
+  updatedAt: string; updatedBy: string; nodes: BackupNode[]
+}
+export interface BackupOverview {
+  destination: BackupDestination | null
+  schedule: { time: string; keepDaily: number; keepWeekly: number; keepMonthly: number }
+  shares: { nas: string; share: string; mountPath: string }[]
+  apps: BackupApp[]
+}
+export interface BackupRecovery { repository: string; source: string | null; kind: NasKind | null; password: string; updatedAt: string }
+
+export const backupFolderPattern = /^[A-Za-z0-9._-]{1,64}(?:\/[A-Za-z0-9._-]{1,64}){0,3}$/
+
+function parseBackupStatus(value: unknown): BackupStatus | null {
+  if (absent(value)) return null
+  const item = object(value)
+  const state = text(item.state)
+  if (state !== 'Running' && state !== 'Succeeded' && state !== 'Failed') throw invalid()
+  const size = (entry: unknown) => absent(entry) ? null : integer(entry)
+  return { id: text(item.id), state, startedAt: timestamp(item.startedAt), finishedAt: absent(item.finishedAt) ? null : timestamp(item.finishedAt),
+    snapshot: optional(item.snapshot), added: size(item.added), total: size(item.total), message: optional(item.message) }
+}
+
+export function parseBackups(value: unknown): BackupOverview {
+  const item = object(value)
+  const schedule = object(item.schedule)
+  const destination = absent(item.destination) ? null : object(item.destination)
+  return {
+    destination: destination && {
+      nas: text(destination.nas), share: text(destination.share), folder: text(destination.folder), path: text(destination.path),
+      source: optional(destination.source), timeZone: text(destination.timeZone), updatedAt: timestamp(destination.updatedAt),
+      updatedBy: text(destination.updatedBy),
+      nodes: list(destination.mounts, entry => {
+        const row = object(entry)
+        return { ...parseNasMount(row), repositoryError: optional(row.repositoryError) }
+      }, 256),
+    },
+    schedule: { time: text(schedule.time), keepDaily: integer(schedule.keepDaily), keepWeekly: integer(schedule.keepWeekly), keepMonthly: integer(schedule.keepMonthly) },
+    shares: list(item.shares, entry => {
+      const row = object(entry)
+      return { nas: text(row.nas), share: text(row.share), mountPath: text(row.mountPath) }
+    }, 2048),
+    apps: list(item.apps, entry => {
+      const row = object(entry)
+      if (typeof row.enabled !== 'boolean' || (row.mode !== 'live' && row.mode !== 'stop')) throw invalid()
+      const requested = absent(row.requested) ? null : object(row.requested)
+      return {
+        name: text(row.name), node: text(row.node), enabled: row.enabled, mode: row.mode, exclude: list(row.exclude, text, 32),
+        requested: requested && { at: timestamp(requested.at), by: text(requested.by) },
+        running: parseBackupStatus(row.running), last: parseBackupStatus(row.last), lastNode: optional(row.lastNode),
+        lastSuccess: parseBackupStatus(row.lastSuccess), nextRun: absent(row.nextRun) ? null : timestamp(row.nextRun),
+        snapshots: list(row.snapshots, snapshot => {
+          const shot = object(snapshot)
+          return { id: text(shot.id), stack: text(shot.stack), host: text(shot.host), time: timestamp(shot.time), size: absent(shot.size) ? null : integer(shot.size) }
+        }, 100),
+      }
+    }, 64),
+  }
+}
+
+export function parseBackupRecovery(value: unknown): BackupRecovery {
+  const item = object(value)
+  const kind = optional(item.kind)
+  if (kind !== null && kind !== 'nfs' && kind !== 'smb') throw invalid()
+  return { repository: text(item.repository), source: optional(item.source), kind: kind as NasKind | null, password: text(item.password), updatedAt: timestamp(item.updatedAt) }
+}
+
+/** A short "3 hours ago" for a past moment, or the date once it's more than a week old. */
+export function ago(at: string, now = Date.now()): string {
+  const minutes = Math.round((now - Date.parse(at)) / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`
+  const days = Math.round(hours / 24)
+  return days < 8 ? (days === 1 ? 'yesterday' : `${days} days ago`) : new Date(at).toLocaleDateString()
+}
+
+/** Where an app's backups stand, for the owner. */
+export function backupState(app: BackupApp, destination: BackupDestination | null, now = Date.now()): { label: string; tone: StackTone; detail: string } {
+  if (!destination) return { label: 'Not set up', tone: 'muted', detail: 'Choose where backups go first.' }
+  if (app.running) return { label: 'Backing up', tone: 'accent', detail: `${app.node} started ${ago(app.running.startedAt, now)}.` }
+  if (app.requested) return { label: 'Queued', tone: 'accent', detail: `${app.node} starts it at its next check-in, within a minute.` }
+  if (!app.enabled) return { label: 'Off', tone: 'muted', detail: 'Lucia doesn\'t back this app up.' }
+  if (app.last?.state === 'Failed') return { label: 'Failed', tone: 'failed', detail: (app.last.message ?? 'The backup failed.')
+    + (app.lastSuccess ? ` Last good backup ${ago(app.lastSuccess.finishedAt ?? app.lastSuccess.startedAt, now)}.` : ' It has never been backed up.') }
+  if (app.lastSuccess) {
+    const at = app.lastSuccess.finishedAt ?? app.lastSuccess.startedAt
+    const stale = now - Date.parse(at) > 2 * 24 * 3600 * 1000
+    return { label: stale ? 'Overdue' : 'Backed up', tone: stale ? 'amber' : 'green',
+      detail: `${ago(at, now)}${app.lastSuccess.total !== null ? `, ${formatBytes(app.lastSuccess.total)}` : ''}.${app.last?.message ? ` ${app.last.message}` : ''}` }
+  }
+  return { label: 'Not backed up yet', tone: 'muted', detail: app.nextRun ? 'The first backup runs tonight.' : 'Waiting for its first backup.' }
+}
+
+/** Apps whose backups need attention first, then the rest by name. */
+export function backupOrder(apps: BackupApp[], destination: BackupDestination | null, now = Date.now()): BackupApp[] {
+  const rank = { failed: 0, amber: 1, accent: 2, muted: 3, green: 4 } as const
+  return [...apps].sort((a, b) => rank[backupState(a, destination, now).tone] - rank[backupState(b, destination, now).tone] || a.name.localeCompare(b.name))
+}
+
+export function backupFolderProblem(folder: string): string | null {
+  const clean = folder.trim().replace(/^\/+|\/+$/g, '')
+  if (clean && (!backupFolderPattern.test(clean) || clean.split('/').some(part => part === '.' || part === '..')))
+    return 'Use letters, digits, dots, dashes and underscores for the folder, with / between levels.'
   return null
 }

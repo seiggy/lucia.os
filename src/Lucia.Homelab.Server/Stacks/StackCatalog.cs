@@ -40,6 +40,12 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     /// runs at most one copy.
     /// </summary>
     public virtual bool ServerBound => false;
+    /// <summary>True when the app needs an address of its own, which its compose binds as <c>${LUCIA_ADDRESS}</c>.</summary>
+    public virtual bool UsesAddress => false;
+    /// <summary><c>live</c>, or <c>stop</c> for apps whose data is only consistent while they're stopped.</summary>
+    public virtual string BackupMode => "live";
+    /// <summary>Paths under the app's directory, such as <c>volumes/models</c>, that backups skip because they're rebuildable.</summary>
+    public virtual string[] BackupExclude => [];
     public virtual string? Reason(ManagedNodeFacts node) => null;
     public virtual CatalogGpu[]? Gpus(ManagedNodeFacts node) => null;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
@@ -48,7 +54,7 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -159,6 +165,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 6, "Local AI
     };
 
     public override bool ServerBound => true;
+    // Models come back from the library or Hugging Face; only the worker's catalog and settings in data/ are worth keeping.
+    public override string[] BackupExclude => ["volumes/models", "volumes/llama-cache", "volumes/vllm-cache"];
 
     public override string? Reason(ManagedNodeFacts node)
     {
@@ -360,4 +368,43 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 6, "Local AI
 
     [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}\z")]
     private static partial Regex RepositoryName();
+}
+
+/// <summary>
+/// AdGuard Home, answering DNS for the network on an address of its own so clients never follow it between servers. Its
+/// setup and settings stay in AdGuard: first run is the wizard on port 3000, and Lucia's DNS rewrites reach it through
+/// its connection in Settings.
+/// </summary>
+internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
+    "Block ads and trackers for every device on your network, and answer for Lucia's own names.",
+    "Any server with Docker ready, and a free address on your network for devices to use as their DNS server.",
+    [], [])
+{
+    private const string Image = "adguard/adguardhome:v0.107.79@sha256:aba9e3bf0613be3ba3755e1fc311b126e2c24bec25e18b6483894a88283074f0";
+
+    public override bool UsesAddress => true;
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        // DNS, the web interface, DNS-over-HTTPS (and HTTP/3), DNS-over-TLS and -QUIC, and the first-run wizard.
+        string[] ports = ["53/tcp", "53/udp", "80/tcp", "443/tcp", "443/udp", "853/tcp", "853/udp", "3000/tcp"];
+        var compose = $$"""
+            # Installed from Lucia's catalog (adguard, version {{Version}}). Lucia rewrites this file when the catalog
+            # updates the app. Convert the app to a custom app to edit it by hand.
+            services:
+              adguard:
+                image: {{Image}}
+                restart: unless-stopped
+                ports:
+            {{string.Join("\n", ports.Select(port => $"      - \"${{LUCIA_ADDRESS}}:{port.Split('/')[0]}:{port}\""))}}
+                volumes:
+                  - work:/opt/adguardhome/work
+                  - conf:/opt/adguardhome/conf
+            volumes:
+              work:
+              conf:
+
+            """;
+        return new(compose.ReplaceLineEndings("\n"), "", []);
+    }
 }

@@ -88,7 +88,7 @@ export function StorageSettings({ session, refreshSession }: { session: Authenti
           <button className="text-link" disabled={busy} onClick={() => setRemoving(nas.id)}>Remove</button></div>
       </div>
       {removing === nas.id && <div className="network-warning" role="alert"><p>{nas.shares.some(share => share.usedBy.length)
-        ? `Apps still use ${nas.id}. Change ${[...new Set(nas.shares.flatMap(share => share.usedBy))].join(', ')} first.`
+        ? `${[...new Set(nas.shares.flatMap(share => share.usedBy))].join(', ')} still use ${nas.id}. Change that first.`
         : `Remove ${nas.id}? Every server unmounts its shares. Nothing on the NAS is deleted.`}</p>
         <div className="network-actions">{!nas.shares.some(share => share.usedBy.length) && <button className="button secondary" disabled={busy}
           onClick={() => void send('DELETE', nas.id, undefined, `${nas.id} removed. Servers unmount its shares within about 20 seconds.`)}>Remove {nas.id}</button>}

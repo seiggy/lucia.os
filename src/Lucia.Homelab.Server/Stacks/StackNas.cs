@@ -37,8 +37,9 @@ public sealed partial class StackStore
         var facts = await nodes.Facts(ct);
         StoredNas[] servers;
         StoredStack[] stacks;
+        BackupDestination? backups;
         await _gate.WaitAsync(ct);
-        try { (servers, stacks) = (ReadNasUnlocked(), ReadUnlocked()); }
+        try { (servers, stacks, backups) = (ReadNasUnlocked(), ReadUnlocked(), ReadBackupsUnlocked().Destination); }
         finally { _gate.Release(); }
         return new
         {
@@ -48,7 +49,8 @@ public sealed partial class StackStore
                 shares = nas.Shares.Select(share => new
                 {
                     share.Name, share.Path, mountPath = $"{NasRoot}/{nas.Id}/{share.Name}",
-                    usedBy = stacks.Where(stack => Uses(stack, nas.Id, share.Name)).Select(stack => stack.Name).ToArray(),
+                    usedBy = stacks.Where(stack => Uses(stack, nas.Id, share.Name)).Select(stack => stack.Name)
+                        .Concat(backups?.Nas == nas.Id && backups.Share == share.Name ? ["Backups"] : []).ToArray(),
                     mounts = facts.Select(node => new
                     {
                         node = node.Hostname,
@@ -99,6 +101,8 @@ public sealed partial class StackStore
             foreach (var share in existing?.Shares ?? [])
                 if (!shares.Any(item => item.Name == share.Name) && stacks.FirstOrDefault(stack => Uses(stack, id, share.Name)) is { } user)
                     throw new HardwareOnboardingException(409, "share_in_use", $"{user.Name} uses {id}/{share.Name}. Change that app first.");
+                else if (!shares.Any(item => item.Name == share.Name) && HoldsBackups(id, share.Name))
+                    throw new HardwareOnboardingException(409, "share_in_use", $"Backups go to {id}/{share.Name}. Choose another destination in Apps → Backups first.");
             var password = kind == "smb"
                 ? request.Password is { } given ? _nasProtector.Protect(given)
                     : existing?.Kind == "smb" ? existing.ProtectedPassword : null
@@ -124,6 +128,8 @@ public sealed partial class StackStore
                 ?? throw new HardwareOnboardingException(404, "nas_not_found", "That NAS isn't connected.");
             if (ReadUnlocked().FirstOrDefault(stack => nas.Shares.Any(share => Uses(stack, id, share.Name))) is { } user)
                 throw new HardwareOnboardingException(409, "share_in_use", $"{user.Name} uses a share on {id}. Change that app first.");
+            if (HoldsBackups(id))
+                throw new HardwareOnboardingException(409, "share_in_use", $"Backups go to a share on {id}. Choose another destination in Apps → Backups first.");
             servers.Remove(nas);
             await WriteNas(servers, ct);
         }

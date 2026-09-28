@@ -7,16 +7,17 @@ import { Icon } from './Icon'
 import type { IconName } from './Icon'
 import { bytes } from './sparkTelemetry'
 import {
+  ago, appAddressProblem, appAddressState, backupFolderProblem, backupOrder, formatBytes, backupState, parseBackupRecovery, parseBackups,
   catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory,
   parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
   validateStackDraft,
 } from './stackManagement'
-import type { CatalogApp, CatalogServer, NodeContainer, NodeInventory, RequirementForm, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
+import type { BackupApp, BackupRecovery, CatalogApp, CatalogServer, NodeContainer, NodeInventory, RequirementForm, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
 import './NetworkSettings.css'
 import './Stacks.css'
 
 type Session = { session: AuthenticationSession; refreshSession: () => Promise<void> }
-type View = 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install'
+type View = 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups'
 
 const toneIcon: Record<StackTone, IconName> = { green: 'check', amber: 'attention', failed: 'attention', muted: 'stop', accent: 'clock' }
 const message = (failure: unknown, fallback: string) => failure instanceof Error ? failure.message : fallback
@@ -44,20 +45,23 @@ export function Stacks({ session, refreshSession, view, name, node }: Session & 
   return <>
     {view !== 'app' && view !== 'install' && <>
       {view === 'new' && <a className="text-link stack-back" href="#/apps/catalog"><Icon name="back" />Catalog</a>}
-      <div className="page-intro"><h1>{view === 'new' ? 'Your own app' : view === 'containers' ? 'Containers' : view === 'catalog' ? 'Add an app' : 'Apps'}</h1><p>{view === 'new'
+      <div className="page-intro"><h1>{view === 'new' ? 'Your own app' : view === 'containers' ? 'Containers' : view === 'catalog' ? 'Add an app' : view === 'backups' ? 'Backups' : 'Apps'}</h1><p>{view === 'new'
         ? 'Paste a Docker Compose file and say where it can run. Lucia keeps it running there and reports what happens.'
         : view === 'containers' ? 'Everything running on a server, including containers Lucia didn\'t start, and the ports in use.'
           : view === 'catalog' ? 'Apps Lucia knows how to set up. Pick one and a server; Lucia writes the configuration and keeps it current.'
+          : view === 'backups' ? 'Every night Lucia backs up each app’s folder to your NAS with restic, encrypted and deduplicated, and keeps a rolling history you can restore from.'
             : 'Container apps Lucia runs on your servers. Each one is a Docker Compose file placed on one server.'}</p></div>
       {view !== 'new' && <nav className="model-library-navigation" aria-label="Apps navigation">
         <a href="#/apps" aria-current={view === 'list' ? 'page' : undefined}>Your apps</a>
         <a href="#/apps/catalog" aria-current={view === 'catalog' ? 'page' : undefined}><Icon name="search" />Catalog</a>
         <a href="#/apps/containers" aria-current={view === 'containers' ? 'page' : undefined}><Icon name="server" />Containers & ports</a>
+        <a href="#/apps/backups" aria-current={view === 'backups' ? 'page' : undefined}><Icon name="drive" />Backups</a>
       </nav>}
     </>}
     {view === 'list' && <AppList {...props} />}
     {view === 'containers' && <ContainersView {...props} />}
     {view === 'catalog' && <CatalogView {...props} />}
+    {view === 'backups' && <BackupsView {...props} />}
     {view === 'install' && name && <InstallApp {...props} id={name} node={node} />}
     {view === 'new' && <AppEditor {...props} />}
     {view === 'app' && name && <AppDetail {...props} name={name} />}
@@ -354,6 +358,8 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
     </section>
 
     {stack.template?.id === 'local-ai' && <LocalAiSection stack={stack} detail={detail.data} />}
+    {stack.template?.id === 'adguard' && stack.appAddress && <section className="surface network-section"><h2>AdGuard Home</h2>
+      <p className="section-note">Its filters, clients and upstream servers are set in AdGuard itself. The first time, finish its setup at <a href={`http://${stack.appAddress.ip}:3000`} target="_blank" rel="noreferrer">{stack.appAddress.ip}:3000</a>; after that it’s at <a href={`http://${stack.appAddress.ip}`} target="_blank" rel="noreferrer">{stack.appAddress.ip}</a>. Point your router’s DHCP DNS setting at {stack.appAddress.ip} so every device uses it.</p></section>}
 
     {stack.template
       ? <ManagedSettings key={detail.data.stack.revision} {...props} stack={stack} detail={detail.data} locked={moving}
@@ -361,6 +367,10 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
       : <AppEditor key={detail.data.stack.revision} {...props} locked={moving}
         existing={{ name, node: stack.node, placement: stack.placement, compose: detail.data.compose, env: detail.data.env, revision: detail.data.stack.revision }}
         onSaved={() => { detail.reload(); live.reload(); setNotice('Saved. The server applies the change within about 20 seconds.') }} />}
+
+    {(stack.appAddress || !stack.template) && <AddressSection {...props} stack={stack} locked={moving} onChanged={done => { setNotice(done); live.reload(); detail.reload() }} />}
+
+    <BackupSection {...props} stack={stack} onChanged={done => { setNotice(done); live.reload() }} />
 
     {stack.template?.serverBound
       ? <section className="surface network-section"><h2>Move to another server</h2>
@@ -576,6 +586,7 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   const [name, setName] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
+  const [address, setAddress] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const app = catalog.data?.find(item => item.id === id)
@@ -595,7 +606,8 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   const nameValue = name ?? freeName(app.id, taken)
   const nameProblem = !stackNamePattern.test(nameValue) ? 'Use lowercase letters, digits and hyphens, starting with a letter.'
     : taken.includes(nameValue) ? `You already have an app called ${nameValue}.` : null
-  const problem = !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings)
+  const addressProblem = app.usesAddress ? appAddressProblem(address) : null
+  const problem = !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings) ?? addressProblem
 
   async function install(event: React.FormEvent) {
     event.preventDefault()
@@ -604,7 +616,8 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
     try {
       const response = await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(nameValue)}`, 'PUT', {
         compose: null, env: null, expectedRevision: 0,
-        manifest: { schemaVersion: 1, placement: { node: serverName, require: [] }, template: { id: app!.id, version: app!.version, settings } },
+        manifest: { schemaVersion: 1, placement: { node: serverName, require: [] }, template: { id: app!.id, version: app!.version, settings },
+          address: app!.usesAddress ? address.trim() : undefined },
       })
       window.location.hash = `#/apps/${parseStackSummary(await response.json()).name}`
     } catch (failure) { setError(message(failure, `${app!.name} could not be installed.`)); setBusy(false) }
@@ -638,6 +651,11 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
             <label>Name<input value={nameValue} onChange={event => setName(event.target.value.toLowerCase())} maxLength={40} required autoComplete="off"
               spellCheck={false} aria-invalid={!!nameProblem} aria-describedby="install-name-hint" />
               <span id="install-name-hint" className="stack-hint">{nameProblem ?? <>How it appears in Lucia. Containers are named <code>lucia-{nameValue}-…</code></>}</span></label>
+            {app.usesAddress && <label>Address on your network<input value={address} onChange={event => setAddress(event.target.value)} required
+              inputMode="decimal" autoComplete="off" spellCheck={false} placeholder="192.168.1.53" maxLength={15}
+              aria-invalid={address.length > 0 && !!addressProblem} aria-describedby="install-address-hint" />
+              <span id="install-address-hint" className="stack-hint">{address && addressProblem ? addressProblem
+                : <>{app.name}’s own address. {serverName || 'Its server'} takes it while the app runs. Pick one outside your router’s DHCP range.</>}</span></label>}
           </div>
           <SettingsFields app={app} server={server} values={settings} disabled={busy} onChange={(field, value) => setEdits(current => ({ ...current, [field]: value }))} />
         </fieldset>
@@ -732,5 +750,265 @@ function LocalAiSection({ stack, detail }: { stack: StackSummary; detail: StackD
         : 'Missing. Save the settings again to generate one.'}</dd></div>
     </dl>
     <p className="network-notice" role="status">{copied}</p>
+  </section>
+}
+
+const nextRunLabel = (at: string) => new Date(at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+const snapshotTime = (at: string) => new Date(at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+
+function BackupsView(props: Session) {
+  const { data, error, reload } = useJson(props, '/api/host/backups', parseBackups, 10000)
+  const [editing, setEditing] = useState(false)
+  const [choice, setChoice] = useState('')
+  const [folder, setFolder] = useState('lucia')
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [recovery, setRecovery] = useState<BackupRecovery | null>(null)
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const destination = data?.destination ?? null
+  useEffect(() => {
+    if (!data || choice) return
+    const saved = data.destination && `${data.destination.nas}/${data.destination.share}`
+    const named = data.shares.find(share => /backup/i.test(share.share))
+    const first = data.shares[0]
+    setChoice(saved ?? (named ?? first ? `${(named ?? first).nas}/${(named ?? first).share}` : ''))
+    if (data.destination) setFolder(data.destination.folder)
+  }, [data, choice])
+
+  async function run(path: string, method: 'POST' | 'PUT' | 'GET', body: unknown, done: string) {
+    setBusy(true); setProblem(null); setNotice('')
+    try {
+      const response = await ownerRequest(props.session, props.refreshSession, path, method, body)
+      setNotice(done)
+      return response
+    } catch (failure) { setProblem(message(failure, 'That didn’t work.')); return null } finally { setBusy(false) }
+  }
+  async function save(event: React.FormEvent) {
+    event.preventDefault()
+    const [nas, share] = choice.split('/')
+    const folderProblem = backupFolderProblem(folder)
+    if (!nas || !share) { setProblem('Choose a share for the backups.'); return }
+    if (folderProblem) { setProblem(folderProblem); return }
+    if (await run('/api/host/backups/destination', 'PUT', { nas, share, folder: folder.trim(), timeZone: zone },
+      `Backups go to ${nas}/${share}. The first ones run tonight at 03:00, or start one now below.`)) { setEditing(false); reload() }
+  }
+  async function reveal() {
+    const response = await run('/api/host/backups/recovery', 'GET', undefined, '')
+    if (response) setRecovery(parseBackupRecovery(await response.json()))
+  }
+  async function backUp(app: BackupApp) {
+    if (await run(`/api/host/stacks/${encodeURIComponent(app.name)}/backup`, 'POST', undefined, `Backing up ${app.name}. ${app.node} starts within a minute.`)) reload()
+  }
+  async function copyKey(key: string) {
+    try { await navigator.clipboard.writeText(key); setNotice('Recovery key copied.') } catch { setNotice('Your browser blocked copying the key.') }
+  }
+
+  if (error && !data) return <p className="network-error" role="alert">{error}</p>
+  if (!data) return <p className="section-note" role="status">Reading backups…</p>
+  const trouble = destination?.nodes.filter(node => node.state !== 'Mounted' || node.repositoryError) ?? []
+  const apps = backupOrder(data.apps, destination)
+  return <>
+    {problem && <p className="network-error" role="alert">{problem}</p>}
+    <p className="network-notice" role="status">{notice}</p>
+
+    {destination && !editing && <section className="surface network-section" aria-labelledby="backup-destination">
+      <div className="network-overview-header">
+        <div><h2 id="backup-destination">Where backups go</h2>
+          <p className="section-note storage-summary">{destination.nas} / {destination.share}{destination.folder ? ` / ${destination.folder}` : ''}</p></div>
+        <div className="network-actions storage-header-actions"><button className="button secondary" disabled={busy} onClick={() => { setEditing(true); setProblem(null) }}>Change</button></div>
+      </div>
+      <dl className="stack-connect backup-facts">
+        <div><dt>On each server</dt><dd><code>{destination.path}</code></dd></div>
+        {destination.source && <div><dt>On the NAS</dt><dd><code>{destination.source}</code></dd></div>}
+        <div><dt>Schedule</dt><dd>Every night at {data.schedule.time}, {destination.timeZone} time. Each app keeps {data.schedule.keepDaily} daily, {data.schedule.keepWeekly} weekly and {data.schedule.keepMonthly} monthly snapshots.</dd></div>
+      </dl>
+      {trouble.length > 0 && <ul className="storage-mounts backup-trouble">{trouble.map(node => <li key={node.node}><StateLabel label={node.state === 'Mounted' ? 'Can’t open' : node.state === 'Failed' ? 'Can’t mount' : node.state === 'Pending' ? 'Mounting' : 'Not reported'} tone="amber" />
+        <strong>{node.node}</strong> {node.repositoryError ?? node.message ?? (node.state === null ? 'hasn’t reported the share. It may be offline or running an older agent.' : 'is still mounting the share.')}</li>)}</ul>}
+    </section>}
+
+    {(editing || !destination) && <section className="surface network-section">
+      <h2>{destination ? 'Change where backups go' : 'Choose where backups go'}</h2>
+      {data.shares.length === 0
+        ? <><p className="section-note">Backups go to a share on your NAS, which every server mounts. Connect a NAS first, with a share set aside for backups.</p>
+          <div className="network-actions"><a className="button primary" href="#/settings/storage">Connect a NAS<Icon name="arrow" /></a></div></>
+        : <form onSubmit={event => void save(event)} noValidate>
+          <div className="network-fields">
+            <label>Share<select value={choice} onChange={event => setChoice(event.target.value)} disabled={busy}>
+              {data.shares.map(share => <option key={`${share.nas}/${share.share}`} value={`${share.nas}/${share.share}`}>{share.nas} / {share.share}</option>)}
+            </select></label>
+            <label>Folder<input value={folder} onChange={event => setFolder(event.target.value)} maxLength={128} autoComplete="off" spellCheck={false}
+              placeholder="lucia" disabled={busy} aria-describedby="backup-folder-hint" />
+              <span id="backup-folder-hint" className="stack-hint">Inside the share. Lucia creates it.</span></label>
+          </div>
+          <ol className="network-help">
+            <li>Give the share its own folder, and let every Lucia server write to it. Backups follow an app when it moves.</li>
+            <li>Lucia creates an encrypted restic repository there and a recovery key, which stays the same if you change the destination. A new destination starts a fresh history; the old one stays on the NAS.</li>
+            <li>Backups run every night at {data.schedule.time}, {zone} time.</li>
+          </ol>
+          <div className="network-actions">
+            <button className="button primary" disabled={busy}>{busy ? 'Saving…' : destination ? 'Save destination' : 'Start backing up'}<Icon name="drive" /></button>
+            {destination && <button type="button" className="text-link" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>}
+          </div>
+        </form>}
+    </section>}
+
+    {destination && <section className="surface network-section" aria-labelledby="backup-apps">
+      <h2 id="backup-apps">Apps</h2>
+      {apps.length === 0 && <p className="section-note">No apps yet. Every app you add is backed up from its first night.</p>}
+      {apps.length > 0 && <table className="network-table backup-table">
+        <caption className="network-table-caption">Backups of each app</caption>
+        <thead><tr><th scope="col">App</th><th scope="col">Last backup</th><th scope="col">Next</th><th scope="col"><span className="network-table-caption">Back up</span></th></tr></thead>
+        <tbody>{apps.map(app => {
+          const state = backupState(app, destination)
+          return <tr key={app.name}>
+            <th scope="row" data-label="App"><a className="stack-name" href={`#/apps/${app.name}`}>{app.name}</a><span className="network-cell-note">{app.node}{app.mode === 'stop' ? ' · stops while backing up' : ''}</span></th>
+            <td data-label="Last backup"><StateLabel label={state.label} tone={state.tone} /><span className="network-cell-note">{state.detail}</span></td>
+            <td data-label="Next">{app.nextRun ? nextRunLabel(app.nextRun) : '—'}</td>
+            <td className="backup-now"><button className="text-link" disabled={busy || !app.enabled || app.requested !== null || app.running !== null}
+              onClick={() => void backUp(app)}>Back up now</button></td>
+          </tr>
+        })}</tbody>
+      </table>}
+    </section>}
+
+    {destination && <section className="surface network-section" aria-labelledby="backup-key">
+      <h2 id="backup-key">Recovery key</h2>
+      <p className="section-note">Every backup is encrypted with this key. If this Spark is ever lost, the key and the share are all you need to get your apps back, with or without Lucia. Print it, or keep it in a password manager away from the lab.</p>
+      {recovery
+        ? <div className="backup-sheet">
+          <h3>Lucia backup recovery key</h3>
+          <dl className="stack-connect backup-facts">
+            <div><dt>Repository</dt><dd><code>{recovery.source ?? recovery.repository}</code></dd></div>
+            <div><dt>Key</dt><dd><code className="backup-password">{recovery.password}</code></dd></div>
+            <div><dt>Open it</dt><dd>Mount the share on any Linux machine, then run <code>restic -r &lt;mounted folder&gt; snapshots</code> and enter the key.</dd></div>
+          </dl>
+          <p className="section-note backup-sheet-date">Created {new Date(recovery.updatedAt).toLocaleDateString()}. Anyone with this key and access to the share can read your backups.</p>
+          <div className="network-actions">
+            <button className="button secondary" onClick={() => window.print()}>Print</button>
+            <button className="text-link" onClick={() => void copyKey(recovery.password)}><Icon name="copy" />Copy key</button>
+            <button className="text-link" onClick={() => setRecovery(null)}>Hide</button>
+          </div>
+        </div>
+        : <div className="network-actions"><button className="button secondary" disabled={busy} onClick={() => void reveal()}><Icon name="shield" />Show recovery key</button></div>}
+    </section>}
+  </>
+}
+
+function AddressSection({ stack, locked, onChanged, ...props }: Session & { stack: StackSummary; locked: boolean; onChanged: (notice: string) => void }) {
+  const current = stack.appAddress?.ip ?? ''
+  const [value, setValue] = useState(current)
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const state = appAddressState(stack)
+  const required = !!stack.template && !!stack.appAddress
+  const problem = appAddressProblem(value)
+
+  async function save(address: string, done: string) {
+    setBusy(true); setError(null)
+    try {
+      await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(stack.name)}/address`, 'PUT', { address })
+      setEditing(false); onChanged(done)
+    } catch (failure) { setError(message(failure, 'The address could not be saved.')) } finally { setBusy(false) }
+  }
+
+  return <section className="surface network-section" aria-labelledby="app-address">
+    <h2 id="app-address">Address on your network</h2>
+    {state
+      ? <p><code className="app-address-ip">{stack.appAddress!.ip}</code> <StateLabel label={state.label} tone={state.tone} /> <span>{state.detail}</span></p>
+      : <p className="section-note">Give {stack.name} an IP address of its own, for apps other devices reach at a fixed address, such as a DNS server. {stack.node} takes it while the app runs, and a move carries it to the new server.</p>}
+    {!stack.template && <p className="section-note">Bind ports to it in the compose file, such as <code>{'"${LUCIA_ADDRESS}:53:53/udp"'}</code>. Lucia sets <code>LUCIA_ADDRESS</code>.</p>}
+    {editing
+      ? <form className="app-address-form" onSubmit={event => {
+        event.preventDefault()
+        if (problem) setError(problem)
+        else void save(value.trim(), `Saved. ${stack.node} moves ${stack.name} to ${value.trim()} within about 20 seconds.`)
+      }}>
+        <label>Address<input value={value} onChange={event => setValue(event.target.value)} required inputMode="decimal" autoComplete="off"
+          spellCheck={false} placeholder="192.168.1.53" maxLength={15} disabled={busy} autoFocus aria-invalid={value.length > 0 && !!problem}
+          aria-describedby="app-address-hint" />
+          <span id="app-address-hint" className="stack-hint">Pick one outside your router’s DHCP range. The app restarts on the new address.</span></label>
+        {error && <p className="network-error" role="alert">{error}</p>}
+        <div className="network-actions">
+          <button className="button primary" disabled={busy || value.trim() === current}>{busy ? 'Saving…' : 'Save and apply'}</button>
+          <button type="button" className="text-link" disabled={busy} onClick={() => { setEditing(false); setValue(current); setError(null) }}>Cancel</button>
+        </div>
+      </form>
+      : <>
+        {error && <p className="network-error" role="alert">{error}</p>}
+        <div className="network-actions">
+          <button className="button secondary" disabled={busy || locked} onClick={() => setEditing(true)}>{current ? 'Change address…' : 'Give it an address…'}</button>
+          {current && !required && <button className="text-link" disabled={busy || locked}
+            onClick={() => void save('', `Removed. ${stack.node} gives up ${current}, and ports bound to LUCIA_ADDRESS open on all of its addresses instead.`)}>Remove address</button>}
+        </div>
+      </>}
+  </section>
+}
+
+function BackupSection({ stack, onChanged, ...props }: Session & { stack: StackSummary; onChanged: (notice: string) => void }) {
+  const { data, reload } = useJson(props, '/api/host/backups', parseBackups, 10000)
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const app = data?.apps.find(item => item.name === stack.name)
+
+  async function send(path: string, method: 'POST' | 'PUT', body: unknown, done: string) {
+    setBusy(true); setError(null)
+    try {
+      await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(stack.name)}/${path}`, method, body)
+      setConfirm(null); reload(); onChanged(done)
+    } catch (failure) { setError(message(failure, 'That didn’t work.')) } finally { setBusy(false) }
+  }
+
+  if (!data || !app) return null
+  if (!data.destination) return <section className="surface network-section"><h2>Backups</h2>
+    <p className="section-note">Backups aren’t set up yet. <a href="#/apps/backups">Choose where they go</a>, and Lucia backs up every app each night.</p></section>
+  const state = backupState(app, data.destination)
+  const locked = busy || stack.move !== null || stack.restore !== null
+  const restoring = stack.restore && app.snapshots.find(item => item.id === stack.restore!.snapshot)
+  return <section className="surface network-section" aria-labelledby="app-backups">
+    <div className="network-overview-header"><h2 id="app-backups">Backups</h2>
+      <button className="button secondary" disabled={locked || !app.enabled || app.requested !== null || app.running !== null}
+        onClick={() => void send('backup', 'POST', undefined, `Backing up. ${stack.node} starts within a minute.`)}><Icon name="drive" />Back up now</button></div>
+    <p><StateLabel label={state.label} tone={state.tone} /> <span>{state.detail}</span>{app.nextRun && <span className="stack-hint"> Next: {nextRunLabel(app.nextRun)}.</span>}</p>
+    {stack.restore && <div className="network-warning" role="status">
+      <p>Restoring the snapshot from {restoring ? snapshotTime(restoring.time) : stack.restore.snapshot.slice(0, 8)}, started by {stack.restore.startedBy} {ago(stack.restore.startedAt)}.</p>
+      <div className="network-actions"><button className="button secondary" disabled={busy}
+        onClick={() => void send('cancel-restore', 'POST', undefined, 'Restore cancelled. If the server had already swapped the data in, the previous copy is beside it in /srv/lucia/stacks.')}>Cancel restore</button></div></div>}
+    <fieldset className="storage-kind backup-mode" disabled={locked}>
+      <legend>How it’s backed up</legend>
+      <label className="network-checkbox backup-nightly"><input type="checkbox" checked={app.enabled}
+        onChange={event => void send('backup', 'PUT', { enabled: event.target.checked, mode: app.mode }, event.target.checked ? 'Nightly backups are on.' : 'Nightly backups are off. Existing snapshots are kept.')} />
+        <span><strong>Back up every night</strong></span></label>
+      {app.enabled && (['live', 'stop'] as const).map(mode => <label key={mode} className="network-checkbox">
+        <input type="radio" name="backup-mode" checked={app.mode === mode} onChange={() => void send('backup', 'PUT', { enabled: true, mode },
+          mode === 'stop' ? 'The app stops for its backups from now on.' : 'The app keeps running during its backups from now on.')} />
+        <span><strong>{mode === 'live' ? 'While it runs' : 'Stop it during the backup'}</strong><br />{mode === 'live'
+          ? 'No downtime. Right for most apps, which keep their data in files.'
+          : 'A short nightly pause, so databases that write constantly are copied in a consistent state.'}</span></label>)}
+    </fieldset>
+    {app.exclude.length > 0 && <p className="section-note">Skipped because the app can download them again: {app.exclude.map(path => <code key={path}>{path}</code>).reduce<React.ReactNode[]>((all, item, at) => at ? [...all, ', ', item] : [item], [])}.</p>}
+    {error && <p className="network-error" role="alert">{error}</p>}
+    <h3 className="backup-snapshots-heading">Snapshots</h3>
+    {app.snapshots.length === 0
+      ? <p className="section-note">None yet. {data.destination.nodes.some(node => node.repositoryError) ? 'The servers can’t read the repository; see Apps → Backups.' : 'Snapshots appear here after the first backup.'}</p>
+      : <table className="network-table storage-table backup-snapshots">
+        <caption className="network-table-caption">Snapshots of {stack.name}, newest first</caption>
+        <thead><tr><th scope="col">Taken</th><th scope="col">Size</th><th scope="col">Server</th><th scope="col"><span className="network-table-caption">Restore</span></th></tr></thead>
+        <tbody>{app.snapshots.map(snapshot => <tr key={snapshot.id}>
+          <th scope="row" data-label="Taken">{snapshotTime(snapshot.time)}<span className="network-cell-note storage-mono">{snapshot.id.slice(0, 8)}</span></th>
+          <td data-label="Size">{snapshot.size !== null ? formatBytes(snapshot.size) : '—'}</td>
+          <td data-label="Server">{snapshot.host}</td>
+          <td className="backup-now">{confirm === snapshot.id ? null
+            : <button className="text-link" disabled={locked} onClick={() => setConfirm(snapshot.id)}>Restore…</button>}</td>
+        </tr>)}</tbody>
+      </table>}
+    {confirm && <div className="network-warning" role="alert">
+      <p>Restore {stack.name} to {snapshotTime(app.snapshots.find(item => item.id === confirm)!.time)}? {stack.node} stops it, sets the current data aside in <code>/srv/lucia/stacks/.replaced-{stack.name}-…</code>, moves the skipped folders across, and starts it on the snapshot. Nothing is deleted.</p>
+      <div className="network-actions">
+        <button className="button secondary stack-danger" disabled={busy} onClick={() => void send('restore', 'POST', { snapshot: confirm }, `Restoring. ${stack.node} starts within a minute.`)}>Restore this snapshot</button>
+        <button className="text-link" disabled={busy} onClick={() => setConfirm(null)}>Keep current data</button>
+      </div></div>}
   </section>
 }

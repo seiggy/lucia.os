@@ -37,6 +37,14 @@ public static partial class StackEndpoints
             await stacks.Save(name, await ReadOwnerBody<SaveStackRequest>(context, 256 * 1024, "compose, env, manifest and optionally expectedRevision", ct), Actor(context), ct));
         owner.MapPost("/{name}/move", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.Move(name, await ReadOwnerBody<MoveStackRequest>(context, 4 * 1024, "node", ct), Actor(context), ct));
+        owner.MapPost("/{name}/backup", (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            stacks.RunBackup(name, Actor(context), ct));
+        owner.MapPut("/{name}/backup", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveStackBackup(name, await ReadOwnerBody<StackBackup>(context, 4 * 1024, "enabled and optionally mode", ct), Actor(context), ct));
+        owner.MapPut("/{name}/address", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveStackAddress(name, await ReadOwnerBody<StackAddressRequest>(context, 1024, "address", ct), Actor(context), ct));
+        owner.MapPost("/{name}/restore", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.Restore(name, await ReadOwnerBody<RestoreStackRequest>(context, 4 * 1024, "snapshot", ct), Actor(context), ct));
         owner.MapPost("/{name}/{action}", (string name, string action, HttpContext context, StackStore stacks, CancellationToken ct) =>
             stacks.Act(name, action, Actor(context), ct));
         owner.MapDelete("/{name}", async (string name, StackStore stacks, CancellationToken ct) =>
@@ -55,6 +63,18 @@ public static partial class StackEndpoints
         {
             await stacks.DeleteNas(id, ct);
             return Results.NoContent();
+        });
+
+        var backups = app.MapGroup("/api/host/backups").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        backups.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.Backups(ct));
+        backups.MapPut("/destination", async (HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveBackupDestination(await ReadOwnerBody<SaveBackupDestinationRequest>(context, 4 * 1024,
+                "nas, share and optionally folder and timeZone", ct), Actor(context), ct));
+        backups.MapGet("/recovery", async (HttpContext context, StackStore stacks, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return await stacks.BackupRecovery(ct);
         });
 
         var inventory = app.MapGroup("/api/host/nodes/{id:guid}").WithTags("Stacks")
@@ -84,8 +104,11 @@ public static partial class StackEndpoints
             var (hostname, body) = await ReadNodeBody(id, "stacks", context, options, challenges, enrollment, ct);
             var report = JsonSerializer.Deserialize<NodeStackReport>(body, HardwareOnboardingJson.Options)
                 ?? throw new DiscoveryProtocolException(400, "A stack report is required.");
-            return Results.Json(new { stacks = await stacks.Sync(id, hostname, report, ct), mounts = await stacks.DesiredMounts(ct) },
-                HardwareOnboardingJson.Options);
+            return Results.Json(new
+            {
+                stacks = await stacks.Sync(id, hostname, report, ct), mounts = await stacks.DesiredMounts(ct),
+                backup = await stacks.BackupRepository(ct),
+            }, HardwareOnboardingJson.Options);
         });
         nodes.MapPost("/requests", async (Guid id, HttpContext context, BootOptions options, DiscoveryChallenges challenges,
             ManagedNodeEnrollment enrollment, NodeRequests requests, CancellationToken ct) =>

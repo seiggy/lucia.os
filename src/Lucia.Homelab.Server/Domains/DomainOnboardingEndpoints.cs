@@ -24,6 +24,8 @@ public static class DomainOnboardingEndpoints
             services.GetRequiredService<DomainHttp>().Client, services.GetRequiredService<HostAuthenticationOptions>(),
             services.GetRequiredService<DomainConnectionGate>()));
         builder.Services.AddHostedService<DomainOnboardingWorker>();
+        builder.Services.AddSingleton<AdGuardCertificateWorker>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<AdGuardCertificateWorker>());
     }
 
     public static void UseDomainConnectionGuard(this WebApplication app) => app.Use(async (context, next) =>

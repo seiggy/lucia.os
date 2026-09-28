@@ -176,6 +176,8 @@ internal static partial class NasMounts
     private static string Where(NodeMount mount) => $"{Root}/{mount.Nas}/{mount.Share}";
     private static string Key(NodeMount mount) => mount.Nas + "/" + mount.Share;
 
+    internal static bool IsMounted(string nas, string share) => MountPoints().Contains($"{Root}/{nas}/{share}");
+
     private static HashSet<string> MountPoints()
     {
         try

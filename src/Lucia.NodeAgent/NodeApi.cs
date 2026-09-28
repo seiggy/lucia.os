@@ -182,7 +182,7 @@ public sealed partial class DiscoveryClient
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 
-    internal sealed record DesiredStacks(NodeDesiredStack[]? Stacks, NodeMount[]? Mounts = null);
+    internal sealed record DesiredStacks(NodeDesiredStack[]? Stacks, NodeMount[]? Mounts = null, NodeBackupRepository? Backup = null);
     private sealed record PendingRequests(NodeRequest[]? Requests);
     private sealed record HeartbeatResult(bool Accepted, Dictionary<string, string[]>? SshKeys = null);
     private sealed record PendingResult(string State);

@@ -27,7 +27,7 @@ export type Route =
   | { page: 'storage-settings' }
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
-  | { page: 'apps'; view: 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install'; name?: string; node?: string }
+  | { page: 'apps'; view: 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups'; name?: string; node?: string }
   | { page: 'ai' }
   | { page: 'ai-keys' }
   | { page: 'ai-models'; view?: 'library' | 'find'; server?: string }
@@ -56,6 +56,7 @@ export function parseRoute(hash: string): Route {
     if (parts[1] === 'containers') return { page: 'apps', view: 'containers' }
     if (parts[1] === 'new') return { page: 'apps', view: 'new' }
     if (parts[1] === 'catalog') return { page: 'apps', view: 'catalog' }
+    if (parts[1] === 'backups') return { page: 'apps', view: 'backups' }
     if (/^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(parts[1])) return { page: 'apps', view: 'app', name: parts[1] }
   }
   if (parts[0] === 'apps' && parts[1] === 'install' && (parts.length === 3 || parts.length === 4) && /^[a-z][a-z0-9-]{0,39}$/.test(parts[2])

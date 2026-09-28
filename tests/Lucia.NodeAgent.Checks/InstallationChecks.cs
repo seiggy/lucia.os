@@ -542,6 +542,40 @@ internal static class InstallationChecks
             "Only plain named volumes may be redirected to the stack directory.");
         Check(StackRunner.VolumeOverride("""{"services":{}}""", "/srv/lucia/stacks/x") is null, "A stack without volumes needs no override.");
 
+        var snapshotId = new string('d', 64);
+        var backupOutput = """
+            {"message_type":"verbose_status","action":"new","item":"/srv/lucia/stacks/ai/data/x"}
+            {"message_type":"summary","files_new":3,"data_added":1234,"total_bytes_processed":98765,"snapshot_id":"%ID%"}
+            """.Replace("%ID%", snapshotId);
+        Check(ResticBackups.ParseSummary(backupOutput) == (snapshotId, 1234L, 98765L) && ResticBackups.ParseSummary("{\"message_type\":\"status\"}") is null
+            && ResticBackups.ParseSummary("""{"message_type":"summary","snapshot_id":"../x"}""") is null,
+            "restic's backup summary must yield the snapshot it made, and nothing else.");
+        var listed = ResticBackups.ParseSnapshots("""
+            [{"time":"2025-06-02T03:00:12.5-05:00","hostname":"lucialab01","tags":["lucia:stack=ai","lucia:version=1"],"id":"%ID%","summary":{"total_bytes_processed":5000}},
+             {"time":"2025-06-02T03:00:12Z","hostname":"laptop","tags":["personal"],"id":"%OTHER%"},
+             {"time":"2025-06-02T03:00:12Z","hostname":"x","tags":["lucia:stack=../etc"],"id":"%OTHER%"}]
+            """.Replace("%ID%", snapshotId).Replace("%OTHER%", new string('e', 64)));
+        Check(listed is [{ Stack: "ai", Host: "lucialab01", Size: 5000 } only] && only.Id == snapshotId && only.Time == DateTimeOffset.Parse("2025-06-02T08:00:12.5Z"),
+            "Only Lucia's own snapshots, with their stack, host, time and size, may be listed.");
+        var excludes = ResticBackups.Excludes("/srv/lucia/stacks/ai", ["volumes/models", "../etc", "volumes/*", "/abs"]);
+        Check(excludes.Contains("/srv/lucia/stacks/ai/volumes/models") && excludes.Contains("/srv/lucia/stacks/ai/.lucia-applied.json")
+            && !excludes.Any(path => path.Contains("..", StringComparison.Ordinal) || path.Contains('*') || path.EndsWith("//abs", StringComparison.Ordinal))
+            && !excludes.Contains("/srv/lucia/stacks/ai/.env"),
+            "Backups must skip Lucia's bookkeeping and the app's declared caches, and nothing outside the app.");
+
+        var links = StackAddresses.ParseLinks("""
+            [{"ifname":"lo","addr_info":[{"local":"127.0.0.1","prefixlen":8}]},
+             {"ifname":"eno1","addr_info":[{"local":"192.168.0.241","prefixlen":23}]},
+             {"ifname":"docker0","addr_info":[{"local":"172.17.0.1","prefixlen":16}]},
+             {"ifname":"wlan0"}]
+            """);
+        Check(StackAddresses.Network(links, "192.168.1.230") == ("eno1", 23) && StackAddresses.Network(links, "192.168.2.5") is null
+            && StackAddresses.Network(links, "172.17.0.9") is null && StackAddresses.Network(links, "192.168.1.255") is null
+            && StackAddresses.Network(links, "192.168.0.0") is null,
+            "An app address must go on the physical network whose subnet holds it, never on Docker's bridge or a subnet edge.");
+        Check(StackAddresses.Valid("192.168.1.230") is not null && StackAddresses.Valid("8.8.8.8") is null && StackAddresses.Valid("192.168.1.230; x") is null
+            && StackAddresses.Valid("::1") is null, "Only private dotted-quad IPv4 app addresses may reach ip or arping.");
+
         var nfs = new NodeMount("home-nas", "Media-4K", "nfs", "192.168.0.172:/var/nfs/shared/Media");
         var smb = new NodeMount("office", "Photos", "smb", "//nas.lan/Photos", "zack", "p@ss word");
         Check(NasMounts.UnitName(nfs) == @"mnt-lucia-nas-home\x2dnas-Media\x2d4K.mount", "NAS unit names must follow systemd's path escaping.");

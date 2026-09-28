@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Lucia.Homelab.Server.Host;
 
@@ -58,6 +59,9 @@ public static class AdGuardManagementEndpoints
         });
         group.MapDelete("", (AdGuardConnectionService service, CancellationToken ct) => service.DisconnectAsync(ct));
         group.MapPost("/verify", (AdGuardConnectionService service, CancellationToken ct) => service.VerifyAsync(ct));
+        group.MapGet("/certificate", ([FromServices] Domains.AdGuardCertificateWorker worker, CancellationToken ct) => worker.GetStatusAsync(ct));
+        group.MapPut("/certificate", ([FromBody] Domains.AdGuardCertificateToggle toggle, [FromServices] Domains.AdGuardCertificateWorker worker,
+            CancellationToken ct) => worker.SetEnabledAsync(toggle.Enabled, toggle.Name, ct));
     }
 
     private static AdGuardManagementException TooLarge() =>

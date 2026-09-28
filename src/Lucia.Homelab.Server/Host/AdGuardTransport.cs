@@ -210,6 +210,15 @@ internal sealed class AdGuardSession(HttpClient http, AdGuardStoredConnection re
         }
     }
 
+    /// <summary>AdGuard redacts a saved key and base64-encodes stored certificate data.</summary>
+    internal async Task<System.Text.Json.Nodes.JsonObject> TlsStatusAsync(CancellationToken ct) =>
+        System.Text.Json.Nodes.JsonNode.Parse(await SendAsync("/control/tls/status", null, ct)) as System.Text.Json.Nodes.JsonObject
+            ?? throw AdGuardTransport.InvalidResponse();
+
+    /// <summary>AdGuard answers, then restarts its HTTPS and encrypted-DNS listeners.</summary>
+    internal Task ConfigureTlsAsync(System.Text.Json.Nodes.JsonObject settings, CancellationToken ct) =>
+        SendAsync("/control/tls/configure", JsonSerializer.SerializeToUtf8Bytes(settings), ct);
+
     private async Task<JsonDocument> GetAsync(string path, CancellationToken ct)
     {
         var bytes = await SendAsync(path, null, ct);

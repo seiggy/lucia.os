@@ -197,6 +197,41 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
         finally { _gate.Release(); }
     }
 
+    /// <summary>The connection's own host name, which is the name AdGuard serves HTTPS and DoT under.</summary>
+    public async Task<string> CertificateNameAsync(CancellationToken cancellationToken = default) =>
+        new Uri((await RequireConnectionAsync(cancellationToken)).BaseUrl!).IdnHost;
+
+    /// <summary>Serves the chain as names[0]. Returns false when AdGuard already serves it.</summary>
+    public async Task<bool> PushCertificateAsync(IReadOnlyList<string> names, string chainPem, string keyPem, CancellationToken cancellationToken = default)
+    {
+        var name = names[0];
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await RequireConnectionAsync(cancellationToken);
+            if (!names.Contains(new Uri(record.BaseUrl!).IdnHost))
+                throw new AdGuardManagementException(409, "adguard_connection_changed", "The AdGuard connection changed; the certificate will be reissued.");
+            var chain = Convert.ToBase64String(Encoding.UTF8.GetBytes(chainPem));
+            return await _transport.RunAsync(record, async (session, ct) =>
+            {
+                var settings = await session.TlsStatusAsync(ct);
+                if (settings["enabled"]?.GetValue<bool>() == true && settings["server_name"]?.GetValue<string>() == name
+                    && settings["certificate_chain"]?.GetValue<string>() == chain)
+                    return false;
+                settings["enabled"] = true;
+                settings["server_name"] = name;
+                settings["certificate_chain"] = chain;
+                settings["private_key"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(keyPem));
+                settings["certificate_path"] = "";
+                settings["private_key_path"] = "";
+                settings["private_key_saved"] = false;
+                await session.ConfigureTlsAsync(settings, ct);
+                return true;
+            }, cancellationToken);
+        }
+        finally { _gate.Release(); }
+    }
+
     private async Task VerifyRecordAsync(AdGuardStoredConnection record, CancellationToken cancellationToken)
     {
         var version = await _transport.RunAsync(record, async (session, ct) =>

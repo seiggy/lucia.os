@@ -140,6 +140,9 @@
 .stack-catalog-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 24px; max-width: 880px; }
 .stack-catalog-fields > label { display: block; margin-top: 18px; font-size: 14px; font-weight: 650; }
 .stack-install-settings > .stack-catalog-fields:first-of-type > label { margin-top: 0; }
+.stack-install-settings > .stack-catalog-fields:first-of-type { row-gap: 18px; }
+.app-address-ip { font-size: 15px; font-weight: 650; }
+.app-address-form > label { display: block; max-width: 320px; }
 .stack-gpu-picks { grid-column: 1 / -1; min-width: 0; margin: 18px 0 0; padding: 0; border: 0; }
 .stack-catalog-fields > .stack-field-wide { grid-column: 1 / -1; max-width: 544px; }
 .stack-gpu-picks legend { margin-bottom: 8px; padding: 0; font-size: 14px; font-weight: 650; }
@@ -162,4 +165,26 @@
 @media (max-width: 700px) {
   .stack-catalog > li { grid-template-columns: 1fr; }
   .stack-catalog > li > .button { justify-self: start; }
+}
+
+.backup-facts > div { grid-template-columns: 132px minmax(0, 1fr); }
+.backup-trouble { display: grid; gap: 8px; margin-top: 18px; }
+.backup-trouble li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.backup-now { text-align: right; white-space: nowrap; }
+.backup-mode { margin-top: 20px; }
+.backup-mode .network-checkbox.backup-nightly, .backup-mode .network-checkbox.backup-nightly:has(input:checked) { grid-column: 1 / -1; padding: 0; border: 0; background: none; }
+.backup-snapshots-heading { margin: 26px 0 8px; font-size: 16px; }
+.backup-sheet { margin-top: 18px; padding: 20px 22px; border: 1px solid var(--line); border-radius: 14px; }
+.backup-sheet h3 { margin: 0; font-size: 16px; }
+.backup-password { font-size: 17px; letter-spacing: 0.04em; overflow-wrap: anywhere; }
+.backup-sheet-date { margin-top: 16px; }
+@media (max-width: 700px) {
+  .backup-facts > div { grid-template-columns: 1fr; }
+  .backup-now { text-align: left; }
+}
+@media print {
+  body * { visibility: hidden; }
+  .backup-sheet, .backup-sheet * { visibility: visible; }
+  .backup-sheet { position: absolute; top: 0; left: 0; right: 0; border: 0; color: #000; background: #fff; }
+  .backup-sheet .network-actions { display: none; }
 }

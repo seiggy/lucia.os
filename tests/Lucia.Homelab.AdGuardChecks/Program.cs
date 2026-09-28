@@ -99,6 +99,29 @@ try
         Check(doc.RootElement.EnumerateObject().Select(p => p.Name).SequenceEqual(
             new[] { "configured", "baseUrl", "username", "allowInsecureHttp", "version", "lastVerifiedAt" }), "Public status shape changed.");
     var saved = await File.ReadAllTextAsync(path);
+    var tls = """{"enabled":false,"server_name":"","force_https":false,"port_https":443,"port_dns_over_tls":853,"certificate_chain":"","private_key":"","private_key_saved":false,"certificate_path":"/etc/old.pem","private_key_path":"/etc/old.key","valid_cert":false}""";
+    fake.Response = request => Task.FromResult(FakeState.Json(request.RequestUri!.AbsolutePath switch
+        { "/control/tls/status" => tls, "/control/profile" => Profile(request), _ => "{}" }));
+    Check(await service.CertificateNameAsync() == "adguard.home", "Certificate name is not the connection host.");
+    fake.Requests.Clear();
+    Check(await service.PushCertificateAsync(["adguard.home"], "CHAIN", "KEY"), "First push did not configure.");
+    Check(fake.Requests.Select(r => r.Method + " " + r.Uri.AbsolutePath).SequenceEqual(new[] { "GET /control/profile", "GET /control/tls/status", "POST /control/tls/configure" }), "Wrong TLS requests.");
+    using (var sent = JsonDocument.Parse(fake.Requests[2].Body!))
+    {
+        var root = sent.RootElement;
+        Check(root.GetProperty("enabled").GetBoolean() && root.GetProperty("server_name").GetString() == "adguard.home"
+            && root.GetProperty("port_https").GetInt32() == 443 && root.GetProperty("certificate_path").GetString() == ""
+            && Encoding.UTF8.GetString(Convert.FromBase64String(root.GetProperty("certificate_chain").GetString()!)) == "CHAIN"
+            && Encoding.UTF8.GetString(Convert.FromBase64String(root.GetProperty("private_key").GetString()!)) == "KEY", "TLS configure body invalid.");
+        tls = root.ToString();
+    }
+    fake.Requests.Clear();
+    Check(!await service.PushCertificateAsync(["adguard.home"], "CHAIN", "KEY") && fake.Requests.Count == 2, "Unchanged certificate was pushed again.");
+    await Reject(() => service.PushCertificateAsync(["other.home"], "CHAIN", "KEY"), "adguard_connection_changed", 409);
+    fake.Requests.Clear();
+    Check(await service.PushCertificateAsync(["new.home", "adguard.home"], "CHAIN", "KEY") && JsonDocument.Parse(fake.Requests[2].Body!).RootElement.GetProperty("server_name").GetString() == "new.home", "Move to a new name did not serve it.");
+    Healthy();
+    fake.Requests.Clear();
     NoSecret(saved);
     Check(!saved.Contains("owner") && !saved.Contains("adguard.home") && saved.Contains("protectedData"), "Record was not fully protected.");
     Check(Directory.GetFiles(keys, "*.xml").Length > 0, "Real Data Protection keys absent.");
@@ -513,7 +536,7 @@ try
     Check(ReferenceEquals(app.Services.GetRequiredService<ILocalDnsProvider>(), service), "DI interface not shared with service.");
     var routes = ((IEndpointRouteBuilder)app).DataSources.SelectMany(s => s.Endpoints).OfType<RouteEndpoint>()
         .Where(e => e.RoutePattern.RawText!.StartsWith("/api/host/connections/adguard")).ToArray();
-    Check(routes.Length == 4 && routes.All(e => e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
+    Check(routes.Length == 6 && routes.All(e => e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
         .Any(a => a.Policy == "HostOwner")), "Routes not Owner-only or unexpected CRUD routes exposed.");
     using (var response = await api.GetAsync("/api/host/connections/adguard"))
         Check(response.StatusCode == HttpStatusCode.Unauthorized, "Anonymous owner route allowed.");
