@@ -17,8 +17,11 @@ public sealed record RuntimeReport(string State, string? DockerVersion, string? 
 internal static class NodeRuntime
 {
     internal const string DaemonConfigPath = "/etc/docker/daemon.json";
-    // Docker's default pools fall back to 192.168.0.0/16, which collides with most home networks.
-    internal const string DaemonConfig = "{\n  \"default-address-pools\": [{ \"base\": \"172.16.0.0/12\", \"size\": 24 }],\n  \"log-driver\": \"local\"\n}\n";
+    // Docker's default pools fall back to 192.168.0.0/16, which collides with most home networks. Under the systemd
+    // cgroup driver, any systemctl daemon-reload strips GPU access that NVIDIA's hook granted to running containers
+    // ("Failed to initialize NVML: Unknown Error"); cgroupfs keeps container cgroups out of systemd's hands.
+    internal const string DaemonConfig = "{\n  \"default-address-pools\": [{ \"base\": \"172.16.0.0/12\", \"size\": 24 }],\n"
+        + "  \"exec-opts\": [\"native.cgroupdriver=cgroupfs\"],\n  \"log-driver\": \"local\"\n}\n";
     internal const string NvidiaKeyPath = "/etc/apt/keyrings/lucia-nvidia-container.asc";
     internal const string NvidiaSourcePath = "/etc/apt/sources.list.d/lucia-nvidia-container.list";
     internal const string NvidiaSource =

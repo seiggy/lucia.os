@@ -221,8 +221,10 @@ v2) packages
 are installed and installs any that are missing (`apt-get install
 --no-install-recommends`). `/etc/docker/daemon.json` is Lucia-owned: container
 networks come from `172.16.0.0/12` in /24s (Docker's own fallback,
-`192.168.0.0/16`, collides with home LANs) and logs use the size-capped `local`
-driver. When an NVIDIA driver is loaded (`/proc/driver/nvidia/version`), the
+`192.168.0.0/16`, collides with home LANs), logs use the size-capped `local`
+driver, and containers use the `cgroupfs` cgroup driver. Under the `systemd`
+driver, any `systemctl daemon-reload` (the agent runs them for NAS mounts) strips
+the GPU access NVIDIA's hook gave running containers. When an NVIDIA driver is loaded (`/proc/driver/nvidia/version`), the
 agent also adds NVIDIA's container-toolkit repository, signed by the key embedded
 in the agent (`nvidia-container.asc`, fingerprint
 `C95B321B61E88C1809C4F759DDCAE044F796ECB0`), installs `nvidia-container-toolkit`

@@ -495,6 +495,8 @@ internal static class InstallationChecks
         Check(NodeRuntime.DaemonConfig.Contains("172.16.0.0/12", StringComparison.Ordinal)
             && System.Text.Json.JsonDocument.Parse(NodeRuntime.DaemonConfig).RootElement.GetProperty("log-driver").GetString() == "local",
             "Docker daemon config must keep container networks off home LAN ranges.");
+        Check(System.Text.Json.JsonDocument.Parse(NodeRuntime.DaemonConfig).RootElement.GetProperty("exec-opts")[0].GetString()
+            == "native.cgroupdriver=cgroupfs", "Docker must use cgroupfs so systemd reloads keep containers' GPU access.");
 
         var tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
             + "   0: 0100007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0 0 1 1\n"
