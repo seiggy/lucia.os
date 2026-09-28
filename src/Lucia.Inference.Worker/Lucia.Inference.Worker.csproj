@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- Local AI on a GPU server. Publish once per CUDA line: -p:CudaLine=13 (compute 7.5+) or -p:CudaLine=12 (compute 7.0+). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <CudaLine Condition="'$(CudaLine)' == ''">13</CudaLine>
+    <TensorSharpVersion>2.8.6-gb10.20260927.1</TensorSharpVersion>
+  </PropertyGroup>
+
+  <!-- The Spark's model code, shared as source so both hosts load, plan and serve models the same way. -->
+  <ItemGroup>
+    <Compile Include="..\Lucia.Homelab.Server\Host\HostPlatformOptions.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\HuggingFaceManagementCredentials.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\InferenceEndpoints.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\InferenceRuntime.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\ModelCatalog.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\ModelInspector.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\ModelPresets.cs" Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TensorSharp.Models" Version="$(TensorSharpVersion)" />
+    <PackageReference Include="TensorSharp.Server" Version="$(TensorSharpVersion)" />
+    <PackageReference Include="TensorSharp.Native.Cuda" Version="$(TensorSharpVersion)" Condition="'$(CudaLine)' == '13'" />
+    <PackageReference Include="TensorSharp.Native.Cuda12" Version="$(TensorSharpVersion)" Condition="'$(CudaLine)' == '12'" />
+  </ItemGroup>
+
+  <Target Name="CheckCudaLine" BeforeTargets="Restore;Build">
+    <Error Condition="'$(CudaLine)' != '12' And '$(CudaLine)' != '13'" Text="CudaLine must be 12 or 13." />
+  </Target>
+</Project>

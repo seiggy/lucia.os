@@ -13,7 +13,7 @@ namespace Lucia.Homelab.Server.Stacks;
 public sealed record NodeBoundSubmission(string CertificatePem, SignedDiscovery Proof, string Body);
 public sealed record NodeBoundProof(Guid NodeId, string Purpose, string BodySha256);
 
-public static class StackEndpoints
+public static partial class StackEndpoints
 {
     public static void AddStacks(this WebApplicationBuilder builder)
     {
@@ -26,6 +26,11 @@ public static class StackEndpoints
     {
         var owner = app.MapGroup("/api/host/stacks").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        var catalog = app.MapGroup("/api/host/catalog").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        catalog.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.Catalog(ct));
+        catalog.MapPost("/{id}/preview", async (string id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.Preview(id, await ReadOwnerBody<CatalogPreviewRequest>(context, 8 * 1024, "node and settings", ct), ct));
         owner.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.List(ct));
         owner.MapGet("/{name}", (string name, StackStore stacks, CancellationToken ct) => stacks.Get(name, ct));
         owner.MapPut("/{name}", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
@@ -40,11 +45,29 @@ public static class StackEndpoints
             return Results.NoContent();
         });
 
+        var nas = app.MapGroup("/api/host/nas").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        nas.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.NasList(ct));
+        nas.MapPut("/{id}", async (string id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveNas(id, await ReadOwnerBody<SaveNasRequest>(context, 16 * 1024, "kind, host, shares and for SMB username and password", ct),
+                Actor(context), ct));
+        nas.MapDelete("/{id}", async (string id, StackStore stacks, CancellationToken ct) =>
+        {
+            await stacks.DeleteNas(id, ct);
+            return Results.NoContent();
+        });
+
         var inventory = app.MapGroup("/api/host/nodes/{id:guid}").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        inventory.MapMethods("/ai/{**path}", ["GET", "POST", "DELETE"], ProxyLocalAi);
+        inventory.MapGet("/ai-serving", (Guid id, StackStore stacks, CancellationToken ct) => stacks.Serving(id, ct));
+        inventory.MapPost("/ai-serving", async (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.Serve(id, await ReadOwnerBody<ServeModelRequest>(context, 4 * 1024, "modelId and optionally context", ct), Actor(context), ct));
+        inventory.MapDelete("/ai-serving", (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            stacks.Serve(id, new(null), Actor(context), ct));
         inventory.MapGet("/containers", (Guid id, StackStore stacks) => stacks.Inventory(id));
         inventory.MapPut("/gpu", async (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
-            await stacks.SaveNodeGpu(id, await ReadOwnerBody<SaveNodeGpuRequest>(context, 4 * 1024, "cudaLine, inference and inferenceGpus", ct), ct));
+            await stacks.SaveNodeGpu(id, await ReadOwnerBody<SaveNodeGpuRequest>(context, 4 * 1024, "cudaLine", ct), ct));
         inventory.MapGet("/containers/{container}/logs", async (Guid id, string container, int? tail, NodeRequests requests,
             CancellationToken ct) =>
         {
@@ -61,7 +84,8 @@ public static class StackEndpoints
             var (hostname, body) = await ReadNodeBody(id, "stacks", context, options, challenges, enrollment, ct);
             var report = JsonSerializer.Deserialize<NodeStackReport>(body, HardwareOnboardingJson.Options)
                 ?? throw new DiscoveryProtocolException(400, "A stack report is required.");
-            return Results.Json(new { stacks = await stacks.Sync(id, hostname, report, ct) }, HardwareOnboardingJson.Options);
+            return Results.Json(new { stacks = await stacks.Sync(id, hostname, report, ct), mounts = await stacks.DesiredMounts(ct) },
+                HardwareOnboardingJson.Options);
         });
         nodes.MapPost("/requests", async (Guid id, HttpContext context, BootOptions options, DiscoveryChallenges challenges,
             ManagedNodeEnrollment enrollment, NodeRequests requests, CancellationToken ct) =>
@@ -141,6 +165,45 @@ public static class StackEndpoints
             throw new DiscoveryProtocolException(400, "The signed request doesn't match its body.");
         return await enrollment.Authenticate(id, input.CertificatePem, proof.PublicKeyFingerprint, ct);
     }
+
+    private static readonly HttpClient LocalAiClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+
+    /// <summary>
+    /// Forwards model management to a server's Local AI with its management key, so the portal manages every server's
+    /// models the way it manages the Spark's, and the key never leaves the host.
+    /// </summary>
+    private static async Task<IResult> ProxyLocalAi(Guid id, string path, HttpContext context, StackStore stacks, CancellationToken ct)
+    {
+        if (!LocalAiPath().IsMatch(path))
+            throw new HardwareOnboardingException(404, "unknown_path", "Local AI has no such endpoint.");
+        var (baseUri, key) = await stacks.LocalAi(id, ct);
+        using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), new Uri(baseUri, "/api/worker/" + path + context.Request.QueryString));
+        request.Headers.Authorization = new("Bearer", key);
+        if (HttpMethods.IsPost(context.Request.Method))
+        {
+            if (context.Request.ContentLength > 64 * 1024)
+                throw new HardwareOnboardingException(400, "invalid_body", "Send JSON of at most 64 KiB.");
+            if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } feature) feature.MaxRequestBodySize = 64 * 1024;
+            using var body = new MemoryStream();
+            await context.Request.Body.CopyToAsync(body, ct);
+            request.Content = new ByteArrayContent(body.ToArray());
+            request.Content.Headers.ContentType = new("application/json");
+        }
+        try
+        {
+            using var response = await LocalAiClient.SendAsync(request, ct);
+            var text = await response.Content.ReadAsStringAsync(ct);
+            return Results.Text(text, response.Content.Headers.ContentType?.MediaType ?? "application/json", Encoding.UTF8, (int)response.StatusCode);
+        }
+        catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            throw new HardwareOnboardingException(502, "local_ai_unreachable",
+                "Local AI on that server isn't answering. It may still be starting; check its containers in Apps.");
+        }
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\A[A-Za-z0-9-]{1,64}(?:/[A-Za-z0-9-]{1,64}){0,3}\z")]
+    private static partial System.Text.RegularExpressions.Regex LocalAiPath();
 
     private static async Task<T> ReadOwnerBody<T>(HttpContext context, int limit, string fields, CancellationToken ct)
     {

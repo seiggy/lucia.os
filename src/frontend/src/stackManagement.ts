@@ -8,12 +8,27 @@ export interface StackMove {
   from: string; to: string; startedAt: string; startedBy: string
   progress: { bytes: number; total: number | null } | null; target: StackStatus | null
 }
+/** A catalog app's place in a stack: Lucia renders the compose from these settings. */
+export interface StackTemplateInfo { id: string; version: number; latest: number | null; name: string | null; settings: Record<string, string>; serverBound: boolean }
 export interface StackSummary {
   name: string; node: string; nodeId: string | null; desired: 'Running' | 'Stopped'; revision: number
   createdAt: string; updatedAt: string; updatedBy: string; reportedAt: string | null
   status: StackStatus | null; containers: NodeContainer[]; placement: StackPlacement; move: StackMove | null
+  template: StackTemplateInfo | null
 }
-export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement }
+export interface CatalogOption { value: string; label: string; help: string }
+/** `when` is `id=value` or `id=one|other`: the field applies only while that setting has one of those values. Hidden fields are set by Lucia's own screens. */
+export interface CatalogField {
+  id: string; label: string; kind: 'port' | 'text' | 'gpus' | 'choice' | 'hidden'; default: string | null; help: string | null
+  options: CatalogOption[]; when: string | null; optional: boolean
+}
+export interface CatalogGpu { uuid: string; model: string; memoryBytes: number | null; unsupported: string | null }
+export interface CatalogServer { nodeId: string; hostname: string; unmet: string | null; reason: string | null; gpus: CatalogGpu[] | null }
+export interface CatalogApp {
+  id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
+  serverBound: boolean; servers: CatalogServer[]
+}
+export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null }
 export interface NodeInventory { reportedAt: string; containers: NodeContainer[]; listeners: NodeListener[] }
 
 export const stackNamePattern = /^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/
@@ -76,7 +91,87 @@ export function parseStackSummary(value: unknown): StackSummary {
     reportedAt: absent(item.reportedAt) ? null : timestamp(item.reportedAt),
     status: absent(item.status) ? null : parseStatus(item.status),
     containers: absent(item.containers) ? [] : list(item.containers, parseContainer, 256),
-    placement: parsePlacement(item.placement), move: parseMove(item.move) }
+    placement: parsePlacement(item.placement), move: parseMove(item.move), template: parseTemplate(item.template) }
+}
+
+function settingsOf(value: unknown): Record<string, string> {
+  if (absent(value)) return {}
+  return Object.fromEntries(Object.entries(object(value)).map(([key, entry]) => [key, text(entry)]))
+}
+
+function parseTemplate(value: unknown): StackTemplateInfo | null {
+  if (absent(value)) return null
+  const item = object(value)
+  return { id: text(item.id), version: integer(item.version), latest: absent(item.latest) ? null : integer(item.latest),
+    name: optional(item.name), settings: settingsOf(item.settings), serverBound: item.serverBound === true }
+}
+
+export function parseCatalog(value: unknown): CatalogApp[] {
+  return list(object(value).apps, entry => {
+    const app = object(entry)
+    return { id: text(app.id), version: integer(app.version), name: text(app.name), summary: text(app.summary), needs: text(app.needs),
+      require: list(app.require, text, 16), serverBound: app.serverBound === true,
+      fields: list(app.fields, field => {
+        const row = object(field)
+        if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'hidden') throw invalid()
+        const options = absent(row.options) ? [] : list(row.options, option => {
+          const item = object(option)
+          return { value: text(item.value), label: text(item.label), help: text(item.help) }
+        }, 16)
+        if (row.kind === 'choice' && options.length === 0) throw invalid()
+        return { id: text(row.id), label: text(row.label), kind: row.kind, default: optional(row.default), help: optional(row.help),
+          options, when: optional(row.when), optional: row.optional === true }
+      }, 32),
+      servers: list(app.servers, server => {
+        const row = object(server)
+        return { nodeId: text(row.nodeId), hostname: text(row.hostname), unmet: optional(row.unmet), reason: optional(row.reason),
+          gpus: absent(row.gpus) ? null : list(row.gpus, gpu => {
+            const card = object(gpu)
+            return { uuid: text(card.uuid), model: text(card.model), memoryBytes: absent(card.memoryBytes) ? null : integer(card.memoryBytes),
+              unsupported: optional(card.unsupported) }
+          }, 16) }
+      }) }
+  }, 64)
+}
+
+/** Why a server can't run a catalog app, in words, or null when it can. */
+export function catalogReason(server: CatalogServer): string | null {
+  if (server.reason || !server.unmet) return server.reason
+  const words = describeUnmet(server.unmet)
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`
+}
+
+/** The settings a server starts with: field defaults, and every GPU that can run the app. */
+export function catalogDefaults(app: CatalogApp, server: CatalogServer | undefined): Record<string, string> {
+  return Object.fromEntries(app.fields.map(field => [field.id, field.kind === 'gpus'
+    ? (server?.gpus ?? []).filter(gpu => !gpu.unsupported).map(gpu => gpu.uuid).join(',') : field.default ?? '']))
+}
+
+/** Whether a field applies to these settings: it isn't hidden, and its `when` condition holds. */
+export function fieldShown(field: CatalogField, values: Record<string, string>): boolean {
+  if (field.kind === 'hidden') return false
+  if (!field.when) return true
+  const [id, wanted] = field.when.split('=')
+  return wanted.split('|').includes(values[id])
+}
+
+/** Mirrors the server's StackCatalog.Settings checks, so mistakes show before saving. */
+export function settingsProblem(app: CatalogApp, values: Record<string, string>): string | null {
+  for (const field of app.fields) {
+    const value = (values[field.id] ?? field.default ?? '').trim()
+    if (field.optional && !value) continue
+    if (field.kind === 'choice' && !field.options.some(option => option.value === value)) return `Choose the ${field.label.toLowerCase()}.`
+    if (field.kind === 'port' && !(/^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535)) return `${field.label} must be a port from 1 to 65535.`
+    if (field.kind === 'gpus' && !value) return 'Choose at least one GPU.'
+    if (field.kind === 'text' && value.length > 128) return `${field.label} can be up to 128 characters.`
+  }
+  return null
+}
+
+/** A free name for a new install: the app's id, then id-2, id-3… */
+export function freeName(id: string, taken: string[]): string {
+  if (!taken.includes(id)) return id
+  for (let n = 2; ; n++) if (!taken.includes(`${id}-${n}`)) return `${id}-${n}`
 }
 
 export function parseStackList(value: unknown): StackSummary[] {
@@ -86,7 +181,13 @@ export function parseStackList(value: unknown): StackSummary[] {
 export function parseStackDetail(value: unknown): StackDetail {
   const item = object(value)
   return { stack: parseStackSummary(item.stack), compose: text(item.compose), env: text(item.env),
-    placement: parsePlacement(object(item.manifest).placement) }
+    placement: parsePlacement(object(item.manifest).placement), address: optional(item.address) }
+}
+
+/** One value from a .env file, or null. */
+export function envValue(env: string, key: string): string | null {
+  const line = env.split('\n').find(entry => entry.startsWith(`${key}=`))
+  return line ? line.slice(key.length + 1).trim() : null
 }
 
 export function parseInventory(value: unknown): NodeInventory {
@@ -236,7 +337,7 @@ export interface RequirementFacts {
   runtime: { state: string; gpuContainers: boolean; gpus: { vendor: string; model: string; memoryBytes: number | null; computeCapability: string | null }[] } | null
 }
 
-const requirementPattern = /^(gpu(?:\.(?:vendor|model|vram|compute))?|memory|cuda)(?:\s*(>=|<=|!=|=|~)\s*(.+))?$/
+const requirementPattern = /^(gpu(?:\.(?:vendor|model|vram|compute))?|memory|cuda|nas)(?:\s*(>=|<=|!=|=|~)\s*(.+))?$/
 const sizePattern = /^(\d{1,6}(?:\.\d{1,3})?)\s*(M|MB|G|GB|T|TB)?$/i
 
 function sizeMatches(actual: number, op: string, value: string): boolean {
@@ -297,6 +398,7 @@ export function describeUnmet(requirement: string): string {
   if (key === 'gpu.compute') return `no GPU with compute capability ${op === '>=' ? `${value} or newer` : op === '<=' ? `${value} or older` : value}`
   if (key === 'memory') return op === '>=' ? `less than ${size} of memory` : `more than ${size} of memory`
   if (key === 'cuda') return `not set to CUDA ${value}`
+  if (key === 'nas') return `the NAS share ${value} isn't mounted`
   return `doesn't meet ${requirement}`
 }
 
@@ -316,6 +418,8 @@ export function requirementForm(requirements: string[]): RequirementForm {
     else if (key === 'gpu.compute' && op === '>=' && !form.compute) { form.gpu = true; form.compute = value }
     else if (key === 'cuda' && op === '=' && (value === '12' || value === '13') && !form.cuda) { form.gpu = true; form.cuda = value }
     else if (key === 'memory' && op === '>=' && gigabytes && !form.memory) form.memory = gigabytes
+    // Lucia derives these from the compose file's /mnt/lucia/nas paths each time it's saved.
+    else if (key === 'nas') continue
     else form.other.push(requirement)
   }
   return form
@@ -347,3 +451,81 @@ export const composeExample = `services:
 volumes:
   data:
 `
+
+export type NasKind = 'nfs' | 'smb'
+export type MountState = 'Mounted' | 'Pending' | 'Failed'
+export interface NasMount { node: string; state: MountState | null; message: string | null }
+export interface NasShare { name: string; path: string; mountPath: string; usedBy: string[]; mounts: NasMount[] }
+export interface NasServer { id: string; kind: NasKind; host: string; username: string | null; hasPassword: boolean; updatedAt: string; updatedBy: string; shares: NasShare[] }
+export interface NasShareDraft { name: string; path: string }
+export interface NasDraft { id: string; kind: NasKind; host: string; username: string; password: string; shares: NasShareDraft[] }
+
+export const nasIdPattern = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/
+export const shareNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const exportPattern = /^\/(?:[A-Za-z0-9._-]+\/?){0,16}$/
+const smbSharePattern = /^[A-Za-z0-9._$-]{1,80}$/
+const hostPattern = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/
+
+function parseNasMount(value: unknown): NasMount {
+  const item = object(value)
+  if (absent(item.status)) return { node: text(item.node), state: null, message: null }
+  const status = object(item.status)
+  const state = text(status.state)
+  if (state !== 'Mounted' && state !== 'Pending' && state !== 'Failed') throw invalid()
+  return { node: text(item.node), state, message: optional(status.message) }
+}
+
+export function parseNasList(value: unknown): NasServer[] {
+  return list(object(value).servers, server => {
+    const item = object(server)
+    const kind = text(item.kind)
+    if (kind !== 'nfs' && kind !== 'smb' || typeof item.hasPassword !== 'boolean') throw invalid()
+    return {
+      id: text(item.id), kind, host: text(item.host), username: optional(item.username), hasPassword: item.hasPassword,
+      updatedAt: timestamp(item.updatedAt), updatedBy: text(item.updatedBy),
+      shares: list(item.shares, share => {
+        const entry = object(share)
+        return { name: text(entry.name), path: text(entry.path), mountPath: text(entry.mountPath), usedBy: list(entry.usedBy, text), mounts: list(entry.mounts, parseNasMount) }
+      }, 64),
+    }
+  }, 32)
+}
+
+/** How a share is doing across every managed server. */
+export function shareState(share: NasShare): { label: string; tone: StackTone } {
+  const count = (state: MountState | null) => share.mounts.filter(mount => mount.state === state).length
+  const servers = (n: number) => n === 1 ? '1 server' : `${n} servers`
+  if (share.mounts.length === 0) return { label: 'No servers yet', tone: 'muted' }
+  if (count('Failed')) return { label: count('Failed') === share.mounts.length ? "Can't mount" : `Can't mount on ${servers(count('Failed'))}`, tone: 'amber' }
+  if (count('Mounted') === share.mounts.length) return { label: share.mounts.length === 1 ? 'Mounted' : `Mounted on all ${share.mounts.length}`, tone: 'green' }
+  if (count('Pending')) return { label: 'Mounting', tone: 'accent' }
+  return { label: `Mounted on ${count('Mounted')} of ${servers(share.mounts.length)}`, tone: 'muted' }
+}
+
+export function mountLabel(mount: NasMount): string {
+  return mount.state === 'Mounted' ? 'Mounted' : mount.state === 'Pending' ? 'Mounting' : mount.state === 'Failed' ? "Can't mount" : 'Not reported'
+}
+
+/** A folder name for a share from its path: the last segment, cleaned up. */
+export function shareNameFrom(path: string): string {
+  const last = path.trim().split('/').filter(Boolean).pop() ?? ''
+  return last.replace(/[^A-Za-z0-9._-]/g, '').replace(/^[._-]+/, '').slice(0, 64)
+}
+
+export function nasDraftProblem(draft: NasDraft, saved: NasServer | null): string | null {
+  if (!nasIdPattern.test(draft.id)) return 'Name the NAS with lowercase letters, digits and hyphens, starting with a letter.'
+  if (!hostPattern.test(draft.host.trim())) return "Enter the NAS's IP address or hostname."
+  if (draft.kind === 'smb' && !/^[A-Za-z0-9._@-]{1,64}$/.test(draft.username.trim())) return 'Enter the SMB username.'
+  if (draft.kind === 'smb' && !draft.password && !(saved?.kind === 'smb' && saved.hasPassword)) return 'Enter the SMB password.'
+  if (draft.shares.length === 0) return 'Add at least one share.'
+  for (const share of draft.shares) {
+    const path = share.path.trim()
+    if (draft.kind === 'nfs' ? !exportPattern.test(path) || path.split('/').some(part => part === '.' || part === '..') : !smbSharePattern.test(path))
+      return draft.kind === 'nfs' ? `“${path || 'Blank'}” isn't an export path. Write it as the NAS shows it, such as /volume1/media.`
+        : `“${path || 'Blank'}” isn't a share name. Use the name alone, such as Media.`
+    if (!shareNamePattern.test(share.name.trim())) return `Give the share at ${path} a folder name of letters, digits, dots, dashes or underscores.`
+  }
+  const names = draft.shares.map(share => share.name.trim().toLowerCase())
+  if (new Set(names).size !== names.length) return 'Give each share a different folder name.'
+  return null
+}

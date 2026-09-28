@@ -1,3 +1,4 @@
+using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Stacks;
@@ -15,7 +16,7 @@ internal static class StackChecks
 
         foreach (var name in new[] { "plex", "media-automation", "a", "a1" }) StackStore.ValidateName(name);
         check(true, "Valid stack names were rejected.");
-        foreach (var name in new[] { "", "Plex", "1plex", "plex-", "plex_x", "../etc", new string('a', 41) })
+        foreach (var name in new[] { "", "Plex", "1plex", "plex-", "plex_x", "../etc", new string('a', 41), "catalog", "install", "new" })
             Rejects(() => StackStore.ValidateName(name), $"The stack name '{name}' was accepted.");
 
         check(StackStore.Normalize("services:\r\n  web:\r\n\timage: x\r\n", 1024, "compose", true) == "services:\n  web:\n\timage: x\n",
@@ -77,6 +78,21 @@ internal static class StackChecks
         check(StackRequirements.Unmet(["memory<=32G"], host) == "memory<=32G", "A memory maximum was ignored.");
         check(StackRequirements.Unmet(["gpu"], host with { Runtime = host.Runtime! with { GpuContainers = false } }) == "gpu",
             "A GPU that containers can't use met a gpu requirement.");
+
+        foreach (var bad in new[] { "nas", "nas=unas", "nas=Unas/Media", "nas=unas/../x", "nas=unas/Media/x", "nas~unas/Media" })
+            Rejects(() => StackRequirements.Normalize([bad]), $"The requirement '{bad}' was accepted.");
+        check(StackRequirements.Unmet(["nas=unas/Media"], host, null, new HashSet<string> { "unas/Media" }) is null
+            && StackRequirements.Unmet(["nas=unas/Media"], host, null, new HashSet<string> { "unas/Models" }) == "nas=unas/Media"
+            && StackRequirements.Unmet(["nas=unas/Media"], host) == "nas=unas/Media", "NAS requirements must follow the node's mounts.");
+        (string, string)[] shares = [("unas", "Media"), ("unas", "Models")];
+        check(StackStore.NasRequirements("volumes:\n  - /mnt/lucia/nas/unas/Media/Movies:/movies:ro\n  - \"/mnt/lucia/nas/unas/Media:/m\"\n", shares)
+            is ["nas=unas/Media"] && StackStore.NasRequirements("services: {}", shares) is [],
+            "Compose NAS paths must become requirements.");
+        Rejects(() => StackStore.NasRequirements("- /mnt/lucia/nas/unas/Photos:/p", shares), "A compose path to an unknown share was accepted.");
+        Rejects(() => StackStore.ValidateNasId("Bad Name"), "An invalid NAS name was accepted.");
+        StackStore.ValidateReport(report with { Mounts = [new("unas", "Media", "Mounted"), new("unas", "Models", "Failed", "access denied")] });
+        check(true, "A valid mount report was rejected.");
+        Rejects(() => StackStore.ValidateReport(report with { Mounts = [new("unas", "Media", "Exploded")] }), "An unknown mount state was accepted.");
         check(StackRequirements.Unmet(["memory>=1G"], null) == "memory>=1G", "A node that never reported met a requirement.");
 
         foreach (var bad in new[] { "cuda", "cuda=11", "cuda>=12", "cuda=12.4" })
@@ -84,28 +100,112 @@ internal static class StackChecks
         var uuid = "GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981";
         var cudaRuntime = host.Runtime! with { CudaVersion = "13.3", Gpus = [host.Runtime.Gpus[0] with { Uuid = uuid }] };
         var cudaHost = host with { Runtime = cudaRuntime };
-        var pinned12 = new NodeGpuSettings(12, false, []);
+        var pinned12 = new NodeGpuSettings(12);
         check(StackRequirements.Unmet(["cuda=12"], cudaHost, pinned12) is null, "A server pinned to CUDA 12 didn't meet cuda=12.");
         check(StackRequirements.Unmet(["cuda=13"], cudaHost, pinned12) == "cuda=13", "A CUDA 12 server met cuda=13.");
         check(StackRequirements.Unmet(["cuda=12"], cudaHost) == "cuda=12", "A server without a pinned line met a cuda requirement.");
         check(StackRequirements.Unmet(["cuda=13"], cudaHost with { Runtime = cudaRuntime with { CudaVersion = "12.8" } },
-            new NodeGpuSettings(13, false, [])) == "cuda=13", "A pinned line the driver no longer supports still met its requirement.");
+            new NodeGpuSettings(13)) == "cuda=13", "A pinned line the driver no longer supports still met its requirement.");
         check(CudaLines.Unsupported(13, cudaRuntime) is null && CudaLines.Unsupported(12, cudaRuntime) is null,
             "A current driver and GPU were ruled out.");
         check(CudaLines.Unsupported(12, cudaRuntime with { CudaVersion = null }) is not null
             && CudaLines.Unsupported(13, cudaRuntime with { Gpus = [cudaRuntime.Gpus[0] with { ComputeCapability = "6.1" }] }) is { } pascal
             && pascal.Contains("7.5") && CudaLines.Unsupported(12, cudaRuntime with { Gpus = [] }) is not null,
             "CUDA line support ignored the driver's CUDA version, a GPU's compute capability, or a server without GPUs.");
-        check(CudaLines.Validate(new(13, true, [uuid, uuid]), cudaRuntime) is { CudaLine: 13, Inference: true, InferenceGpus: [var only] } && only == uuid
-            && CudaLines.Validate(new(12, false, [uuid]), cudaRuntime).InferenceGpus.Length == 0,
-            "Local AI GPU choices weren't de-duplicated, or were kept with local AI off.");
         foreach (var (bad, why, runtime) in new (SaveNodeGpuRequest, string, NodeRuntime)[] {
-            (new(null, true, [uuid]), "without a CUDA line", cudaRuntime), (new(13, true, []), "without a GPU", cudaRuntime),
-            (new(13, true, ["GPU-00000000-0000-0000-0000-000000000000"]), "with a GPU the server doesn't have", cudaRuntime),
-            (new(11, false, null), "on an unknown line", cudaRuntime),
-            (new(13, true, [uuid]), "on a server whose containers can't use its GPUs", cudaRuntime with { GpuContainers = false }) })
+            (new(11), "on an unknown line", cudaRuntime),
+            (new(13), "on a Pascal GPU", cudaRuntime with { Gpus = [cudaRuntime.Gpus[0] with { ComputeCapability = "6.1" }] }) })
         {
-            try { CudaLines.Validate(bad, runtime); throw new InvalidOperationException($"Local AI settings {why} were accepted."); }
+            try { CudaLines.Validate(bad, runtime); throw new InvalidOperationException($"A CUDA line {why} was accepted."); }
+            catch (HardwareOnboardingException error) when (error.StatusCode is 400 or 409) { check(true, why); }
+        }
+
+        var localAi = StackCatalog.Find("local-ai");
+        var gpuNode = new ManagedNodeFacts(Guid.NewGuid(), "lucialab01", true, cudaHost, new(13));
+        var settings = StackCatalog.Settings(localAi, new() { ["gpus"] = uuid });
+        check(settings["port"] == "8080", "Local AI's default port wasn't filled in.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["prot"] = "1" }), "An unknown catalog setting was accepted.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["port"] = "80a" }), "A malformed port was accepted.");
+        Rejects(() => StackCatalog.Settings(localAi, new()), "Local AI without GPUs was accepted.");
+        check(StackCatalog.Server(localAi, gpuNode) is { Unmet: null, Reason: null, Gpus: [{ Unsupported: null }] }
+            && StackCatalog.Server(localAi, gpuNode with { Gpu = null }).Reason is not null
+            && StackCatalog.Server(localAi, gpuNode with { Online = false }).Reason is not null,
+            "Local AI eligibility ignored the CUDA line or the server being offline.");
+        var rendered = localAi.Render(settings, gpuNode, new Dictionary<string, string>());
+        var env = StackCatalog.ReadEnv(rendered.Env);
+        check(!rendered.Compose.Contains('\r'), "Local AI's compose has Windows line endings.");
+        check(rendered.Compose.Contains("lucia-inference:0.1.4-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
+            && rendered.Compose.Contains("HostPlatform__MemoryBudgetGiB: \"23\"") && rendered.Require.Contains("cuda=13")
+            && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
+            "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");
+        check(localAi.Render(settings, gpuNode, env).Env == rendered.Env, "Re-rendering Local AI replaced its keys.");
+        check(settings["engine"] == "lucia" && !rendered.Compose.Contains("vllm") && rendered.Compose.Contains("- models:/models")
+            && rendered.Compose.Contains("HostPlatform__ModelDirectory: /models\n"), "Local AI's default engine isn't Lucia Inference with a local library.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "ollama" }), "An unknown engine was accepted.");
+        var model = Guid.NewGuid();
+        var vllmSettings = StackCatalog.Settings(localAi, new()
+        {
+            ["gpus"] = uuid, ["engine"] = "vllm", ["library"] = "192.168.0.172:/var/nfs/shared/Models",
+            ["vllm-model"] = model.ToString(), ["vllm-name"] = "Qwen/Qwen3-0.6B",
+        });
+        var library = localAi.Render(vllmSettings, gpuNode, env).Compose;
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-vllm-compose.yml"), library);
+        check(library.Contains("vllm/vllm-openai:v0.30.0@sha256:") && library.Contains("\"8080:8000\"") && library.Contains("\"8081:8080\"")
+            && library.Contains($"command: [\"/models/lucialab01/{model:N}/files\", \"--served-model-name\", \"Qwen/Qwen3-0.6B\", \"--max-model-len\", \"auto\", \"--tensor-parallel-size\", \"1\"]")
+            && library.Contains("device: \":/var/nfs/shared/Models\"") && library.Contains("addr=192.168.0.172,nfsvers=3")
+            && library.Contains("- library:/models:ro,nocopy") && library.Contains("- library:/models:nocopy") && library.Contains("Worker__LibraryOnly: \"true\"") && library.Contains("  vllm-cache:")
+            && library.Split("device_ids").Length == 2 && !library.Contains("\n\n\n"),
+            "vLLM rendered the wrong image, ports, command, NFS library or GPU reservation.");
+        var idle = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-model"] = "" }, gpuNode, env).Compose;
+        check(!idle.Contains("vllm:") && !idle.Contains("vllm-cache") && idle.Contains("\"8081:8080\""), "vLLM without a model still rendered a vLLM service.");
+        foreach (var (key, value, why) in new[] {
+            ("library", "nas:relative", "a library that isn't host:/path"), ("library", "nas:/a b", "a library path with a space"),
+            ("vllm-name", "../etc", "a served name that isn't a repository"), ("vllm-context", "12", "a context below 256"),
+            ("vllm-model", "not-a-guid", "a model that isn't an id") })
+        {
+            var bad = new Dictionary<string, string>(vllmSettings) { [key] = value };
+            try { localAi.Render(bad, gpuNode, env); throw new InvalidOperationException($"vLLM with {why} was accepted."); }
+            catch (HardwareOnboardingException error) when (error.StatusCode is 400) { check(true, why); }
+        }
+        try
+        {
+            localAi.Render(vllmSettings, gpuNode with { Gpu = new(12), Status = cudaHost with { Runtime = cudaRuntime with { CudaVersion = "12.8" } } }, env);
+            throw new InvalidOperationException("vLLM on a CUDA 12.8 driver was accepted.");
+        }
+        catch (HardwareOnboardingException error) when (error.Code == "vllm_driver_too_old") { check(true, "old driver"); }
+        // llama.cpp serves the whole library through its router, so it runs without a chosen model.
+        var llamaSettings = new Dictionary<string, string>(vllmSettings) { ["engine"] = "llamacpp", ["vllm-model"] = "", ["vllm-name"] = "" };
+        var llama = localAi.Render(llamaSettings, gpuNode, env).Compose;
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-llama-compose.yml"), llama);
+        check(llama.Contains("llama.cpp:server-cuda13-b11206@sha256:") && llama.Contains("\"8080:8080\"") && llama.Contains("\"8081:8080\"")
+            && llama.Contains("command: [\"--models-preset\", \"/cache/llama-models.ini\", \"--models-max\", \"1\", \"--host\", \"0.0.0.0\", \"--port\", \"8080\"]")
+            && llama.Contains("HostPlatform__LlamaCache: /cache") && llama.Contains("- llama-cache:/cache\n") && llama.Contains("- llama-cache:/cache:ro")
+            && llama.Contains("\n  llama-cache:") && llama.Split("/models").Length == 3 && llama.Contains("condition: service_healthy")
+            && llama.Contains("LLAMA_API_KEY: ${LUCIA_INFERENCE_KEY}") && !llama.Contains("vllm") && llama.Split("device_ids").Length == 2 && !llama.Contains("\n\n\n"),
+            "llama.cpp rendered the wrong image, ports, command, cache, key or GPU reservation.");
+        check(!library.Contains("LlamaCache") && !library.Contains("llama-cache"), "vLLM's worker mirrored models for llama.cpp.");
+        var created = DateTimeOffset.UnixEpoch;
+        LocalModel Gguf(string repository, string file, ModelDownloadState state = ModelDownloadState.Ready, ModelKind kind = ModelKind.Chat) =>
+            new(Guid.NewGuid(), new("huggingface", repository, file, kind), state, created = created.AddMinutes(1), created);
+        var first = Gguf("Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF", "L3.3-70B-Magnum-Diamond-Q4_K_M.gguf");
+        var sharded = Gguf("unsloth/Big-GGUF", "Q5_K_M/Big-Q5_K_M-00001-of-00002.gguf");
+        var plain = Gguf("a/plain-GGUF", "plain.gguf");
+        var presets = ModelCatalog.LlamaPresets("/models/lucialab01", [first, sharded,
+            Gguf("Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF", "copy/L3.3-70B-Magnum-Diamond-Q4_K_M.gguf"),
+            Gguf("a/b-GGUF", "b-Q4_K_M.gguf", ModelDownloadState.Downloading), Gguf("a/embed-GGUF", "e-Q8_0.gguf", kind: ModelKind.Embedding),
+            Gguf("a/odd-GGUF", "odd;x-Q4_K_M.gguf"), plain]);
+        check(presets == "version = 1\n"
+            + $"\n[Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF:Q4_K_M]\nmodel = /models/lucialab01/{first.Id:N}/files/L3.3-70B-Magnum-Diamond-Q4_K_M.gguf\n"
+            + $"\n[unsloth/Big-GGUF:Q5_K_M]\nmodel = /models/lucialab01/{sharded.Id:N}/files/Q5_K_M/Big-Q5_K_M-00001-of-00002.gguf\n"
+            + $"\n[a/plain-GGUF:plain]\nmodel = /models/lucialab01/{plain.Id:N}/files/plain.gguf\n",
+            "llama.cpp presets listed a model that isn't a Ready GGUF LLM, a duplicate name, or a path INI can't hold.");
+        foreach (var (bad, why, target) in new (Dictionary<string, string>, string, ManagedNodeFacts)[] {
+            (new() { ["gpus"] = "GPU-00000000-0000-0000-0000-000000000000", ["port"] = "8080" }, "with a GPU the server doesn't have", gpuNode),
+            (settings, "without a CUDA line", gpuNode with { Gpu = null }),
+            (settings, "on a Pascal GPU with CUDA 12", gpuNode with { Gpu = new(12),
+                Status = cudaHost with { Runtime = cudaRuntime with { Gpus = [cudaRuntime.Gpus[0] with { ComputeCapability = "6.1" }] } } }) })
+        {
+            try { localAi.Render(bad, target, new Dictionary<string, string>()); throw new InvalidOperationException($"Local AI {why} was accepted."); }
             catch (HardwareOnboardingException error) when (error.StatusCode is 400 or 409) { check(true, why); }
         }
 

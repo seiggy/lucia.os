@@ -23,7 +23,8 @@ const paths = {
   close: <path d="m6 6 12 12M6 18 18 6" />,
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 22v-3a8 8 0 0 1 16 0v3" /></>,
   copy: <><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></>,
-  stop: <rect x="5" y="5" width="14" height="14" rx="2" />,
+  stop: <><circle cx="12" cy="12" r="9" /><rect x="9" y="9" width="6" height="6" rx="1" /></>,
+  eject: <path d="M12 5 5 13h14Zm-7 13h14" />,
   down: <path d="m6 9 6 6 6-6" />,
   search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,
 } as const

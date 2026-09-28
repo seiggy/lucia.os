@@ -84,7 +84,7 @@ export interface ManagedNodeSummary {
   gpu: NodeGpuSettings; gpuWarning: string | null
 }
 
-export interface NodeGpuSettings { cudaLine: CudaLine | null; inference: boolean; inferenceGpus: string[] }
+export interface NodeGpuSettings { cudaLine: CudaLine | null }
 export type CudaLine = 12 | 13
 export const cudaLines: { line: CudaLine; minimumCompute: number; note: string }[] = [
   { line: 13, minimumCompute: 7.5, note: 'Newest. Needs compute 7.5 or newer (RTX 20 series and later).' },
@@ -266,11 +266,9 @@ export function parseManagedNodes(value: unknown): ManagedNodeSummary[] {
               }) }
           }) }
       }),
-      gpu: node.gpu === undefined || node.gpu === null ? { cudaLine: null, inference: false, inferenceGpus: [] } : (() => {
+      gpu: node.gpu === undefined || node.gpu === null ? { cudaLine: null } : (() => {
         const gpu = object(node.gpu)
-        return { cudaLine: nullable(gpu.cudaLine, line => { if (line !== 12 && line !== 13) throw invalid(); return line as CudaLine }),
-          inference: boolean(gpu.inference),
-          inferenceGpus: array(gpu.inferenceGpus, text) }
+        return { cudaLine: nullable(gpu.cudaLine, line => { if (line !== 12 && line !== 13) throw invalid(); return line as CudaLine }) }
       })(),
       gpuWarning: nullable(node.gpuWarning ?? null, text) }
   })

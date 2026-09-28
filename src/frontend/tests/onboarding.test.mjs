@@ -121,11 +121,11 @@ assert.equal(onboardingRequest(owner, { kind: 'managed' }).url, '/api/host/nodes
 const managedNode = { nodeId: deviceId, hostname: 'dev-server', state: 'Online', certificateExpiresAt: expiry, lastSeenAt: device.lastSeenAt,
   status: { osVersion: 'Debian GNU/Linux 13', uptimeSeconds: 60, loadAverage: 0.3, memoryTotalBytes: 8192, memoryAvailableBytes: 4096,
     storageTotalBytes: 102400, storageAvailableBytes: 51200, runtime: null },
-  gpu: { cudaLine: null, inference: false, inferenceGpus: [] }, gpuWarning: null }
+  gpu: { cudaLine: null }, gpuWarning: null }
 assert.deepEqual(parseManagedNodes([managedNode]), [managedNode])
 const { gpu: _gpu, gpuWarning: _warning, ...olderServer } = managedNode
 assert.deepEqual(parseManagedNodes([olderServer]), [managedNode])
-const pinned = { ...managedNode, gpu: { cudaLine: 13, inference: true, inferenceGpus: ['GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981'] }, gpuWarning: 'Update the driver.' }
+const pinned = { ...managedNode, gpu: { cudaLine: 13 }, gpuWarning: 'Update the driver.' }
 assert.deepEqual(parseManagedNodes([pinned]), [pinned])
 assert.throws(() => parseManagedNodes([{ ...pinned, gpu: { ...pinned.gpu, cudaLine: 11 } }]))
 const { runtime: _omitted, ...olderStatus } = managedNode.status

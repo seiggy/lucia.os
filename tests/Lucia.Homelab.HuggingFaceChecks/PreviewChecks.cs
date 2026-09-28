@@ -75,22 +75,22 @@ internal static class PreviewChecks
 
         var result = await Read();
         Check(result.Inspection is { Architecture: "llama", Kind: ModelKind.Chat, NativeContextTokens: 262144,
-            AttentionLayers: 32, KvBytesPerToken: 524288, TensorTypes.Length: 0 }, "Selected header KV calculation is wrong.");
+            AttentionLayers: 32, KvBytesPerToken: 131072, TensorTypes.Length: 0 }, "Selected header KV calculation is wrong.");
         Check(result.Inspection!.FileBytes == size && result.Inspection.WeightBytes == size, "Wrong selected file byte estimate.");
         Check(result.Source is { Signature: "GGUF", GgufVersion: 3, MetadataComplete: true, Revision: Sha }
             && result.Source.MetadataSha256 == Convert.ToHexStringLower(SHA256.HashData(metadata)), "Header provenance hash or pinned revision was lost.");
         Check(lastStream!.BytesRead == metadata.Length && lastStream.Disposed, "Preview read past metadata or failed to close the body.");
         Safe(result);
         var reserveSettings = new HostPlatformOptions();
-        var small = ModelInspector.Calculate(result.Inspection, reserveSettings, 64 * ModelInspector.GiB);
-        Check(small.OsReserveBytes == 8 * ModelInspector.GiB && small.ServicesReserveBytes == 8 * ModelInspector.GiB
-            && small.VoiceReserveBytes == 8 * ModelInspector.GiB && small.RuntimeReserveBytes == 8 * ModelInspector.GiB,
+        var small = ModelInspector.Calculate(result.Inspection, reserveSettings, 32 * ModelInspector.GiB);
+        Check(small.OsReserveBytes == 4 * ModelInspector.GiB && small.ServicesReserveBytes == 3 * ModelInspector.GiB
+            && small.VoiceReserveBytes == 8 * ModelInspector.GiB && small.RuntimeReserveBytes == 3 * ModelInspector.GiB,
             "Preview bypassed existing host reserves.");
-        var occupied = ModelInspector.Calculate(result.Inspection, reserveSettings, 64 * ModelInspector.GiB, 2 * ModelInspector.GiB);
+        var occupied = ModelInspector.Calculate(result.Inspection, reserveSettings, 32 * ModelInspector.GiB, 2 * ModelInspector.GiB);
         Check(occupied.MemoryLimitedContextTokens < small.MemoryLimitedContextTokens, "Opposite-slot memory was ignored.");
         size = 8 * ModelInspector.GiB;
         var bigger = await Read();
-        Check(ModelInspector.Calculate(bigger.Inspection!, reserveSettings, 64 * ModelInspector.GiB).MemoryLimitedContextTokens
+        Check(ModelInspector.Calculate(bigger.Inspection!, reserveSettings, 32 * ModelInspector.GiB).MemoryLimitedContextTokens
             < small.MemoryLimitedContextTokens, "Larger quantization did not reduce context capacity.");
         size = ModelInspector.GiB;
 
@@ -202,13 +202,13 @@ internal static class PreviewChecks
         {
             Text(writer, "llama.attention.key_length"); writer.Write(10u); writer.Write(64ul);
         }));
-        Check((await Read()).Inspection!.KvBytesPerToken == 262144, "Unsigned-64 attention metadata or value-length fallback is wrong.");
+        Check((await Read()).Inspection!.KvBytesPerToken == 65536, "Unsigned-64 attention metadata or value-length fallback is wrong.");
         response = _ => Header(Metadata("qwen35moe"));
         var hybrid = await Read();
-        Check(hybrid.Inspection is { AttentionLayers: 1, KvBytesPerToken: 256 }, "Hybrid interval/nextn calculation changed.");
+        Check(hybrid.Inspection is { AttentionLayers: 1, KvBytesPerToken: 64 }, "Hybrid interval/nextn calculation changed.");
         response = _ => Header(Metadata("qwen35moe", extra: writer =>
             Strings(writer, "qwen35moe.layer_types", ["full_attention", "linear_attention", "full_attention", "linear_attention"])));
-        Check((await Read()).Inspection is { AttentionLayers: 2, KvBytesPerToken: 512 }, "Explicit hybrid layers were ignored.");
+        Check((await Read()).Inspection is { AttentionLayers: 2, KvBytesPerToken: 128 }, "Explicit hybrid layers were ignored.");
         response = _ => Header(Metadata("qwen35moe", extra: writer => Strings(writer, "qwen35moe.layer_types", ["full_attention"])));
         await Unavailable("invalid_attention_metadata");
         response = _ => Header(Metadata("qwen35moe", extra: writer => Strings(writer, "qwen35moe.layer_types", ["new_attention"])));

@@ -24,12 +24,13 @@ export type Route =
   | { page: 'settings' }
   | { page: 'adguard-settings' }
   | { page: 'unifi-settings' }
+  | { page: 'storage-settings' }
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
-  | { page: 'apps'; view: 'list' | 'containers' | 'new' | 'app'; name?: string }
+  | { page: 'apps'; view: 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install'; name?: string; node?: string }
   | { page: 'ai' }
   | { page: 'ai-keys' }
-  | { page: 'ai-models'; view?: 'library' | 'find' }
+  | { page: 'ai-models'; view?: 'library' | 'find'; server?: string }
   | { page: 'not-found' }
 
 export function parseRoute(hash: string): Route {
@@ -38,12 +39,15 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 1 && parts[0] === 'settings') return { page: 'settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'adguard') return { page: 'adguard-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'unifi') return { page: 'unifi-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'storage') return { page: 'storage-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'domains') return { page: 'domain-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'ssh-keys') return { page: 'ssh-key-settings' }
   if (parts.length === 1 && parts[0] === 'ai') return { page: 'ai' }
   if (parts.length === 2 && parts[0] === 'ai' && parts[1] === 'keys') return { page: 'ai-keys' }
   if (parts.length === 2 && parts[0] === 'ai' && parts[1] === 'models') return { page: 'ai-models' }
   if (parts.length === 3 && parts[0] === 'ai' && parts[1] === 'models' && parts[2] === 'find') return { page: 'ai-models', view: 'find' }
+  if ((parts.length === 4 || (parts.length === 5 && parts[4] === 'find')) && parts[0] === 'ai' && parts[1] === 'models' && parts[2] === 'on'
+    && /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(parts[3])) return { page: 'ai-models', view: parts[4] ? 'find' : 'library', server: parts[3] }
   if (parts.length === 1 && parts[0] === 'devices') return { page: 'devices' }
   if (parts.length === 1 && parts[0] === 'tasks') return { page: 'tasks' }
   if (parts.length === 1 && parts[0] === 'updates') return { page: 'updates' }
@@ -51,8 +55,12 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'apps' && parts.length === 2) {
     if (parts[1] === 'containers') return { page: 'apps', view: 'containers' }
     if (parts[1] === 'new') return { page: 'apps', view: 'new' }
+    if (parts[1] === 'catalog') return { page: 'apps', view: 'catalog' }
     if (/^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(parts[1])) return { page: 'apps', view: 'app', name: parts[1] }
   }
+  if (parts[0] === 'apps' && parts[1] === 'install' && (parts.length === 3 || parts.length === 4) && /^[a-z][a-z0-9-]{0,39}$/.test(parts[2])
+    && (parts.length === 3 || /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/.test(parts[3])))
+    return { page: 'apps', view: 'install', name: parts[2], ...(parts[3] ? { node: parts[3] } : {}) }
   return { page: 'not-found' }
 }
 

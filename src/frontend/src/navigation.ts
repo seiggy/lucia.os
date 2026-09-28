@@ -28,6 +28,7 @@ export const destinations: Destination[] = [
   { page: 'settings', area: 'settings', label: 'Appearance', description: 'Color mode, themes, and custom accent', href: '#/settings', keywords: 'preferences light dark system theme' },
   { page: 'adguard-settings', area: 'settings', label: 'AdGuard', description: 'Connect your existing local DNS server', href: '#/settings/adguard', ownerOnly: true, keywords: 'dns rewrite network connection password' },
   { page: 'unifi-settings', area: 'settings', label: 'UniFi Network', description: 'Reserve node addresses on your UniFi gateway', href: '#/settings/unifi', ownerOnly: true, keywords: 'dhcp reservation fixed ip address gateway router network connection api key' },
+  { page: 'storage-settings', area: 'settings', label: 'Storage', description: 'Mount NAS shares on every server', href: '#/settings/storage', ownerOnly: true, keywords: 'nas nfs smb cifs share mount network storage unas synology media' },
   { page: 'ssh-key-settings', area: 'settings', label: 'SSH keys', description: 'Sign in to managed servers with your keys', href: '#/settings/ssh-keys', ownerOnly: true, keywords: 'ssh public key authorized_keys login server github ed25519 passwordless' },
   { page: 'domain-settings', area: 'settings', label: 'Domains', description: 'Cloudflare DNS and HTTPS certificates', href: '#/settings/domains', ownerOnly: true, keywords: 'ssl tls lets encrypt certbot wildcard subdomain urls names cloudflare' },
 ]

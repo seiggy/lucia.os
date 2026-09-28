@@ -10,6 +10,7 @@ namespace Lucia.Homelab.Server.Stacks;
 /// <c>gpu</c>, <c>gpu.vendor=nvidia</c>, <c>gpu.model~4090</c>, <c>gpu.vram&gt;=24G</c>, <c>gpu.compute&gt;=8.6</c>,
 /// <c>memory&gt;=32G</c>, <c>cuda=12</c>. All <c>gpu.*</c> requirements must hold for the same GPU, and that GPU must be usable
 /// from containers. <c>cuda=N</c> holds on servers the owner pinned to that CUDA line, while their driver still supports it.
+/// <c>nas=unas/Media</c> holds while the node reports that NAS share mounted; Lucia adds it for compose paths under /mnt/lucia/nas.
 /// </summary>
 public static partial class StackRequirements
 {
@@ -27,11 +28,14 @@ public static partial class StackRequirements
     }
 
     /// <summary>The first requirement this node doesn't meet, or null when it's eligible.</summary>
-    public static string? Unmet(string[] requirements, NodeHeartbeat? status, NodeGpuSettings? settings = null)
+    /// <param name="mounted">The NAS shares the node reports mounted, as <c>nas/share</c>.</param>
+    public static string? Unmet(string[] requirements, NodeHeartbeat? status, NodeGpuSettings? settings = null, IReadOnlySet<string>? mounted = null)
     {
         if (requirements.Length == 0) return null;
         if (status is null) return requirements[0];
         var parsed = requirements.Select(Parse).ToArray();
+        foreach (var requirement in parsed.Where(item => item.Key == "nas"))
+            if (mounted?.Contains(requirement.Value!) != true) return requirement.Text;
         foreach (var requirement in parsed.Where(item => item.Key == "memory"))
             if (!Size(status.MemoryTotalBytes, requirement)) return requirement.Text;
         foreach (var requirement in parsed.Where(item => item.Key == "cuda"))
@@ -98,15 +102,17 @@ public static partial class StackRequirements
             "gpu.vram" or "memory" => op is ">=" or "<=" && value is not null && SizePattern().IsMatch(value),
             "gpu.compute" => op is ">=" or "<=" or "=" && value is not null && ComputePattern().IsMatch(value),
             "cuda" => op is "=" && int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var line) && CudaLines.Known(line),
+            "nas" => op is "=" && value is not null && value.Split('/') is [var nas, var share]
+                && StackStore.NasIdPattern().IsMatch(nas) && StackStore.ShareNamePattern().IsMatch(share),
             _ => false,
         };
         return valid ? new(text, key, op, value) : throw Invalid(text);
     }
 
     private static HardwareOnboardingException Invalid(string text) => new(400, "invalid_requirement",
-        $"Lucia doesn't understand the requirement \"{(text.Length > 40 ? text[..40] + "…" : text)}\". Use gpu, gpu.vendor=nvidia, gpu.model~4090, gpu.vram>=24G, gpu.compute>=8.6, memory>=32G or cuda=12.");
+        $"Lucia doesn't understand the requirement \"{(text.Length > 40 ? text[..40] + "…" : text)}\". Use gpu, gpu.vendor=nvidia, gpu.model~4090, gpu.vram>=24G, gpu.compute>=8.6,         memory>=32G, cuda=12 or nas=unas/Media.");
 
-    [GeneratedRegex(@"\A(gpu(?:\.(?:vendor|model|vram|compute))?|memory|cuda)(?:\s*(>=|<=|!=|=|~)\s*(.+))?\z")]
+            [GeneratedRegex(@"\A(gpu(?:\.(?:vendor|model|vram|compute))?|memory|cuda|nas)(?:\s*(>=|<=|!=|=|~)\s*(.+))?\z")]
     private static partial Regex RequirementPattern();
     [GeneratedRegex(@"\A(\d{1,6}(?:\.\d{1,3})?)\s*(M|MB|G|GB|T|TB)?\z", RegexOptions.IgnoreCase)]
     private static partial Regex SizePattern();

@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 
 namespace Lucia.Homelab.Server.Host;
 
-public sealed record HuggingFaceSearchItem(string Repository, string? PipelineTag, long? Downloads, long? Likes, bool Gated, bool Private);
+public sealed record HuggingFaceSearchItem(string Repository, string? PipelineTag, long? Downloads, long? Likes, bool Gated, bool Private,
+    string? Architecture = null, long? Parameters = null, string? Quantization = null);
 public sealed record HuggingFaceSearchResult(string Query, ModelKind Kind, IReadOnlyList<HuggingFaceSearchItem> Items,
     int Limit, bool LimitReached, string Compatibility);
 public sealed record HuggingFaceFile(string Path, long SizeBytes);
@@ -22,14 +23,14 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
     private const string Compatibility = "unverified";
     private static readonly Regex Shard = new(@"-(\d{5})-of-(\d{5})\.gguf\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex Quantization = new(@"(?:\A|[._/-])((?:IQ|Q|TQ)[1-8](?:_[A-Z0-9]+)*|BF16|F16|F32)(?=[._/-]|\z)",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static string? QuantizationOf(string file) => ModelCatalog.QuantizationOf(file);
     private static readonly Regex Auxiliary = new(@"(?:\A|[._/-])(mmproj|projector|adapter|lora)(?:[._/-]|\z)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    public async Task<HuggingFaceSearchResult> SearchAsync(string? query, ModelKind kind, CancellationToken cancellationToken = default)
+    public async Task<HuggingFaceSearchResult> SearchAsync(string? query, ModelKind kind, CancellationToken cancellationToken = default,
+        ModelFormat format = ModelFormat.Gguf)
     {
-        ValidateKind(kind);
+        ValidateKind(kind, format);
         if (string.IsNullOrWhiteSpace(query) || query.Length > 100 || query.Any(char.IsControl)
             || query.Contains("hf_", StringComparison.OrdinalIgnoreCase))
             throw new HuggingFaceManagementException(400, "invalid_query", "Search must contain 1 to 100 characters and must not contain an access token or control characters.");
@@ -38,9 +39,11 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
         // HF's official HfApi.list_models uses filter, pipeline_tag, search, expand, and limit.
         // One page only: no Link traversal or full-Hub crawl.
         var pipeline = kind == ModelKind.Chat ? "text-generation" : "feature-extraction";
-        var path = $"/api/models?search={Uri.EscapeDataString(query)}&filter=gguf&pipeline_tag={pipeline}&limit={SearchLimit}"
-            + "&sort=downloads&direction=-1&expand=pipeline_tag&expand=downloads&expand=likes&expand=gated&expand=private";
-        using var document = await HuggingFaceManagementHttp.GetJsonAsync(http, path, access.Token, 256 * 1024, cancellationToken);
+        var vllm = format == ModelFormat.Safetensors;
+        var path = $"/api/models?search={Uri.EscapeDataString(query)}&filter={(vllm ? "safetensors" : "gguf")}&pipeline_tag={pipeline}&limit={SearchLimit}"
+            + "&sort=downloads&direction=-1&expand=pipeline_tag&expand=downloads&expand=likes&expand=gated&expand=private"
+            + (vllm ? "&expand=config&expand=safetensors&expand=library_name&expand=tags" : "");
+        using var document = await HuggingFaceManagementHttp.GetJsonAsync(http, path, access.Token, vllm ? 1024 * 1024 : 256 * 1024, cancellationToken);
         if (document.RootElement.ValueKind != JsonValueKind.Array) throw HuggingFaceManagementHttp.InvalidResponse();
         var items = new List<HuggingFaceSearchItem>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -48,16 +51,43 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
         {
             var repository = HuggingFaceManagementHttp.String(item, "id");
             if (!ValidRepository(repository) || !seen.Add(repository!)) continue;
+            string? architecture = null, quantization = null;
+            long? parameters = null;
+            if (vllm)
+            {
+                // vLLM loads by architecture, so a repository whose config names one the image lacks can't run.
+                (architecture, quantization) = Config(item);
+                if (architecture is null || !VllmArchitectures.Supported.Contains(architecture) || IsMlx(item)) continue;
+                if (item.TryGetProperty("safetensors", out var weights)) parameters = NonnegativeNumber(weights, "total");
+            }
             items.Add(new(repository!, SafeLabel(HuggingFaceManagementHttp.String(item, "pipeline_tag"), 80),
-                NonnegativeNumber(item, "downloads"), NonnegativeNumber(item, "likes"), IsGated(item), IsTrue(item, "private")));
+                NonnegativeNumber(item, "downloads"), NonnegativeNumber(item, "likes"), IsGated(item), IsTrue(item, "private"),
+                architecture, parameters, quantization));
         }
         return new(query, kind, items, SearchLimit, document.RootElement.GetArrayLength() >= SearchLimit, Compatibility);
     }
 
-    public async Task<HuggingFaceRepositoryResult> GetRepositoryAsync(string? repository, string? revision = null,
-        ModelKind kind = ModelKind.Chat, CancellationToken cancellationToken = default)
+    /// <summary>MLX conversions keep the original architecture name but store weights vLLM can't read.</summary>
+    private static bool IsMlx(JsonElement item) =>
+        HuggingFaceManagementHttp.String(item, "library_name") == "mlx"
+        || (item.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Array
+            && tags.EnumerateArray().Any(tag => tag.ValueKind == JsonValueKind.String && tag.GetString() == "mlx"));
+
+    /// <summary>The first architecture and the quantization method from a model's config summary.</summary>
+    private static (string? Architecture, string? Quantization) Config(JsonElement root)
     {
-        ValidateKind(kind);
+        if (!root.TryGetProperty("config", out var config) || config.ValueKind != JsonValueKind.Object) return (null, null);
+        var architecture = config.TryGetProperty("architectures", out var list) && list.ValueKind == JsonValueKind.Array
+            && list.GetArrayLength() > 0 && list[0].ValueKind == JsonValueKind.String ? SafeLabel(list[0].GetString(), 120) : null;
+        var quantization = config.TryGetProperty("quantization_config", out var quant)
+            ? SafeLabel(HuggingFaceManagementHttp.String(quant, "quant_method"), 40) : null;
+        return (architecture, quantization);
+    }
+
+    public async Task<HuggingFaceRepositoryResult> GetRepositoryAsync(string? repository, string? revision = null,
+        ModelKind kind = ModelKind.Chat, CancellationToken cancellationToken = default, ModelFormat format = ModelFormat.Gguf)
+    {
+        ValidateKind(kind, format);
         if (!ValidRepository(repository))
             throw new HuggingFaceManagementException(400, "invalid_repository", "Repository must be a Hugging Face owner/name identifier, at most 200 characters.");
         revision ??= "main";
@@ -78,12 +108,12 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
             throw HuggingFaceManagementHttp.InvalidResponse();
         if (siblings.GetArrayLength() > MaximumRepositoryFiles)
             throw new HuggingFaceManagementException(422, "repository_too_large", "This browser supports repositories with at most 4096 files. Choose a smaller repository.");
+        if (format == ModelFormat.Safetensors) return Snapshot(repository!, revision, sha.ToLowerInvariant(), root, siblings);
 
         var files = new Dictionary<string, long>(StringComparer.Ordinal);
         var warnings = new List<string>
         {
-            "GGUF and filename labels do not guarantee TensorSharp compatibility. Installed files must pass local inspection before loading.",
-            "Context estimates require model metadata and the host memory planner; quantization labels alone are not an estimate."
+            "Filename labels don’t prove a model will run. Lucia inspects the full file after it downloads."
         };
         var excluded = 0;
         var unsized = 0;
@@ -135,10 +165,10 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
                 if (part.SizeBytes > long.MaxValue - total) throw HuggingFaceManagementHttp.InvalidResponse();
                 total += part.SizeBytes;
             }
-            var quant = Quantization.Match(file);
-            choices.Add(new(file, parts, total, quant.Success ? quant.Groups[1].Value.ToUpperInvariant() : null,
-                quant.Success ? "filename_inferred" : "unknown", Compatibility,
-                new ModelDownloadRequest("huggingface", repository!, file, kind, sha.ToLowerInvariant(), Pro: false)));
+            var quant = QuantizationOf(file);
+            choices.Add(new(file, parts, total, quant,
+                quant is not null ? "filename_inferred" : "unknown", Compatibility,
+                new ModelDownloadRequest("huggingface", repository!, file, kind, sha.ToLowerInvariant(), Pro: false, SizeBytes: total)));
         }
         if (excluded > 0) warnings.Add("Projector, adapter, LoRA, or unsafe paths were excluded from standalone choices.");
         if (unsized > 0) warnings.Add("Some GGUF files had no usable byte size and were excluded.");
@@ -148,6 +178,48 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
         return new(repository!, revision, sha.ToLowerInvariant(), kind, IsGated(root), IsTrue(root, "private"),
             choices.Count == 0 ? "no_standalone_gguf" : "available", choices, Metadata(root), warnings);
     }
+
+    /// <summary>A repository as vLLM uses it: one choice covering the files <see cref="ModelCatalog.SnapshotFiles"/> selects.</summary>
+    private static HuggingFaceRepositoryResult Snapshot(string repository, string revision, string sha, JsonElement root, JsonElement siblings)
+    {
+        var files = new List<HuggingFaceFile>();
+        foreach (var sibling in siblings.EnumerateArray())
+        {
+            var file = HuggingFaceManagementHttp.String(sibling, "rfilename");
+            if (file is null || !ValidFile(file) || !ModelCatalog.SnapshotFiles.Any(pattern => file.EndsWith(pattern[1..], StringComparison.Ordinal))) continue;
+            var size = NonnegativeNumber(sibling, "size");
+            if (size is null && sibling.TryGetProperty("lfs", out var lfs)) size = NonnegativeNumber(lfs, "size");
+            files.Add(new(file, size ?? 0));
+        }
+        var (architecture, quantization) = Config(root);
+        var weights = files.Where(file => file.Path.EndsWith(".safetensors", StringComparison.Ordinal)).ToArray();
+        var total = files.Sum(file => file.SizeBytes);
+        var gated = IsGated(root);
+        var warnings = new List<string>();
+        var availability = weights.Length == 0 || files.All(file => file.Path != "config.json") ? "no_safetensors"
+            : IsMlx(root) ? "mlx"
+            : architecture is null ? "unknown_architecture"
+            : !VllmArchitectures.Supported.Contains(architecture) ? "unsupported_architecture"
+            : gated ? "gated" : "available";
+        warnings.Add(availability switch
+        {
+            "no_safetensors" => "This repository has no safetensors weights with a config.json, so vLLM can't load it. GGUF repositories run on Lucia Inference.",
+            "mlx" => "This is an MLX conversion for Apple silicon, which vLLM can't load. Look for the original repository instead.",
+            "unknown_architecture" => "Its config doesn't name a model architecture, so Lucia can't tell whether vLLM supports it.",
+            "unsupported_architecture" => $"vLLM {VllmVersion} doesn't support the {architecture} architecture.",
+            "gated" => "This repository is gated. Servers download without a Hugging Face account, so only public models are available.",
+            _ => "vLLM loads the whole repository into GPU memory. The weights need to fit, with room left for context.",
+        });
+        var choices = availability == "available" && total > 0
+            ? new[] { new HuggingFaceModelChoice("config.json", files, total, quantization?.ToUpperInvariant(), quantization is null ? "unknown" : "config",
+                Compatibility, new ModelDownloadRequest("huggingface", repository, "config.json", ModelKind.Chat, sha, Pro: false, SizeBytes: total,
+                    Format: ModelFormat.Safetensors)) }
+            : [];
+        return new(repository, revision, sha, ModelKind.Chat, gated, IsTrue(root, "private"), availability, choices,
+            architecture is null ? null : new("huggingface_api", "repository", architecture, null), warnings);
+    }
+
+    public const string VllmVersion = "0.30.0";
 
     private static HuggingFaceGgufMetadata? Metadata(JsonElement root)
     {
@@ -186,9 +258,11 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
         && file.Split('/').All(part => part.Length > 0 && part is not "." and not ".."
             && !part.StartsWith('-') && !part.EndsWith('.') && !part.EndsWith(' '));
 
-    private static void ValidateKind(ModelKind kind)
+    private static void ValidateKind(ModelKind kind, ModelFormat format = ModelFormat.Gguf)
     {
         if (!Enum.IsDefined(kind))
             throw new HuggingFaceManagementException(400, "invalid_kind", "Kind must be Chat or Embedding.");
+        if (!Enum.IsDefined(format) || (format == ModelFormat.Safetensors && kind != ModelKind.Chat))
+            throw new HuggingFaceManagementException(400, "invalid_format", "Safetensors repositories are served by vLLM, which Lucia uses for LLMs only.");
     }
 }

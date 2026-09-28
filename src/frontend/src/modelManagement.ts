@@ -19,16 +19,28 @@ export function chatContextRange(plan: Pick<ContextPlan, 'memoryLimitedContextTo
   }
 }
 export interface DownloadRequest {
-  provider: 'huggingface'; repository: string; file: string; kind: ModelKind; revision: string; pro: boolean
+  provider: 'huggingface'; repository: string; file: string; kind: ModelKind; revision: string; pro: boolean; sizeBytes: number | null
+  format: 'Gguf' | 'Safetensors'
+}
+/** What a server's vLLM or llama.cpp serves. `ready` means it answered the OpenAI API; `service` is its container as the server last reported it.
+ * `models` is llama.cpp's router list: every model apps can name, and whether it's loaded. */
+export interface ServingStatus {
+  stack: string; engine: 'lucia' | 'vllm' | 'llamacpp'; model: string | null; name: string | null; context: string | null; desired: string; revision: number
+  ready: boolean; service: { state: string; health: string | null; exitCode: number | null } | null
+  models: { id: string; status: string }[] | null
 }
 export interface LocalModel {
   id: string; source: DownloadRequest; state: 'Queued' | 'Downloading' | 'Ready' | 'Failed' | 'Canceled' | 'Interrupted'
   createdAt: string; updatedAt: string; error: string | null; persistenceError: string | null; inspection: ModelInspection | null
+  downloadedBytes: number | null
 }
 export interface LoadedModel { id: string; name: string; plan: ContextPlan }
 export interface ModelStatus { backend: string; chat: LoadedModel | null; embedding: LoadedModel | null; voiceReserveGiB: number; startupError: string | null }
 export interface ProviderStatus { configured: boolean; accountName: string | null; source: string; validatedAt: string | null }
-export interface SearchItem { repository: string; pipelineTag: string | null; downloads: number | null; likes: number | null; gated: boolean; private: boolean }
+export interface SearchItem {
+  repository: string; pipelineTag: string | null; downloads: number | null; likes: number | null; gated: boolean; private: boolean
+  architecture: string | null; parameters: number | null
+}
 export interface ModelChoice {
   file: string; totalSizeBytes: number; quantization: string | null; labelSource: string; compatibility: string
   files: { path: string; sizeBytes: number }[]; download: DownloadRequest
@@ -103,7 +115,20 @@ export function parseContextPlan(value: unknown): ContextPlan {
 function source(value: unknown): DownloadRequest {
   const x = record(value)
   if (x.provider !== 'huggingface') throw invalid()
-  return { provider: x.provider, repository: text(x.repository), file: text(x.file), kind: kind(x.kind), revision: text(x.revision), pro: boolean(x.pro) }
+  const format = x.format ?? 'Gguf'
+  if (format !== 'Gguf' && format !== 'Safetensors') throw invalid()
+  return { provider: x.provider, repository: text(x.repository), file: text(x.file), kind: kind(x.kind), revision: text(x.revision), pro: boolean(x.pro),
+    sizeBytes: nullable(x.sizeBytes ?? null, number), format }
+}
+export function parseServing(value: unknown): ServingStatus {
+  const x = record(value)
+  if (x.engine !== 'lucia' && x.engine !== 'vllm' && x.engine !== 'llamacpp') throw invalid()
+  const service = x.service == null ? null : record(x.service)
+  return { stack: text(x.stack), engine: x.engine, model: x.model == null ? null : id(x.model), name: x.name ? text(x.name) : null,
+    context: x.context ? text(x.context) : null, desired: text(x.desired), revision: number(x.revision), ready: boolean(x.ready),
+    service: service && { state: text(service.state), health: service.health == null ? null : text(service.health),
+      exitCode: service.exitCode == null ? null : number(service.exitCode) },
+    models: x.models == null ? null : array(x.models, item => { const m = record(item); return { id: text(m.id), status: text(m.status) } }) }
 }
 export function parseLocalModels(value: unknown): LocalModel[] {
   return array(value, value => {
@@ -112,8 +137,15 @@ export function parseLocalModels(value: unknown): LocalModel[] {
     if (!['Queued', 'Downloading', 'Ready', 'Failed', 'Canceled', 'Interrupted'].includes(state)) throw invalid()
     return { id: id(x.id), source: source(x.source), state: state as LocalModel['state'], createdAt: date(x.createdAt),
       updatedAt: date(x.updatedAt), error: nullable(x.error, text), persistenceError: nullable(x.persistenceError, text),
-      inspection: nullable(x.inspection, inspection) }
+      inspection: nullable(x.inspection, inspection), downloadedBytes: nullable(x.downloadedBytes ?? null, number) }
   })
+}
+
+/** How far a download has got: a percent when the size is known, capped below 100 until the host has checked the file. */
+export function downloadProgress(model: LocalModel): { received: number; total: number | null; percent: number | null } | null {
+  if (model.state !== 'Downloading' || model.downloadedBytes === null) return null
+  const total = model.source.sizeBytes
+  return { received: model.downloadedBytes, total, percent: total ? Math.min(99, Math.floor(model.downloadedBytes / total * 100)) : null }
 }
 export function parseModelStatus(value: unknown): ModelStatus {
   const x = record(value)
@@ -134,7 +166,8 @@ export function parseSearch(value: unknown): { items: SearchItem[]; limitReached
   return { limitReached: boolean(x.limitReached), items: array(x.items, value => {
     const item = record(value)
     return { repository: text(item.repository), pipelineTag: nullable(item.pipelineTag, text),
-      downloads: nullable(item.downloads, number), likes: nullable(item.likes, number), gated: boolean(item.gated), private: boolean(item.private) }
+      downloads: nullable(item.downloads, number), likes: nullable(item.likes, number), gated: boolean(item.gated), private: boolean(item.private),
+      architecture: nullable(item.architecture ?? null, text), parameters: nullable(item.parameters ?? null, number) }
   }, 30) }
 }
 export function parseRepository(value: unknown): RepositoryModels {

@@ -4,20 +4,23 @@ using Lucia.Homelab.Server.Onboarding;
 namespace Lucia.Homelab.Server.Nodes;
 
 /// <summary>
-/// The owner's GPU choices for a server: the CUDA line its GPU containers use, and which GPUs Lucia's inference service may use.
-/// Lucia never changes the line on its own; a driver that stops supporting it only flags the server.
+/// The owner's GPU choice for a server: the CUDA line its GPU containers use. Lucia never changes the line on its own; a
+/// driver that stops supporting it only flags the server. Which GPUs local AI uses is a setting of the Local AI app.
 /// </summary>
-public sealed record NodeGpuSettings(int? CudaLine, bool Inference, string[] InferenceGpus)
+/// <param name="Inference">Retired with <paramref name="InferenceGpus"/>; kept so older node files still read.</param>
+public sealed record NodeGpuSettings(int? CudaLine, bool Inference = false, string[]? InferenceGpus = null)
 {
-    public static readonly NodeGpuSettings None = new(null, false, []);
+    public static readonly NodeGpuSettings None = new(CudaLine: null);
 }
 
-public sealed record SaveNodeGpuRequest(int? CudaLine, bool Inference, string[]? InferenceGpus);
+public sealed record SaveNodeGpuRequest(int? CudaLine);
 
 public static class CudaLines
 {
     /// <summary>Oldest compute capability each line's toolkit still builds for: CUDA 13 dropped Maxwell, Pascal and Volta.</summary>
     private static readonly Dictionary<int, double> MinimumCompute = new() { [12] = 5.0, [13] = 7.5 };
+    /// <summary>Oldest compute capability Lucia's inference service is built for on each line.</summary>
+    private static readonly Dictionary<int, double> LocalAiMinimumCompute = new() { [12] = 7.0, [13] = 7.5 };
 
     public static bool Known(int line) => MinimumCompute.ContainsKey(line);
 
@@ -40,20 +43,18 @@ public static class CudaLines
         return null;
     }
 
+    /// <summary>Why local AI can't use this GPU on the line, or null when it can. Assumes the line itself is supported.</summary>
+    public static string? LocalAiUnsupported(int line, NodeGpu gpu) =>
+        LocalAiMinimumCompute.TryGetValue(line, out var minimum)
+        && double.TryParse(gpu.ComputeCapability, NumberStyles.Float, CultureInfo.InvariantCulture, out var compute)
+        && compute < minimum
+            ? $"Local AI on CUDA {line} needs compute {minimum:0.0} or newer. The {gpu.Model} is {gpu.ComputeCapability}."
+            : null;
+
     internal static NodeGpuSettings Validate(SaveNodeGpuRequest request, NodeRuntime? runtime)
     {
-        var gpus = (request.InferenceGpus ?? []).Distinct(StringComparer.Ordinal).ToArray();
         if (request.CudaLine is { } line && Unsupported(line, runtime) is { } reason)
             throw new HardwareOnboardingException(409, "cuda_line_unsupported", reason);
-        if (!request.Inference) return new(request.CudaLine, false, []);
-        if (request.CudaLine is null)
-            throw new HardwareOnboardingException(400, "cuda_line_required", "Choose a CUDA line before using this server for local AI.");
-        if (runtime is not { GpuContainers: true })
-            throw new HardwareOnboardingException(409, "gpu_containers_unavailable", "Containers on this server can't use its GPUs yet.");
-        if (gpus.Length == 0)
-            throw new HardwareOnboardingException(400, "inference_gpus_required", "Choose at least one GPU for local AI.");
-        if (gpus.Length > 16 || gpus.Any(uuid => !runtime.Gpus.Any(gpu => gpu.Uuid == uuid)))
-            throw new HardwareOnboardingException(409, "unknown_gpu", "One of those GPUs isn't on this server anymore. Refresh and choose again.");
-        return new(request.CudaLine, true, gpus);
+        return new(request.CudaLine);
     }
 }

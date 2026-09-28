@@ -25,7 +25,7 @@ TFTP_ALIASES = {"grubx64.efi": "debian-installer/amd64/grubx64.efi"}
 
 
 def prepare_boot(provisioner, bundle_directory, *, bind_address, network_cidr, http_port=9080,
-                 discovery_qualified=False, installation_qualified=False):
+                 discovery_qualified=False, installation_qualified=False, skip_qualification=False):
     if sys.platform != "linux":
         raise HostError("Prepare managed boot services on the Linux Spark, not the desktop.")
     address = ipaddress.IPv4Address(bind_address)
@@ -35,7 +35,8 @@ def prepare_boot(provisioner, bundle_directory, *, bind_address, network_cidr, h
             for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")):
         raise HostError("Choose an explicit private provisioning subnet containing the Spark bind address.")
     if (type(http_port) is not int or not 1024 <= http_port <= 65535
-            or type(discovery_qualified) is not bool or type(installation_qualified) is not bool):
+            or type(discovery_qualified) is not bool or type(installation_qualified) is not bool
+            or type(skip_qualification) is not bool):
         raise HostError("Boot HTTP port and discovery qualification must be explicit, valid settings.")
     state = absolute_path(provisioner.state)
     host = validate_settings(read_json(state / "host-settings.json"), provisioner.settings, state)
@@ -49,6 +50,8 @@ def prepare_boot(provisioner, bundle_directory, *, bind_address, network_cidr, h
     if installation_qualified:
         if not discovery_qualified or receipt["purpose"] != "approved-installation-with-managed-enrollment":
             raise HostError("Installation requires an explicitly qualified installation-profile bundle.")
+    # Development only: trusts an unverified installer build. Releases must not pass this.
+    if installation_qualified and not skip_qualification:
         qualification = read_json(bundle / "installation-qualification.json")
         backend = pathlib.Path(host["host_state"]) / "releases" / host["artifact_sha256"] / "publish/Lucia.Homelab.Server.dll"
         native_sources = (ROOT / "tools/nodes/enrollment_worker.py").read_bytes() + b"\0" + (ROOT / "tools/nodes/prepare_directory.py").read_bytes()
@@ -170,6 +173,7 @@ def prepare_boot(provisioner, bundle_directory, *, bind_address, network_cidr, h
             "network_cidr": network_cidr, "http_port": http_port,
             "discovery_qualified": discovery_qualified,
             "installation_qualified": installation_qualified,
+            "installation_qualification_skipped": installation_qualified and skip_qualification,
         }
         write_private(settings_path, json_bytes(record))
         return record

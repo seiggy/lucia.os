@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -18,9 +19,14 @@ public sealed record StackPlacement(string? Node = null, string[]? Require = nul
 /// Lucia's glue around a compose project. Every Lucia-specific behaviour belongs here, never only in UI state, so
 /// templates, the onboarding agent and hand edits all produce the same document.
 /// </summary>
-public sealed record StackManifest(int SchemaVersion, StackPlacement Placement);
-public sealed record SaveStackRequest(string Compose, string? Env, StackManifest Manifest, long? ExpectedRevision = null);
+public sealed record StackManifest(int SchemaVersion, StackPlacement Placement, StackTemplate? Template = null);
+/// <param name="Compose">Ignored for catalog apps: Lucia renders their compose and environment.</param>
+public sealed record SaveStackRequest(string? Compose, string? Env, StackManifest Manifest, long? ExpectedRevision = null);
+public sealed record CatalogPreviewRequest(string Node, Dictionary<string, string>? Settings);
 public sealed record MoveStackRequest(string Node);
+/// <param name="ModelId">A downloaded safetensors model for vLLM to serve, or null to serve nothing.</param>
+/// <param name="Context"><c>auto</c> (the most the GPUs fit) or a token count.</param>
+public sealed record ServeModelRequest(Guid? ModelId, string? Context = null);
 /// <summary>A move in progress: the source stops the stack and streams its data to the target, which then starts it.</summary>
 public sealed record StackMove(Guid Id, string From, string To, string Desired, DateTimeOffset StartedAt, string StartedBy);
 
@@ -31,8 +37,9 @@ public sealed record NodeStackStatus(string Name, string State, long? AppliedRev
 public sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
     string? Service, string? Ports);
 public sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
-/// <summary>What a node reports on each stack sync: its Lucia stacks, every container and every listening socket.</summary>
-public sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners);
+/// <summary>What a node reports on each stack sync: its Lucia stacks, every container, every listening socket and its NAS mounts.</summary>
+public sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
+    NodeMountStatus[]? Mounts = null);
 /// <param name="Send">Stream the stack's data for this move once it's stopped.</param>
 /// <param name="Receive">Receive the stack's data for this move before applying it.</param>
 public sealed record NodeDesiredStack(string Name, long Revision, string Desired, long RestartCount, long PullCount,
@@ -73,7 +80,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     {
         var names = await NodeNames(ct);
         var stack = Find(await Read(ct), name);
-        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest };
+        var address = (await nodes.Addresses(ct)).FirstOrDefault(item => item.Hostname == stack.Assigned)?.Address;
+        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address };
     }
 
     /// <summary>Saves a server's GPU choices. Changing the CUDA line is refused while an app on (or moving to) the server requires the old one.</summary>
@@ -98,14 +106,18 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     public async Task<object> Save(string name, SaveStackRequest request, string actor, CancellationToken ct)
     {
         ValidateName(name);
-        var compose = Normalize(request.Compose, MaxComposeBytes, "compose", required: true);
-        var env = Normalize(request.Env, MaxEnvBytes, "environment", required: false);
-        ValidateEnv(env);
         if (request.Manifest is not { SchemaVersion: 1, Placement: { } placement })
             throw new HardwareOnboardingException(400, "invalid_manifest", "The stack manifest must be schema version 1 with a placement.");
-        var require = StackRequirements.Normalize(placement.Require);
-        var manifest = request.Manifest with { Placement = new(string.IsNullOrWhiteSpace(placement.Node) ? null : placement.Node.Trim(),
-            require.Length == 0 ? null : require) };
+        var app = request.Manifest.Template is { } template ? StackCatalog.Find(template.Id) : null;
+        var settings = app is null ? null : StackCatalog.Settings(app, request.Manifest.Template!.Settings);
+        var compose = app is null ? Normalize(request.Compose, MaxComposeBytes, "compose", required: true) : "";
+        var env = app is null ? Normalize(request.Env, MaxEnvBytes, "environment", required: false) : "";
+        ValidateEnv(env);
+        var require = StackRequirements.Normalize(app is null
+            ? [.. (placement.Require ?? []).Where(item => !item.StartsWith("nas=", StringComparison.Ordinal)),
+                .. NasRequirements(compose, await KnownShares(ct))] : app.Require);
+        var manifest = new StackManifest(1, new(string.IsNullOrWhiteSpace(placement.Node) ? null : placement.Node.Trim(),
+            require.Length == 0 ? null : require), app is null ? null : new(app.Id, app.Version, settings));
         var facts = await nodes.Facts(ct);
         var names = facts.ToDictionary(item => item.NodeId, item => item.Hostname);
         await _gate.WaitAsync(ct);
@@ -124,13 +136,28 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 node = existing.Assigned;
                 if (manifest.Placement.Node is { } pin && pin != node)
                     throw new HardwareOnboardingException(409, "use_move", $"To run this app on {pin}, move it. Saving doesn't copy its data.");
-                if (!require.SequenceEqual(existing.Manifest.Placement.Require ?? [])
-                    && facts.FirstOrDefault(item => item.Hostname == node) is var current
-                    && StackRequirements.Unmet(require, current?.Status, current?.Gpu) is { } unmet)
-                    throw new HardwareOnboardingException(409, "node_not_eligible",
-                        $"{node} doesn't meet \"{unmet}\". Change the requirement, or move the app to a server that meets it first.");
+                if (app is not null && existing.Manifest.Template?.Id != app.Id)
+                    throw new HardwareOnboardingException(409, "stack_exists", existing.Manifest.Template is null
+                        ? $"{name} is a custom app. Choose another name for the catalog app."
+                        : $"{name} is a different catalog app. Choose another name.");
             }
-            else node = Place(manifest.Placement, require, facts, stacks);
+            else node = Place(manifest.Placement, require, facts, stacks, Mounted);
+            if (app is not null)
+            {
+                var target = facts.FirstOrDefault(item => item.Hostname == node)
+                    ?? throw new HardwareOnboardingException(409, "unknown_node", $"{node} isn't managed by Lucia anymore.");
+                if (app.ServerBound && stacks.FirstOrDefault(stack => stack.Name != name && stack.Manifest.Template?.Id == app.Id
+                    && (stack.Assigned == node || stack.Move?.To == node)) is { } other)
+                    throw new HardwareOnboardingException(409, "already_installed", $"{node} already runs {app.Name} as {other.Name}.");
+                var output = app.Render(settings!, target, StackCatalog.ReadEnv(existing is null ? "" : _protector.Unprotect(existing.ProtectedEnv)));
+                (compose, env, require) = (output.Compose, output.Env, StackRequirements.Normalize(output.Require));
+                manifest = manifest with { Placement = manifest.Placement with { Require = require } };
+            }
+            if (existing is not null && !require.SequenceEqual(existing.Manifest.Placement.Require ?? [])
+                && facts.FirstOrDefault(item => item.Hostname == node) is var current
+                && StackRequirements.Unmet(require, current?.Status, current?.Gpu, Mounted(current?.NodeId)) is { } unmet)
+                throw new HardwareOnboardingException(409, "node_not_eligible",
+                    $"{node} doesn't meet \"{unmet}\". Change the requirement, or move the app to a server that meets it first.");
             var now = time.GetUtcNow();
             var saved = new StoredStack(name, compose, _protector.Protect(env), manifest, existing?.Desired ?? "Running",
                 (existing?.Revision ?? 0) + 1, existing?.RestartCount ?? 0, existing?.PullCount ?? 0, existing?.CreatedAt ?? now, now, actor, node);
@@ -143,17 +170,18 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         finally { _gate.Release(); }
     }
 
-    private static string Place(StackPlacement placement, string[] require, ManagedNodeFacts[] facts, List<StoredStack> stacks)
+    private static string Place(StackPlacement placement, string[] require, ManagedNodeFacts[] facts, List<StoredStack> stacks,
+        Func<Guid?, IReadOnlySet<string>> mounted)
     {
         if (placement.Node is { } pin)
         {
             var node = facts.FirstOrDefault(item => item.Hostname == pin)
                 ?? throw new HardwareOnboardingException(400, "unknown_node", "Choose a managed node for this stack.");
-            if (StackRequirements.Unmet(require, node.Status, node.Gpu) is { } unmet)
+            if (StackRequirements.Unmet(require, node.Status, node.Gpu, mounted(node.NodeId)) is { } unmet)
                 throw new HardwareOnboardingException(409, "node_not_eligible", $"{pin} doesn't meet \"{unmet}\".");
             return pin;
         }
-        return facts.Where(item => Ready(item) && StackRequirements.Unmet(require, item.Status, item.Gpu) is null)
+        return facts.Where(item => Ready(item) && StackRequirements.Unmet(require, item.Status, item.Gpu, mounted(item.NodeId)) is null)
             .OrderBy(item => stacks.Count(stack => stack.Assigned == item.Hostname)).ThenBy(item => item.Hostname, StringComparer.Ordinal)
             .FirstOrDefault()?.Hostname
             ?? throw new HardwareOnboardingException(409, "no_eligible_node", require.Length == 0
@@ -231,6 +259,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             var stacks = ReadUnlocked().ToList();
             var stack = Find(stacks, name);
             RequireSettled(stack);
+            if (stack.Manifest.Template is { } bound && StackCatalog.Apps.FirstOrDefault(app => app.Id == bound.Id) is { ServerBound: true } fixedApp)
+                throw new HardwareOnboardingException(409, "server_bound",
+                    $"{fixedApp.Name} uses {stack.Assigned}'s own GPUs, so it can't move. Install it on the other server instead.");
             var target = facts.FirstOrDefault(item => item.Hostname == request.Node)
                 ?? throw new HardwareOnboardingException(400, "unknown_node", "Choose a managed server to move this app to.");
             if (target.Hostname == stack.Assigned)
@@ -239,7 +270,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 throw new HardwareOnboardingException(409, "source_offline", $"{stack.Assigned} must be online to hand over the app's data.");
             if (!Ready(target))
                 throw new HardwareOnboardingException(409, "target_not_ready", $"{target.Hostname} must be online with Docker ready.");
-            if (StackRequirements.Unmet(stack.Manifest.Placement.Require ?? [], target.Status, target.Gpu) is { } unmet)
+            if (StackRequirements.Unmet(stack.Manifest.Placement.Require ?? [], target.Status, target.Gpu, Mounted(target.NodeId)) is { } unmet)
                 throw new HardwareOnboardingException(409, "node_not_eligible", $"{target.Hostname} doesn't meet \"{unmet}\".");
             var placement = stack.Manifest.Placement;
             var moving = stack with
@@ -344,7 +375,135 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             status = entry?.Report.Stacks.FirstOrDefault(item => item.Name == stack.Name),
             containers = entry?.Report.Containers.Where(container => container.Project == "lucia-" + stack.Name).ToArray(),
             move,
+            template = stack.Manifest.Template is { } template && StackCatalog.Apps.FirstOrDefault(app => app.Id == template.Id) is var app
+                ? new { template.Id, template.Version, latest = app?.Version, name = app?.Name, template.Settings, serverBound = app?.ServerBound ?? false }
+                : null,
         };
+    }
+
+    /// <summary>Every catalog app, with each server's eligibility so the portal can explain it.</summary>
+    public async Task<object> Catalog(CancellationToken ct)
+    {
+        var facts = await nodes.Facts(ct);
+        return new
+        {
+            apps = StackCatalog.Apps.Select(app => new
+            {
+                app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound,
+                servers = facts.Select(node => StackCatalog.Server(app, node)).ToArray(),
+            }).ToArray(),
+        };
+    }
+
+    /// <summary>The compose Lucia would run for these settings. Generated secrets aren't shown or kept.</summary>
+    public async Task<object> Preview(string id, CatalogPreviewRequest request, CancellationToken ct)
+    {
+        var app = StackCatalog.Find(id);
+        var node = (await nodes.Facts(ct)).FirstOrDefault(item => item.Hostname == request.Node)
+            ?? throw new HardwareOnboardingException(400, "unknown_node", "Choose a managed server.");
+        var output = app.Render(StackCatalog.Settings(app, request.Settings), node, new Dictionary<string, string>());
+        return new { output.Compose, require = output.Require };
+    }
+
+    /// <summary>Where the host reaches a server's Local AI, and the key that manages it.</summary>
+    public async Task<(Uri BaseUri, string Key)> LocalAi(Guid nodeId, CancellationToken ct)
+    {
+        var (stack, address) = await LocalAiStack(nodeId, ct);
+        if (stack.Move is not null || stack.Desired != "Running")
+            throw new HardwareOnboardingException(409, "local_ai_stopped", $"Local AI on {stack.Assigned} is stopped. Start it first.");
+        var settings = stack.Manifest.Template!.Settings!;
+        var port = int.Parse(settings[(settings.GetValueOrDefault("engine") ?? "lucia") != "lucia" ? "library-port" : "port"], CultureInfo.InvariantCulture);
+        var key = StackCatalog.ReadEnv(_protector.Unprotect(stack.ProtectedEnv)).GetValueOrDefault("LUCIA_WORKER_KEY")
+            ?? throw new HardwareOnboardingException(409, "local_ai_key_missing", "Local AI's management key is missing. Save the app again.");
+        return (new UriBuilder("http", address, port).Uri, key);
+    }
+
+    private async Task<(StoredStack Stack, string Address)> LocalAiStack(Guid nodeId, CancellationToken ct)
+    {
+        var address = (await nodes.Addresses(ct)).FirstOrDefault(item => item.NodeId == nodeId)
+            ?? throw new HardwareOnboardingException(404, "unknown_node", "That server isn't managed by Lucia, or hasn't checked in yet.");
+        var stack = (await Read(ct)).FirstOrDefault(item => item.Manifest.Template?.Id == "local-ai" && item.Assigned == address.Hostname)
+            ?? throw new HardwareOnboardingException(404, "local_ai_not_installed", $"Local AI isn't installed on {address.Hostname}.");
+        return (stack, IPAddress.Parse(address.Address).ToString());
+    }
+
+    private static readonly HttpClient ServingClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    /// <summary>What Local AI's engine serves. <c>ready</c> means vLLM or llama.cpp answered with the inference key; for llama.cpp,
+    /// <c>models</c> is its router's list, which reading also makes it reread the worker's preset file.</summary>
+    public async Task<object> Serving(Guid nodeId, CancellationToken ct)
+    {
+        var (stack, address) = await LocalAiStack(nodeId, ct);
+        var settings = stack.Manifest.Template!.Settings!;
+        var engine = settings.GetValueOrDefault("engine") ?? "lucia";
+        var model = engine == "vllm" && settings.GetValueOrDefault("vllm-model") is { Length: > 0 } id ? id : null;
+        var service = Fresh(nodeId)?.Report.Stacks.FirstOrDefault(item => item.Name == stack.Name)?.Services
+            .FirstOrDefault(item => item.Service == (engine == "llamacpp" ? "llama" : "vllm"));
+        var ready = false;
+        List<object>? models = engine == "llamacpp" ? [] : null;
+        if ((model is not null || engine == "llamacpp") && stack is { Desired: "Running", Move: null })
+        {
+            var path = engine == "llamacpp" ? "/models" : "/v1/models";
+            using var request = new HttpRequestMessage(HttpMethod.Get, new UriBuilder("http", address, int.Parse(settings["port"], CultureInfo.InvariantCulture), path)
+                { Query = engine == "llamacpp" ? "reload=1" : "" }.Uri);
+            request.Headers.Authorization = new("Bearer", StackCatalog.ReadEnv(_protector.Unprotect(stack.ProtectedEnv)).GetValueOrDefault("LUCIA_INFERENCE_KEY") ?? "");
+            try
+            {
+                using var response = await ServingClient.SendAsync(request, ct);
+                ready = response.IsSuccessStatusCode;
+                if (ready && models is not null
+                    && (await response.Content.ReadFromJsonAsync<JsonElement>(ct)).TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+                    foreach (var item in data.EnumerateArray().Take(200))
+                        if (item.TryGetProperty("id", out var name) && name.ValueKind == JsonValueKind.String)
+                            models.Add(new
+                            {
+                                id = name.GetString(),
+                                status = item.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Object
+                                    && status.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : "unknown",
+                            });
+            }
+            catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested) { }
+        }
+        return new
+        {
+            stack = stack.Name, engine, model, name = model is null ? "" : settings.GetValueOrDefault("vllm-name"), context = settings.GetValueOrDefault("vllm-context"),
+            stack.Desired, stack.Revision, ready, service, models,
+        };
+    }
+
+    /// <summary>Points vLLM at a downloaded safetensors model, or at nothing, and redeploys Local AI.</summary>
+    public async Task<object> Serve(Guid nodeId, ServeModelRequest request, string actor, CancellationToken ct)
+    {
+        var (stack, _) = await LocalAiStack(nodeId, ct);
+        var settings = new Dictionary<string, string>(stack.Manifest.Template!.Settings!, StringComparer.Ordinal);
+        var engine = settings.GetValueOrDefault("engine") ?? "lucia";
+        if (engine != "vllm")
+            throw new HardwareOnboardingException(409, "not_serving_engine", engine == "llamacpp"
+                ? "llama.cpp serves every downloaded GGUF LLM already. Apps choose one by its name."
+                : "Local AI on this server runs Lucia Inference, which loads models itself. Switch its engine in Apps first.");
+        if (request.ModelId is { } id)
+        {
+            var (baseUri, key) = await LocalAi(nodeId, ct);
+            using var lookup = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, $"/api/worker/models/{id}"));
+            lookup.Headers.Authorization = new("Bearer", key);
+            LocalModel? model;
+            try
+            {
+                using var response = await ServingClient.SendAsync(lookup, ct);
+                model = response.IsSuccessStatusCode ? await response.Content.ReadFromJsonAsync<LocalModel>(ct) : null;
+            }
+            catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            {
+                throw new HardwareOnboardingException(502, "local_ai_unreachable", "Local AI's model library isn't answering. Check its containers in Apps.");
+            }
+            if (model is not { State: ModelDownloadState.Ready, Source.Kind: ModelKind.Chat, Source.Format: ModelFormat.Safetensors })
+                throw new HardwareOnboardingException(409, "model_not_servable", "vLLM serves downloaded safetensors models. Choose one that has finished downloading.");
+            (settings["vllm-model"], settings["vllm-name"], settings["vllm-context"], settings["vllm-file"]) = (id.ToString(), model.Source.Repository,
+                string.IsNullOrWhiteSpace(request.Context) ? "auto" : request.Context.Trim(), "");
+        }
+        else (settings["vllm-model"], settings["vllm-name"], settings["vllm-file"]) = ("", "", "");
+        return await Save(stack.Name, new SaveStackRequest(null, null,
+            stack.Manifest with { Template = stack.Manifest.Template with { Settings = settings } }, stack.Revision), actor, ct);
     }
 
     private static Guid? NodeOf(string hostname, Dictionary<Guid, string> names) =>
@@ -362,6 +521,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         if (!NamePattern().IsMatch(name))
             throw new HardwareOnboardingException(400, "invalid_stack_name",
                 "Use up to 40 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen.");
+        // The portal uses these as page addresses under #/apps/.
+        if (name is "new" or "containers" or "catalog" or "install" or "backups")
+            throw new HardwareOnboardingException(400, "invalid_stack_name", $"\"{name}\" is reserved. Choose another name.");
     }
 
     internal static string Normalize(string? value, int maximum, string label, bool required)
@@ -425,6 +587,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 "The listener report is invalid.");
             Text(listener.Process, 64);
         }
+        ValidateMounts(report.Mounts);
     }
 
     private async Task<StoredStack[]> Read(CancellationToken ct)

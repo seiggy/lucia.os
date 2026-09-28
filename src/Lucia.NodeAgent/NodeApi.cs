@@ -98,10 +98,10 @@ public sealed partial class DiscoveryClient
         return value;
     }
 
-    internal async Task<NodeDesiredStack[]> StacksAsync(Guid node, string certificate, NodeStackReport report, ECDsa key,
+    internal async Task<DesiredStacks> StacksAsync(Guid node, string certificate, NodeStackReport report, ECDsa key,
         CancellationToken token) =>
         Deserialize<DesiredStacks>(await BoundAsync(node, certificate, "stacks", $"/api/nodes/{node:D}/stacks", report, key,
-            TimeSpan.FromSeconds(30), 4 * 1024 * 1024, token)).Stacks ?? [];
+            TimeSpan.FromSeconds(30), 4 * 1024 * 1024, token));
 
     internal async Task<NodeRequest[]> RequestsAsync(Guid node, string certificate, ECDsa key, CancellationToken token) =>
         Deserialize<PendingRequests>(await BoundAsync(node, certificate, "requests", $"/api/nodes/{node:D}/requests", new { }, key,
@@ -182,7 +182,7 @@ public sealed partial class DiscoveryClient
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 
-    private sealed record DesiredStacks(NodeDesiredStack[]? Stacks);
+    internal sealed record DesiredStacks(NodeDesiredStack[]? Stacks, NodeMount[]? Mounts = null);
     private sealed record PendingRequests(NodeRequest[]? Requests);
     private sealed record HeartbeatResult(bool Accepted, Dictionary<string, string[]>? SshKeys = null);
     private sealed record PendingResult(string State);

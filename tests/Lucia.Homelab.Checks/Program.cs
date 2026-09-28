@@ -103,11 +103,15 @@ Check(ModelCatalog.Validate(valid with { Kind = (ModelKind)999 }) is not null, "
 Check(ModelCatalog.ModelFiles("weights/model-00001-of-00002.gguf").SequenceEqual(
     ["weights/model-00001-of-00002.gguf", "weights/model-00002-of-00002.gguf"]), "Split GGUF files were not expanded.");
 Check(ModelCatalog.Validate(valid with { File = "model-00002-of-00002.gguf" }) is not null, "Non-first GGUF shard accepted.");
+var snapshot = valid with { File = "config.json", Format = ModelFormat.Safetensors };
+Check(ModelCatalog.Validate(snapshot) is null && ModelCatalog.Validate(snapshot with { File = "model.safetensors" }) is not null
+    && ModelCatalog.Validate(snapshot with { Kind = ModelKind.Embedding }) is not null && ModelCatalog.Validate(valid with { File = "config.json" }) is not null,
+    "A safetensors snapshot wasn't exactly a chat repository named by its config.json.");
 
 var known = new ModelInspection("qwen35moe", ModelKind.Chat, ModelPresets.Bundled.SizeBytes,
     ModelPresets.Bundled.SizeBytes, 262144, 10, 81920, ["Q6_K"]);
 var plan = ModelInspector.Calculate(known, new HostPlatformOptions(), 128 * ModelInspector.GiB);
-Check(plan.VoiceReserveBytes == 8 * ModelInspector.GiB && plan.OsReserveBytes == 8 * ModelInspector.GiB, "Voice and OS reserves were not separate.");
+Check(plan.VoiceReserveBytes == 8 * ModelInspector.GiB && plan.OsReserveBytes == 4 * ModelInspector.GiB, "Voice and OS reserves were not separate.");
 Check(plan.EffectiveContextTokens == 32768 && plan.MemoryLimitedContextTokens == 262144, "Context calculation exceeded its cap or ignored metadata.");
 var noRoom = ModelInspector.Calculate(known, new HostPlatformOptions(), 32 * ModelInspector.GiB);
 Check(noRoom.EffectiveContextTokens == 0, "An over-budget model was admitted.");
@@ -169,6 +173,9 @@ try
     Check(File.Exists(catalog.ModelPath(model.Id)), "Completed model was not saved.");
     var duplicate = await catalog.DownloadAsync(valid, CancellationToken.None);
     Check(duplicate.Id == model.Id, "Repeated download created a duplicate model.");
+    Check((await catalog.DownloadAsync(valid with { SizeBytes = 1234 }, CancellationToken.None)).Id == model.Id, "A download size made the same model a new download.");
+    Check(ModelCatalog.Validate(valid with { SizeBytes = 0 }) is not null, "A zero download size was accepted.");
+    Check(catalog.List().All(item => item.DownloadedBytes is null), "Finished models reported download progress.");
     Check(await catalog.ReadSelectionAsync(CancellationToken.None) is null, "An untouched catalog fabricated a startup selection.");
     var selectionEmbedding = Guid.NewGuid();
     await catalog.SaveSelectionAsync(ModelKind.Chat, model.Id, 8192);

@@ -9,6 +9,7 @@ import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
 import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
+import { StorageSettings } from './StorageSettings'
 import { SshKeySettings } from './SshKeySettings'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
@@ -177,15 +178,16 @@ function App() {
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
       : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
-      : route.page === 'apps' ? <Stacks key={`${route.view}-${route.name ?? ''}`} session={session} refreshSession={authentication.refresh} view={route.view} name={route.name} />
+      : route.page === 'apps' ? <Stacks key={`${route.view}-${route.name ?? ''}`} session={session} refreshSession={authentication.refresh} view={route.view} name={route.name} node={route.node} />
       : route.page === 'settings' ? settings()
         : route.page === 'unifi-settings' ? <UniFiSettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'storage-settings' ? <StorageSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
           : route.page === 'domain-settings' ? <DomainOnboarding session={session} refreshSession={authentication.refresh} />
         : route.page === 'ai' ? null
           : route.page === 'ai-keys' ? <InferenceKeys session={session} refreshSession={authentication.refresh} />
-            : route.page === 'ai-models' ? <ModelManager session={session} refreshSession={authentication.refresh} view={route.view ?? 'library'} />
+            : route.page === 'ai-models' ? <ModelManager key={route.server ?? ''} session={session} refreshSession={authentication.refresh} view={route.view ?? 'library'} server={route.server} />
           : <div className="empty-state"><h1>This page is not available.</h1><p>Return to Home to see what is connected.</p><a className="button primary" href="#/">Back to Home</a></div>
   return <div className="app-shell portal-workspace">
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>

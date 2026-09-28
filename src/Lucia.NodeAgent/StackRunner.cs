@@ -16,7 +16,8 @@ internal sealed record NodeContainer(string Id, string Name, string Image, strin
     string? Service, string? Ports);
 internal sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 internal sealed record SocketOwner(string Process, string? ContainerId);
-internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners);
+internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
+    NodeMountStatus[] Mounts);
 internal sealed record NodeDesiredStack(string Name, long Revision, string Desired, long RestartCount, long PullCount,
     string Compose, string Env, Guid? Send = null, Guid? Receive = null);
 internal sealed record AppliedStack(long Revision, string Desired, long RestartCount, long PullCount);
@@ -52,7 +53,9 @@ internal static partial class StackRunner
             {
                 var containers = await ContainersAsync(token);
                 var desired = await client.StacksAsync(node, certificate(), Report(containers), key, token);
-                Reconcile(desired, link, token);
+                // Older servers send no mounts; leave existing units alone rather than removing them.
+                if (desired.Mounts is { } mounts) NasMounts.Reconcile(mounts, token);
+                Reconcile(desired.Stacks ?? [], link, token);
                 lastError = null;
             }
             catch (Exception ex) when (ex is NodeAgentException or IOException or UnauthorizedAccessException or JsonException
@@ -81,7 +84,7 @@ internal static partial class StackRunner
                 : services.Length > 0 && running == services.Length ? "Running" : "Degraded";
             return new NodeStackStatus(name, state, applied?.Revision, null, services, received);
         }).ToArray();
-        return new(stacks, containers, Listeners());
+        return new(stacks, containers, Listeners(), NasMounts.Report());
     }
 
     private static void Reconcile(NodeDesiredStack[] desired, NodeLink link, CancellationToken token)
@@ -172,6 +175,9 @@ internal static partial class StackRunner
             await ComposeAsync(stack.Name, ["down", "--remove-orphans"], TimeSpan.FromMinutes(5), token);
         else
         {
+            // Docker would bind the empty mount point, and the app wouldn't see the share once it mounted.
+            if (NasMounts.Unmounted(stack.Compose) is { } share)
+                throw new NodeAgentException($"Waiting for the NAS share {share} to mount on this server.");
             if (applied is not null && stack.PullCount != applied.PullCount)
                 await ComposeAsync(stack.Name, ["pull", "--quiet"], TimeSpan.FromMinutes(30), token);
             string[] up = applied is not null && stack.RestartCount != applied.RestartCount

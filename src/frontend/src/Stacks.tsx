@@ -5,16 +5,18 @@ import { parseManagedNodes } from './onboarding'
 import type { ManagedNodeSummary } from './onboarding'
 import { Icon } from './Icon'
 import type { IconName } from './Icon'
+import { bytes } from './sparkTelemetry'
 import {
-  composeExample, containerState, describeUnmet, logLineChoices, moveState, parseInventory, parseStackDetail, parseStackList, parseStackSummary, portRows,
-  requirementForm, requirementList, stackNamePattern, stackState, unmetRequirement, validateStackDraft,
+  catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory,
+  parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
+  validateStackDraft,
 } from './stackManagement'
-import type { NodeContainer, NodeInventory, RequirementForm, StackPlacement, StackSummary, StackTone } from './stackManagement'
+import type { CatalogApp, CatalogServer, NodeContainer, NodeInventory, RequirementForm, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
 import './NetworkSettings.css'
 import './Stacks.css'
 
 type Session = { session: AuthenticationSession; refreshSession: () => Promise<void> }
-type View = 'list' | 'containers' | 'new' | 'app'
+type View = 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install'
 
 const toneIcon: Record<StackTone, IconName> = { green: 'check', amber: 'attention', failed: 'attention', muted: 'stop', accent: 'clock' }
 const message = (failure: unknown, fallback: string) => failure instanceof Error ? failure.message : fallback
@@ -36,39 +38,44 @@ function useJson<T>({ session, refreshSession }: Session, path: string | null, p
   return { data, error, reload, setData }
 }
 
-export function Stacks({ session, refreshSession, view, name }: Session & { view: View; name?: string }) {
+export function Stacks({ session, refreshSession, view, name, node }: Session & { view: View; name?: string; node?: string }) {
   if (!session.isOwner) return <div className="page-intro"><h1>Owner access is needed.</h1><p>Only lab owners can run apps on managed servers.</p></div>
   const props = { session, refreshSession }
   return <>
-    {view !== 'app' && <>
-      <div className="page-intro"><h1>{view === 'new' ? 'Add an app' : view === 'containers' ? 'Containers' : 'Apps'}</h1><p>{view === 'new'
+    {view !== 'app' && view !== 'install' && <>
+      {view === 'new' && <a className="text-link stack-back" href="#/apps/catalog"><Icon name="back" />Catalog</a>}
+      <div className="page-intro"><h1>{view === 'new' ? 'Your own app' : view === 'containers' ? 'Containers' : view === 'catalog' ? 'Add an app' : 'Apps'}</h1><p>{view === 'new'
         ? 'Paste a Docker Compose file and say where it can run. Lucia keeps it running there and reports what happens.'
         : view === 'containers' ? 'Everything running on a server, including containers Lucia didn\'t start, and the ports in use.'
-          : 'Container apps Lucia runs on your servers. Each one is a Docker Compose file placed on one server.'}</p></div>
+          : view === 'catalog' ? 'Apps Lucia knows how to set up. Pick one and a server; Lucia writes the configuration and keeps it current.'
+            : 'Container apps Lucia runs on your servers. Each one is a Docker Compose file placed on one server.'}</p></div>
       {view !== 'new' && <nav className="model-library-navigation" aria-label="Apps navigation">
         <a href="#/apps" aria-current={view === 'list' ? 'page' : undefined}>Your apps</a>
+        <a href="#/apps/catalog" aria-current={view === 'catalog' ? 'page' : undefined}><Icon name="search" />Catalog</a>
         <a href="#/apps/containers" aria-current={view === 'containers' ? 'page' : undefined}><Icon name="server" />Containers & ports</a>
       </nav>}
     </>}
     {view === 'list' && <AppList {...props} />}
     {view === 'containers' && <ContainersView {...props} />}
+    {view === 'catalog' && <CatalogView {...props} />}
+    {view === 'install' && name && <InstallApp {...props} id={name} node={node} />}
     {view === 'new' && <AppEditor {...props} />}
     {view === 'app' && name && <AppDetail {...props} name={name} />}
   </>
 }
 
-function StateLabel({ label, tone }: { label: string; tone: StackTone }) {
+export function StateLabel({ label, tone }: { label: string; tone: StackTone }) {
   return <span className={`stack-state stack-tone-${tone}`}><Icon name={toneIcon[tone]} />{label}</span>
 }
 
 function AppList(props: Session) {
   const { data: stacks, error } = useJson(props, '/api/host/stacks', parseStackList, 10000)
   return <section className="surface network-section">
-    <div className="network-overview-header"><h2>Your apps</h2><a className="button primary" href="#/apps/new">Add an app<Icon name="arrow" /></a></div>
+    <div className="network-overview-header"><h2>Your apps</h2><a className="button primary" href="#/apps/catalog">Add an app<Icon name="arrow" /></a></div>
     {error && <p className="network-error" role="alert">{error}</p>}
     {!stacks && !error && <p className="section-note" role="status">Reading your apps…</p>}
     {stacks?.length === 0 && <div className="stack-empty">
-      <p>No apps yet. Add one by pasting its Docker Compose file. Most self-hosted apps publish one in their README.</p>
+      <p>No apps yet. <a href="#/apps/catalog">Pick one from the catalog</a>, or paste the Docker Compose file of any self-hosted app.</p>
       <p className="section-note">Lucia stores named volumes under <code>/srv/lucia/stacks/&lt;app&gt;/volumes</code> on the server, so your data is easy to find and back up.</p>
     </div>}
     {stacks && stacks.length > 0 && <table className="network-table stack-table">
@@ -77,7 +84,8 @@ function AppList(props: Session) {
       <tbody>{stacks.map(stack => {
         const state = stackState(stack)
         return <tr key={stack.name}>
-          <th scope="row"><a className="stack-name" href={`#/apps/${stack.name}`}>{stack.name}</a></th>
+          <th scope="row"><a className="stack-name" href={`#/apps/${stack.name}`}>{stack.name}</a>{stack.template?.name && stack.template.name !== stack.name
+            && <span className="network-cell-note">{stack.template.name}</span>}</th>
           <td data-label="State"><StateLabel {...state} /><span className="network-cell-note">{state.detail}</span></td>
           <td data-label="Server">{stack.move ? <span className="stack-route">{stack.move.from}<Icon name="arrow" />{stack.move.to}</span> : stack.node}</td>
           <td className="stack-open"><a className="text-link" href={`#/apps/${stack.name}`} aria-label={`Open ${stack.name}`}>Open<Icon name="chevron" /></a></td>
@@ -206,7 +214,8 @@ function AppEditor({ existing, locked = false, onSaved, ...props }: Session & {
       aria-invalid={name.length > 0 && !stackNamePattern.test(name)} />
       <span id="stack-name-hint" className="stack-hint">Lowercase letters, digits and hyphens. Containers are named <code>lucia-{name || 'name'}-…</code></span></label>}
     <label>Docker Compose file<textarea className="stack-code" value={compose} onChange={event => setCompose(event.target.value)} rows={16}
-      spellCheck={false} autoComplete="off" required disabled={busy} placeholder={composeExample} /></label>
+      spellCheck={false} autoComplete="off" required disabled={busy} placeholder={composeExample} aria-describedby="stack-compose-hint" />
+      <span id="stack-compose-hint" className="stack-hint">To use a NAS share, mount its folder, such as <code>/mnt/lucia/nas/unas/media:/media</code>. Lucia runs the app only on servers that have the share mounted. <a className="text-link" href="#/settings/storage">Connect a NAS in Storage</a></span></label>
     <label>Environment <span className="ssh-key-hint">(optional)</span><textarea className="stack-code stack-env" value={env}
       onChange={event => setEnv(event.target.value)} rows={5} spellCheck={false} autoComplete="off" disabled={busy}
       placeholder={'TZ=America/Chicago\nPUID=1000'} aria-describedby="stack-env-hint" />
@@ -344,11 +353,19 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
       </ContainerRow>)}</ul>}
     </section>
 
-    <AppEditor key={detail.data.stack.revision} {...props} locked={moving}
-      existing={{ name, node: stack.node, placement: stack.placement, compose: detail.data.compose, env: detail.data.env, revision: detail.data.stack.revision }}
-      onSaved={() => { detail.reload(); live.reload(); setNotice('Saved. The server applies the change within about 20 seconds.') }} />
+    {stack.template?.id === 'local-ai' && <LocalAiSection stack={stack} detail={detail.data} />}
 
-    <MoveSection {...props} stack={stack} onChanged={done => { setNotice(done); live.reload(); detail.reload() }} />
+    {stack.template
+      ? <ManagedSettings key={detail.data.stack.revision} {...props} stack={stack} detail={detail.data} locked={moving}
+        onSaved={done => { detail.reload(); live.reload(); setNotice(done) }} />
+      : <AppEditor key={detail.data.stack.revision} {...props} locked={moving}
+        existing={{ name, node: stack.node, placement: stack.placement, compose: detail.data.compose, env: detail.data.env, revision: detail.data.stack.revision }}
+        onSaved={() => { detail.reload(); live.reload(); setNotice('Saved. The server applies the change within about 20 seconds.') }} />}
+
+    {stack.template?.serverBound
+      ? <section className="surface network-section"><h2>Move to another server</h2>
+        <p className="section-note stack-move-note">{stack.template.name ?? stack.name} is set up for {stack.node}'s own hardware, so it can't move. Install it on the other server from the catalog instead.</p></section>
+      : <MoveSection {...props} stack={stack} onChanged={done => { setNotice(done); live.reload(); detail.reload() }} />}
 
     <section className="surface network-section">
       <h2>Delete this app</h2>
@@ -454,4 +471,266 @@ function ContainersView(props: Session) {
       </table>
     </section>}
   </>
+}
+
+function CatalogView(props: Session) {
+  const { data: apps, error } = useJson(props, '/api/host/catalog', parseCatalog)
+  return <section className="surface network-section">
+    <h2>Catalog</h2>
+    {error && <p className="network-error" role="alert">{error}</p>}
+    {!apps && !error && <p className="section-note" role="status">Reading the catalog…</p>}
+    {apps && <ul className="stack-catalog">
+      {apps.map(app => {
+        const ready = app.servers.filter(server => !catalogReason(server))
+        const blocked = app.servers.find(server => catalogReason(server))
+        return <li key={app.id}>
+          <div>
+            <h3>{app.name}</h3>
+            <p>{app.summary}</p>
+            <p className="stack-catalog-needs"><span>Needs</span> {app.needs}</p>
+            <p className={ready.length ? 'stack-catalog-fit' : 'stack-catalog-fit stack-tone-muted'}>
+              <Icon name={ready.length ? 'check' : 'attention'} />
+              {ready.length ? <span>Can run on {ready.map(server => server.hostname).join(', ')}</span>
+                : <span>No server can run it yet.{blocked ? ` ${blocked.hostname}: ${catalogReason(blocked)}` : ' Add a managed server from Devices.'}</span>}
+            </p>
+          </div>
+          <a className={ready.length ? 'button primary' : 'button secondary'} href={`#/apps/install/${app.id}`}>Install<Icon name="arrow" /></a>
+        </li>
+      })}
+      <li className="stack-catalog-custom">
+        <div>
+          <h3>Your own app</h3>
+          <p>Any self-hosted app with a Docker Compose file. You write the configuration; Lucia runs it, restarts it and reports on it.</p>
+        </div>
+        <a className="button secondary" href="#/apps/new">Paste a compose file<Icon name="arrow" /></a>
+      </li>
+    </ul>}
+  </section>
+}
+
+function SettingsFields({ app, server, values: given, onChange, disabled }: {
+  app: CatalogApp; server: CatalogServer | undefined; values: Record<string, string>; onChange: (id: string, value: string) => void; disabled: boolean
+}) {
+  // Installs from an older catalog version lack newer settings; the server fills the same defaults when it saves.
+  const values = { ...Object.fromEntries(app.fields.map(field => [field.id, field.default ?? ''])), ...given }
+  return <div className="stack-catalog-fields">{app.fields.filter(field => fieldShown(field, values)).map(field => {
+    const hint = field.help && <span id={`setting-${field.id}-hint`} className="stack-hint">{field.help}</span>
+    if (field.kind === 'choice') return <fieldset key={field.id} className="stack-gpu-picks">
+      <legend>{field.label}</legend>
+      <div className="stack-modes">{field.options.map(option => <label key={option.value} className="network-checkbox">
+        <input type="radio" name={`setting-${field.id}`} checked={values[field.id] === option.value} disabled={disabled}
+          onChange={() => onChange(field.id, option.value)} />
+        <span><strong>{option.label}</strong><span className="network-cell-note">{option.help}</span></span>
+      </label>)}</div>
+    </fieldset>
+    if (field.kind !== 'gpus') return <label key={field.id} className={field.kind === 'text' ? 'stack-field-wide' : undefined}>{field.label}<input value={values[field.id] ?? ''} disabled={disabled} required={!field.optional}
+      inputMode={field.kind === 'port' ? 'numeric' : undefined} maxLength={field.kind === 'port' ? 5 : 128} spellCheck={false} autoComplete="off"
+      className={field.kind === 'port' ? 'stack-number' : undefined} aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}
+      onChange={event => onChange(field.id, field.kind === 'port' ? event.target.value.replace(/\D/g, '') : event.target.value)} />{hint}</label>
+    const picked = new Set((values[field.id] ?? '').split(',').filter(Boolean))
+    return <fieldset key={field.id} className="stack-gpu-picks" aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}>
+      <legend>{field.label}</legend>
+      {!server?.gpus?.length ? <p className="section-note">{server ? `${server.hostname} reports no GPUs this app can use.` : 'Choose a server first.'}</p>
+        : server.gpus.map(gpu => <label key={gpu.uuid} className="network-checkbox">
+          <input type="checkbox" checked={picked.has(gpu.uuid)} disabled={disabled || !!gpu.unsupported} onChange={event => {
+            const next = new Set(picked)
+            if (event.target.checked) next.add(gpu.uuid); else next.delete(gpu.uuid)
+            onChange(field.id, server.gpus!.filter(item => next.has(item.uuid)).map(item => item.uuid).join(','))
+          }} />
+          <span><strong>{gpu.model}</strong><span className="network-cell-note">{gpu.unsupported
+            ?? (gpu.memoryBytes ? `${bytes(gpu.memoryBytes)} of memory` : 'Memory not reported')}</span></span>
+        </label>)}
+      {hint}
+    </fieldset>
+  })}</div>
+}
+
+function ComposePreview({ id, server, settings, ...props }: Session & { id: string; server: string; settings: Record<string, string> }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const key = JSON.stringify(settings)
+  useEffect(() => {
+    if (!open || !server) return
+    const controller = new AbortController()
+    setError(null)
+    void ownerRequest(props.session, props.refreshSession, `/api/host/catalog/${encodeURIComponent(id)}/preview`, 'POST',
+      { node: server, settings: JSON.parse(key) as Record<string, string> }, controller.signal)
+      .then(response => response.json()).then((value: unknown) => {
+        if (!value || typeof value !== 'object' || !('compose' in value) || typeof value.compose !== 'string') throw new Error('The preview could not be read.')
+        if (!controller.signal.aborted) setText(value.compose)
+      }).catch(failure => { if (!controller.signal.aborted) { setText(null); setError(message(failure, 'The preview could not be made.')) } })
+    return () => controller.abort()
+  }, [open, id, server, key, props.session, props.refreshSession])
+  return <details className="stack-compose-details" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>The compose file Lucia will write</summary>
+    {error ? <p className="section-note">{error}</p> : text === null ? <p className="section-note" role="status">Writing a preview…</p>
+      : <pre className="stack-log-text" tabIndex={0}>{text}</pre>}
+    <p className="section-note">Keys are generated when you install and kept in the app's encrypted environment.</p>
+  </details>
+}
+
+function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node?: string }) {
+  const catalog = useJson(props, '/api/host/catalog', parseCatalog)
+  const { data: stacks } = useJson(props, '/api/host/stacks', parseStackList)
+  const [name, setName] = useState<string | null>(null)
+  const [picked, setPicked] = useState<string | null>(null)
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const app = catalog.data?.find(item => item.id === id)
+  const back = <a className="text-link stack-back" href="#/apps/catalog"><Icon name="back" />Catalog</a>
+  if (catalog.error) return <>{back}<p className="network-error" role="alert">{catalog.error}</p></>
+  if (!catalog.data || !stacks) return <>{back}<p className="section-note" role="status">Reading the catalog…</p></>
+  if (!app) return <>{back}<div className="page-intro"><h1>Not in the catalog</h1><p>Lucia doesn't have an app called “{id}”. It may have been renamed.</p></div></>
+
+  const taken = stacks.map(stack => stack.name)
+  const installed = (host: string) => app.serverBound ? stacks.find(stack => stack.template?.id === app.id && stack.node === host) : undefined
+  const blocked = (server: CatalogServer) => catalogReason(server)
+    ?? (installed(server.hostname) ? `It already runs ${app.name} as ${installed(server.hostname)!.name}.` : null)
+  const open = app.servers.filter(server => !blocked(server))
+  const serverName = picked ?? (open.find(server => server.hostname === wanted) ?? open[0])?.hostname ?? ''
+  const server = app.servers.find(item => item.hostname === serverName)
+  const settings = { ...catalogDefaults(app, server), ...edits }
+  const nameValue = name ?? freeName(app.id, taken)
+  const nameProblem = !stackNamePattern.test(nameValue) ? 'Use lowercase letters, digits and hyphens, starting with a letter.'
+    : taken.includes(nameValue) ? `You already have an app called ${nameValue}.` : null
+  const problem = !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings)
+
+  async function install(event: React.FormEvent) {
+    event.preventDefault()
+    if (problem) { setError(problem); return }
+    setBusy(true); setError(null)
+    try {
+      const response = await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(nameValue)}`, 'PUT', {
+        compose: null, env: null, expectedRevision: 0,
+        manifest: { schemaVersion: 1, placement: { node: serverName, require: [] }, template: { id: app!.id, version: app!.version, settings } },
+      })
+      window.location.hash = `#/apps/${parseStackSummary(await response.json()).name}`
+    } catch (failure) { setError(message(failure, `${app!.name} could not be installed.`)); setBusy(false) }
+  }
+
+  return <>
+    {back}
+    <div className="page-intro"><h1>Install {app.name}</h1><p>{app.summary}</p></div>
+    <section className="surface network-section">
+      <form onSubmit={event => void install(event)}>
+        <fieldset className="stack-install-servers" disabled={busy}>
+          <legend>Server</legend>
+          {app.servers.length === 0 && <p className="section-note">No managed servers yet. <a href="#/devices">Add one from Devices</a> first.</p>}
+          <ul className="stack-eligibility-list">{app.servers.map(item => {
+            const reason = blocked(item)
+            return <li key={item.nodeId} className={reason ? 'stack-ineligible' : ''}>
+              <input type="radio" name="install-server" id={`install-${item.nodeId}`} checked={item.hostname === serverName} disabled={!!reason}
+                onChange={() => { setPicked(item.hostname); setEdits(current => Object.fromEntries(Object.entries(current).filter(([key]) =>
+                  app.fields.find(field => field.id === key)?.kind !== 'gpus'))) }} />
+              <label htmlFor={`install-${item.nodeId}`}>{item.hostname}</label>
+              <span className="stack-eligibility-reason">{reason ?? (item.gpus?.length
+                ? item.gpus.filter(gpu => !gpu.unsupported).map(gpu => gpu.model).join(', ') : 'Ready')}</span>
+            </li>
+          })}</ul>
+          {app.servers.length > 0 && open.length === 0 && <p className="section-note">No server can run {app.name} right now. The reasons are next to each server. {app.needs}</p>}
+        </fieldset>
+
+        <fieldset className="stack-install-settings" disabled={busy || !server}>
+          <legend>Settings</legend>
+          <div className="stack-catalog-fields">
+            <label>Name<input value={nameValue} onChange={event => setName(event.target.value.toLowerCase())} maxLength={40} required autoComplete="off"
+              spellCheck={false} aria-invalid={!!nameProblem} aria-describedby="install-name-hint" />
+              <span id="install-name-hint" className="stack-hint">{nameProblem ?? <>How it appears in Lucia. Containers are named <code>lucia-{nameValue}-…</code></>}</span></label>
+          </div>
+          <SettingsFields app={app} server={server} values={settings} disabled={busy} onChange={(field, value) => setEdits(current => ({ ...current, [field]: value }))} />
+        </fieldset>
+
+        {server && !settingsProblem(app, settings) && <ComposePreview {...props} id={app.id} server={serverName} settings={settings} />}
+
+        {error && <p className="network-error" role="alert">{error}</p>}
+        <div className="network-actions">
+          <button className="button primary" disabled={busy || !!problem}>{busy ? 'Installing…' : server ? `Install on ${serverName}` : 'Install'}</button>
+          <a className="text-link" href="#/apps/catalog">Cancel</a>
+        </div>
+        <p className="section-note">The server downloads the app's images before it starts. Large images, like Local AI's, can take several minutes.</p>
+      </form>
+    </section>
+  </>
+}
+
+function ManagedSettings({ stack, detail, locked, onSaved, ...props }: Session & {
+  stack: StackSummary; detail: StackDetail; locked: boolean; onSaved: (notice: string) => void
+}) {
+  const template = stack.template!
+  const { data: catalog, error: catalogError } = useJson(props, '/api/host/catalog', parseCatalog)
+  const [values, setValues] = useState(template.settings)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [converting, setConverting] = useState(false)
+  const app = catalog?.find(item => item.id === template.id)
+  const server = app?.servers.find(item => item.hostname === stack.node)
+  const dirty = JSON.stringify(values) !== JSON.stringify(template.settings)
+  const problem = app ? settingsProblem(app, values) : null
+  const outdated = template.latest !== null && template.latest > template.version
+
+  async function put(body: unknown, done: string) {
+    setBusy(true); setError(null)
+    try {
+      await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(stack.name)}`, 'PUT', body)
+      onSaved(done)
+    } catch (failure) { setError(message(failure, 'The app could not be saved.')); setBusy(false) }
+  }
+  const save = (settings: Record<string, string>, done: string) => put({
+    compose: null, env: null, expectedRevision: stack.revision,
+    manifest: { schemaVersion: 1, placement: { node: stack.placement.node, require: [] }, template: { id: template.id, version: app!.version, settings } },
+  }, done)
+
+  return <section className="surface network-section">
+    <h2>Settings</h2>
+    <p className="section-note">Installed from the catalog{template.name ? ` as ${template.name}` : ''}, version {template.version}. Lucia writes its compose file from these settings.</p>
+    {outdated && <div className="stack-update-note"><Icon name="down" /><span>Version {template.latest} of {template.name ?? 'this app'} is available.</span>
+      <button className="button secondary" disabled={busy || locked || !app} onClick={() => void save(template.settings, `Updating to version ${template.latest}. The server applies it within about 20 seconds.`)}>Update</button></div>}
+    {catalogError && <p className="network-error" role="alert">{catalogError}</p>}
+    {catalog && !app && <p className="section-note">This app is no longer in Lucia's catalog. Convert it to a custom app below to keep changing it.</p>}
+    {app && <form onSubmit={event => { event.preventDefault(); if (problem) setError(problem); else void save(values, 'Saved. The server applies the change within about 20 seconds.') }}>
+      <SettingsFields app={app} server={server} values={values} disabled={busy || locked} onChange={(field, value) => setValues(current => ({ ...current, [field]: value }))} />
+      {error && <p className="network-error" role="alert">{error}</p>}
+      <div className="network-actions">
+        <button className="button primary" disabled={busy || locked || !dirty || !!problem}>{busy ? 'Saving…' : 'Save and apply'}</button>
+        {dirty && <button type="button" className="text-link" disabled={busy} onClick={() => { setValues(template.settings); setError(null) }}>Undo changes</button>}
+      </div>
+    </form>}
+    <details className="stack-compose-details">
+      <summary>The compose file Lucia wrote</summary>
+      <pre className="stack-log-text" tabIndex={0}>{detail.compose}</pre>
+    </details>
+    <div className="stack-convert">
+      <h3>Convert to a custom app</h3>
+      <p className="section-note">Edit the compose file yourself instead. Lucia stops managing it: settings and catalog updates no longer apply. You can't convert it back.</p>
+      <div className="network-actions">{converting
+        ? <><button className="button secondary stack-danger" disabled={busy || locked} onClick={() => void put({
+          compose: detail.compose, env: detail.env, expectedRevision: stack.revision, manifest: { schemaVersion: 1, placement: stack.placement },
+        }, `${stack.name} is now a custom app. Edit its compose file below.`)}>Convert {stack.name}</button>
+          <button className="text-link" disabled={busy} onClick={() => setConverting(false)}>Keep it managed</button></>
+        : <button className="button secondary" disabled={busy || locked} onClick={() => setConverting(true)}>Convert to a custom app…</button>}</div>
+    </div>
+  </section>
+}
+
+function LocalAiSection({ stack, detail }: { stack: StackSummary; detail: StackDetail }) {
+  const [copied, setCopied] = useState('')
+  const key = envValue(detail.env, 'LUCIA_INFERENCE_KEY')
+  const endpoint = `http://${detail.address ?? stack.node}:${stack.template?.settings.port ?? '8080'}/v1`
+  async function copy(value: string, what: string) {
+    try { await navigator.clipboard.writeText(value); setCopied(`${what} copied.`) } catch { setCopied(`Your browser blocked copying the ${what.toLowerCase()}.`) }
+  }
+  return <section className="surface network-section">
+    <div className="network-overview-header"><h2>Local AI</h2><a className="button primary" href={`#/ai/models/on/${stack.node}`}>Manage models<Icon name="arrow" /></a></div>
+    <p className="section-note">{(stack.template?.settings.engine ?? 'lucia') !== 'lucia'
+      ? 'Download a model and choose it to serve on the Models page. Then point apps that speak the OpenAI API at this address, using the key as the bearer token and the model’s repository name as the model.'
+      : 'Download and load a model first. Then point apps that speak the OpenAI API at this address, using the key as the bearer token.'}</p>
+    <dl className="stack-connect">
+      <div><dt>Address</dt><dd><code>{endpoint}</code> <button className="text-link" onClick={() => void copy(endpoint, 'Address')}><Icon name="copy" />Copy</button></dd></div>
+      <div><dt>API key</dt><dd>{key ? <><span className="stack-hint">Kept encrypted in the app's environment.</span> <button className="text-link" onClick={() => void copy(key, 'API key')}><Icon name="copy" />Copy key</button></>
+        : 'Missing. Save the settings again to generate one.'}</dd></div>
+    </dl>
+    <p className="network-notice" role="status">{copied}</p>
+  </section>
 }

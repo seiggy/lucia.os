@@ -271,23 +271,13 @@ function GpuSection({ node, runtime, disabled, session, refreshSession, onSaved 
   session: AuthenticationSession; refreshSession: () => Promise<void>; onSaved: () => Promise<unknown>
 }) {
   const saved = node.gpu
-  const single = runtime.gpus.length === 1
   const [cudaLine, setCudaLine] = useState<CudaLine | null>(saved.cudaLine)
-  const [inference, setInference] = useState(saved.inference)
-  const [chosen, setChosen] = useState<string[]>(saved.inferenceGpus)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState('')
   const pending = useRef<AbortController | null>(null)
   useEffect(() => () => pending.current?.abort(), [])
-  const identified = runtime.gpus.flatMap(gpu => gpu.uuid ? [gpu.uuid] : [])
-  const picks = !inference ? [] : single ? identified : chosen.filter(uuid => identified.includes(uuid))
-  const changed = cudaLine !== saved.cudaLine || inference !== saved.inference
-    || picks.length !== saved.inferenceGpus.length || picks.some(uuid => !saved.inferenceGpus.includes(uuid))
-  const blocker = !inference ? null : cudaLine === null ? 'Choose a CUDA line to use this server for local AI.'
-    : !runtime.gpuContainers ? 'Containers on this server can’t use its GPUs yet, so local AI can’t use them either.'
-      : !identified.length ? 'Update the node agent so Lucia can tell this server’s GPUs apart.'
-        : !picks.length ? 'Choose at least one GPU for local AI.' : null
+  const changed = cudaLine !== saved.cudaLine
   const locked = disabled || busy
   const reasons = Object.fromEntries(cudaLines.map(({ line }) => [line, cudaLineUnsupported(line, runtime)])) as Record<CudaLine, string | null>
   // A driver or agent problem rules out every line the same way; say it once instead of under each option.
@@ -300,7 +290,7 @@ function GpuSection({ node, runtime, disabled, session, refreshSession, onSaved 
     setBusy(true); setError(null); setNotice('')
     try {
       await ownerRequest(session, refreshSession, `/api/host/nodes/${node.nodeId}/gpu`, 'PUT',
-        { cudaLine, inference, inferenceGpus: picks }, controller.signal)
+        { cudaLine }, controller.signal)
       if (!controller.signal.aborted) { setNotice('GPU settings saved.'); await onSaved() }
     } catch (failure) {
       if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'GPU settings could not be saved.')
@@ -336,28 +326,15 @@ function GpuSection({ node, runtime, disabled, session, refreshSession, onSaved 
         <span><strong>Not set</strong><span className="hardware-choice-note">Apps that need a CUDA line won’t be placed here.</span></span>
       </label>
     </fieldset>
-    <fieldset className="hardware-choice" disabled={locked}><legend>Local AI</legend>
-      <label className="hardware-checkbox">
-        <input type="checkbox" checked={inference} onChange={event => {
-          setInference(event.target.checked)
-          if (event.target.checked && !chosen.length) setChosen(identified)
-        }} />
-        <span><strong>Use this server for local AI</strong>
-          <span className="hardware-choice-note">Lucia’s inference service runs models on {single ? 'this GPU' : 'the GPUs you choose'}.</span></span>
-      </label>
-      {inference && !single && <div className="hardware-gpu-picks">{runtime.gpus.map((gpu, index) => <label className="hardware-checkbox" key={gpu.uuid ?? index}>
-        <input type="checkbox" disabled={!gpu.uuid} checked={!!gpu.uuid && chosen.includes(gpu.uuid)}
-          onChange={event => setChosen(list => event.target.checked ? [...list, gpu.uuid!] : list.filter(uuid => uuid !== gpu.uuid))} />
-        <span><strong>GPU {index + 1} · {gpu.model}</strong>
-          {!gpu.uuid && <span className="hardware-choice-note">Update the node agent to choose this GPU.</span>}</span>
-      </label>)}</div>}
-      {inference && <p className="hardware-meta">This version of Lucia can’t run the local AI service yet. Your choice is saved, and nothing uses {single ? 'this GPU' : 'these GPUs'} until an update adds it.</p>}
-    </fieldset>
+    <div className="hardware-choice"><h5>Local AI</h5>
+      <p className="hardware-meta">Local AI is an app. Install it from the catalog to serve models on {runtime.gpus.length === 1 ? 'this GPU' : 'the GPUs you choose'}.</p>
+      <a className="text-link" href={`#/apps/install/local-ai/${encodeURIComponent(node.hostname)}`}>Set up local AI on {node.hostname}<Icon name="arrow" /></a>
+    </div>
     {error && <p className="hardware-failure" role="alert">{error}</p>}
     <div className="hardware-gpu-actions">
-      <button className="button secondary" type="button" disabled={locked || !changed || !!blocker} onClick={() => void save()}>
+      <button className="button secondary" type="button" disabled={locked || !changed} onClick={() => void save()}>
         {busy ? 'Saving…' : 'Save GPU settings'}</button>
-      <p className="hardware-meta" role="status">{blocker && changed ? blocker : notice}</p>
+      <p className="hardware-meta" role="status">{notice}</p>
     </div>
   </section>
 }

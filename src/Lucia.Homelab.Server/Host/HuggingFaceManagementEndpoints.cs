@@ -57,10 +57,10 @@ public static class HuggingFaceManagementEndpoints
             return await service.SaveAsync(token, ct);
         });
         group.MapDelete("/credentials", (HuggingFaceCredentialService service, CancellationToken ct) => service.DisconnectAsync(ct));
-        group.MapGet("/search", (string? query, string? kind, HuggingFaceBrowserService service, CancellationToken ct) =>
-            service.SearchAsync(query, ParseKind(kind), ct));
-        group.MapGet("/repository", (string? repository, string? revision, string? kind, HuggingFaceBrowserService service, CancellationToken ct) =>
-            service.GetRepositoryAsync(repository, revision, ParseKind(kind), ct));
+        group.MapGet("/search", (string? query, string? kind, string? format, HuggingFaceBrowserService service, CancellationToken ct) =>
+            service.SearchAsync(query, ParseKind(kind), ct, ParseFormat(format)));
+        group.MapGet("/repository", (string? repository, string? revision, string? kind, string? format, HuggingFaceBrowserService service, CancellationToken ct) =>
+            service.GetRepositoryAsync(repository, revision, ParseKind(kind), ct, ParseFormat(format)));
         group.MapGet("/context-preview", async (string? repository, string? revision, string? file, string? kind,
             HuggingFacePreviewService service, [Microsoft.AspNetCore.Mvc.FromServices] InferenceRuntime runtime, CancellationToken ct) =>
         {
@@ -98,6 +98,13 @@ public static class HuggingFaceManagementEndpoints
         null or "Chat" => ModelKind.Chat,
         "Embedding" => ModelKind.Embedding,
         _ => throw new HuggingFaceManagementException(400, "invalid_kind", "Kind must be Chat or Embedding.")
+    };
+
+    private static ModelFormat ParseFormat(string? format) => format switch
+    {
+        null or "Gguf" => ModelFormat.Gguf,
+        "Safetensors" => ModelFormat.Safetensors,
+        _ => throw new HuggingFaceManagementException(400, "invalid_format", "Format must be Gguf or Safetensors.")
     };
 
     private sealed class HuggingFaceManagementConnection : IDisposable

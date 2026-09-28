@@ -27,5 +27,5 @@ public static class ModelPresets
         "Selected for bundling; exact-file TensorSharp and DGX Spark qualification is pending.");
 
     public static ModelPreset? Match(ModelDownloadRequest request) =>
-        request with { Pro = false } == Bundled.Source ? Bundled : null;
+        request with { Pro = false, SizeBytes = null } == Bundled.Source ? Bundled : null;
 }

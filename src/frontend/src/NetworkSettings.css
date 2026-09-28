@@ -74,3 +74,32 @@
 .unifi-fingerprint { display: block; padding: 12px 14px; background: var(--surface); color: var(--text); border-radius: 10px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; user-select: all; }
 .unifi-trust .network-actions { margin-top: 18px; }
 @media (max-width: 700px) { .unifi-fields { grid-template-columns: 1fr; } .unifi-table th:first-child, .unifi-table th:nth-child(2) { width: 100%; } }
+.storage-summary { margin: -10px 0 0; }
+.storage-mono, .storage-path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; overflow-wrap: anywhere; }
+.storage-path { user-select: all; }
+.storage-header-actions { margin-top: 0; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.storage-table tbody tr:last-child, .storage-table tbody tr:last-child > * { border-bottom: 0; }
+.storage-table th:first-child { width: 30%; }
+.storage-table th:nth-child(2) { width: 36%; }
+.storage-mounts { list-style: none; padding: 0; margin: 8px 0 0; color: var(--muted); }
+.storage-mounts li { margin-top: 4px; overflow-wrap: anywhere; }
+.storage-mounts strong { color: var(--text); font-weight: 650; }
+.storage-kind, .storage-shares { border: 0; padding: 0; margin: 28px 0 0; min-width: 0; }
+.storage-kind legend, .storage-shares legend { font-size: 14px; font-weight: 650; padding: 0; }
+.storage-kind { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+.storage-kind legend { grid-column: 1 / -1; }
+.storage-kind .network-checkbox { margin: 12px 0 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.storage-kind .network-checkbox:has(input:checked) { border-color: var(--accent); background: var(--surface); }
+.storage-share-row { display: grid; grid-template-columns: 3fr 2fr 44px; gap: 16px; align-items: end; }
+.storage-share-row label { display: block; margin-top: 16px; font-size: 14px; font-weight: 650; }
+.storage-remove { display: inline-grid; place-items: center; width: 44px; height: 48px; }
+.storage-remove:disabled { visibility: hidden; }
+.storage-add { margin-top: 16px; }
+@media (max-width: 700px) {
+  .storage-kind { grid-template-columns: 1fr; }
+  .storage-share-row { grid-template-columns: 1fr 44px; gap: 0 12px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .storage-share-row label:first-child { grid-column: 1 / -1; }
+  .storage-table th:first-child, .storage-table th:nth-child(2) { width: 100%; }
+  .storage-header-actions { margin-top: 16px; }
+  .storage-header-actions .button { margin-top: 0; }
+}

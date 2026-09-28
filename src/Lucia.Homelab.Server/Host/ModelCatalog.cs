@@ -17,13 +17,20 @@ public enum ModelKind { Chat, Embedding }
 [JsonConverter(typeof(JsonStringEnumConverter<ModelDownloadState>))]
 public enum ModelDownloadState { Queued, Downloading, Ready, Failed, Canceled, Interrupted }
 
+/// <summary><c>Gguf</c> runs on TensorSharp. <c>Safetensors</c> is a whole Hugging Face repository for vLLM.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ModelFormat>))]
+public enum ModelFormat { Gguf, Safetensors }
+
+/// <param name="File">The GGUF (first shard) to download; <c>config.json</c> for a safetensors repository.</param>
 public sealed record ModelDownloadRequest(
     string Provider,
     string Repository,
     string File,
     ModelKind Kind,
     string Revision = "main",
-    bool Pro = false);
+    bool Pro = false,
+    long? SizeBytes = null,
+    ModelFormat Format = ModelFormat.Gguf);
 
 public sealed record LocalModel(
     Guid Id,
@@ -33,7 +40,8 @@ public sealed record LocalModel(
     DateTimeOffset UpdatedAt,
     string? Error = null,
     ModelInspection? Inspection = null,
-    string? PersistenceError = null);
+    string? PersistenceError = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? DownloadedBytes = null);
 
 public sealed record ModelSelection(int Version = 1, Guid? ChatId = null, int? ChatContext = null,
     Guid? EmbeddingId = null, int? EmbeddingContext = null);
@@ -57,13 +65,28 @@ public sealed class ModelCatalog(
         SingleReader = true,
         FullMode = BoundedChannelFullMode.Wait
     });
+    private readonly Channel<bool> _mirror = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+    {
+        SingleReader = true,
+        FullMode = BoundedChannelFullMode.DropWrite
+    });
 
     private string Root => Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.ModelDirectory, environment.ContentRootPath));
+    private string? Cache => string.IsNullOrWhiteSpace(_options.LlamaCache) ? null
+        : Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.LlamaCache, environment.ContentRootPath));
     private string DirectoryFor(Guid id) => Path.Combine(Root, id.ToString("N"));
     private string FilesFor(Guid id) => Path.Combine(DirectoryFor(id), "files");
     private string ManifestFor(Guid id) => Path.Combine(DirectoryFor(id), "model.json");
 
-    public IReadOnlyList<LocalModel> List() => _models.Values.OrderByDescending(m => m.CreatedAt).ToArray();
+    public IReadOnlyList<LocalModel> List() => _models.Values.OrderByDescending(m => m.CreatedAt)
+        .Select(m => m.State == ModelDownloadState.Downloading ? m with { DownloadedBytes = OnDisk(m.Id) } : m).ToArray();
+
+    // The Hugging Face CLI writes partial files under files/.cache, so everything under files/ is what has arrived so far.
+    private long? OnDisk(Guid id)
+    {
+        try { return new DirectoryInfo(FilesFor(id)).EnumerateFiles("*", SearchOption.AllDirectories).Sum(file => file.Length); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { return null; }
+    }
     public LocalModel? Find(Guid id) => _models.GetValueOrDefault(id);
 
     public async Task<ModelSelection?> ReadSelectionAsync(CancellationToken cancellationToken)
@@ -146,6 +169,13 @@ public sealed class ModelCatalog(
             return "Revision must be a nonempty branch, tag, or commit.";
         if (!Enum.IsDefined(request.Kind))
             return "Kind must be Chat or Embedding.";
+        if (request.SizeBytes is < 1 or > 1L << 40)
+            return "SizeBytes must be the download's size, up to 1 TiB.";
+        if (request.Format == ModelFormat.Safetensors)
+            return request.File == "config.json" && request.Kind == ModelKind.Chat ? null
+                : "A safetensors download is a whole LLM repository: set file to config.json and kind to Chat.";
+        if (!Enum.IsDefined(request.Format))
+            return "Format must be Gguf or Safetensors.";
         if (!IsModelFile(request.File))
             return "Model files must be repository-relative .gguf paths without traversal or option prefixes.";
         var shard = Regex.Match(request.File, @"-(\d{5})-of-(\d{5})\.gguf$", RegexOptions.IgnoreCase);
@@ -190,8 +220,8 @@ public sealed class ModelCatalog(
             {
                 try
                 {
-                    var inspection = ModelInspector.Inspect(ExistingFile(id, model.Source.File), model.Source.Kind);
-                    model = model with { Inspection = inspection };
+                    var anchor = ExistingFile(id, model.Source.File);
+                    model = model with { Inspection = model.Source.Format == ModelFormat.Gguf ? ModelInspector.Inspect(anchor, model.Source.Kind, options.Value.RequireTensorSharp) : null };
                 }
                 catch (Exception exception) when (exception is IOException or InvalidDataException or NotSupportedException or ArgumentException or OverflowException)
                 {
@@ -202,7 +232,95 @@ public sealed class ModelCatalog(
             }
             _models[id] = model;
         }
+        MirrorLlamaCache();
         await base.StartAsync(cancellationToken);
+    }
+
+    internal const string LlamaPresetsFileName = "llama-models.ini";
+    private const string MirroredMarker = ".mirrored";
+
+    private static bool Llama(LocalModel model) => model is { State: ModelDownloadState.Ready, Source: { Format: ModelFormat.Gguf, Kind: ModelKind.Chat } };
+
+    /// <summary>The llama.cpp router's preset file: every Ready GGUF LLM, named <c>owner/repo:QUANT</c> as llama.cpp names them.</summary>
+    internal static string LlamaPresets(string root, IEnumerable<LocalModel> models)
+    {
+        var ini = new StringBuilder("version = 1\n");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var model in models.Where(Llama).OrderBy(m => m.CreatedAt))
+        {
+            // INI has no quoting, so only plain paths are listed.
+            if (!Regex.IsMatch(model.Source.File, @"\A[A-Za-z0-9._/-]+\z")) continue;
+            var name = $"{model.Source.Repository}:{LlamaTag(model.Source.File)}";
+            if (names.Add(name)) ini.Append($"\n[{name}]\nmodel = {root}/{model.Id:N}/files/{model.Source.File}\n");
+        }
+        return ini.ToString();
+    }
+
+    private static readonly Regex Quantization = new(@"(?:\A|[._/-])((?:IQ|Q|TQ)[1-8](?:_[A-Z0-9]+)*|BF16|F16|F32)(?=[._/-]|\z)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    internal static string? QuantizationOf(string file) =>
+        Quantization.Match(file) is { Success: true } match ? match.Groups[1].Value.ToUpperInvariant() : null;
+
+    private static string LlamaTag(string file) => QuantizationOf(file)
+        ?? Regex.Replace(Path.GetFileNameWithoutExtension(file), @"-\d{5}-of-\d{5}\z", "");
+
+    private void MirrorLlamaCache()
+    {
+        if (Cache is not null) _mirror.Writer.TryWrite(true);
+    }
+
+    /// <summary>
+    /// Keeps the cache equal to the library's Ready GGUF LLMs: copies new ones, drops removed ones, and lists a model in
+    /// the preset file only once every file of it is on local disk.
+    /// </summary>
+    private async Task MirrorAsync(string cache, CancellationToken stoppingToken)
+    {
+        await foreach (var signal in _mirror.Reader.ReadAllAsync(stoppingToken))
+        {
+            try
+            {
+                Directory.CreateDirectory(cache);
+                var wanted = _models.Values.Where(Llama).ToDictionary(m => m.Id.ToString("N"));
+                foreach (var directory in Directory.EnumerateDirectories(cache))
+                    if (Guid.TryParseExact(Path.GetFileName(directory), "N", out _) && !wanted.ContainsKey(Path.GetFileName(directory)))
+                        Directory.Delete(directory, recursive: true);
+                WriteLlamaPresets(cache);
+                foreach (var model in wanted.Values.OrderBy(m => m.CreatedAt))
+                {
+                    var target = Path.Combine(cache, model.Id.ToString("N"));
+                    if (File.Exists(Path.Combine(target, MirroredMarker))) continue;
+                    logger.LogInformation("Copying model {ModelId} to local disk for llama.cpp", model.Id);
+                    foreach (var file in ModelFiles(model.Source.File))
+                    {
+                        var source = Path.Combine(DirectoryFor(model.Id), "files", file);
+                        var destination = Path.Combine(target, "files", file);
+                        if (File.Exists(destination) && new FileInfo(destination).Length == new FileInfo(source).Length) continue;
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                        await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan))
+                        await using (var output = new FileStream(destination + ".part", FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+                            await input.CopyToAsync(output, 16 << 20, stoppingToken);
+                        File.Move(destination + ".part", destination, overwrite: true);
+                    }
+                    await File.WriteAllTextAsync(Path.Combine(target, MirroredMarker), "", stoppingToken);
+                    logger.LogInformation("Model {ModelId} is on local disk", model.Id);
+                    WriteLlamaPresets(cache);
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // A full disk or a model deleted mid-copy; the next library change retries.
+                logger.LogError(exception, "Could not copy the model library to local disk for llama.cpp");
+            }
+        }
+    }
+
+    private void WriteLlamaPresets(string cache)
+    {
+        var path = Path.Combine(cache, LlamaPresetsFileName);
+        File.WriteAllText(path + ".tmp", LlamaPresets(cache,
+            _models.Values.Where(m => File.Exists(Path.Combine(cache, m.Id.ToString("N"), MirroredMarker)))));
+        File.Move(path + ".tmp", path, overwrite: true);
     }
 
     private FileStream AcquireLease()
@@ -276,10 +394,12 @@ public sealed class ModelCatalog(
             throw new ArgumentException(error, nameof(request));
         if (!request.Pro && ModelPresets.Match(request) is null)
             throw new ArgumentException("Choose a catalog model, or explicitly set pro=true for an unvalidated Hugging Face model.", nameof(request));
+        // The size is only for showing progress; it doesn't make a download different.
+        request = request with { SizeBytes = ModelPresets.Match(request)?.SizeBytes ?? request.SizeBytes };
         await _changes.WaitAsync(cancellationToken);
         try
         {
-            var existing = _models.Values.FirstOrDefault(m => m.Source == request
+            var existing = _models.Values.FirstOrDefault(m => m.Source with { SizeBytes = null } == request with { SizeBytes = null }
                 && m.State is ModelDownloadState.Queued or ModelDownloadState.Downloading or ModelDownloadState.Ready);
             if (existing is not null)
                 return existing;
@@ -363,6 +483,7 @@ public sealed class ModelCatalog(
             RejectLink(directory);
             Directory.Delete(directory, recursive: true);
             _models.TryRemove(id, out _);
+            MirrorLlamaCache();
             logger.LogInformation("Deleted local model {ModelId}", id);
         }
         finally { _changes.Release(); }
@@ -373,6 +494,8 @@ public sealed class ModelCatalog(
         var model = Require(id);
         if (model.State != ModelDownloadState.Ready)
             throw new InvalidOperationException("The model download is not ready.");
+        if (model.Source.Format != ModelFormat.Gguf)
+            throw new InvalidOperationException("This model is a safetensors repository. Serve it with vLLM instead.");
         return ExistingFile(id, model.Source.File);
     }
 
@@ -396,6 +519,7 @@ public sealed class ModelCatalog(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var mirror = Cache is { } cache ? Task.Run(() => MirrorAsync(cache, stoppingToken), stoppingToken) : Task.CompletedTask;
         // ponytail: one model download at a time; add parallel workers when download throughput requires it.
         await foreach (var signal in _wake.Reader.ReadAllAsync(stoppingToken))
         {
@@ -431,6 +555,15 @@ public sealed class ModelCatalog(
         {
             linked.Token.ThrowIfCancellationRequested();
             await RunDownloadAsync(Require(id), linked.Token);
+            if (Require(id).Source.Format == ModelFormat.Safetensors)
+            {
+                ExistingFile(id, "config.json");
+                if (!Directory.EnumerateFiles(FilesFor(id), "*.safetensors", SearchOption.AllDirectories).Any())
+                    throw new InvalidDataException("The repository has no .safetensors weights at this revision.");
+                if (await SetStateAsync(id, ModelDownloadState.Ready))
+                    logger.LogInformation("Model download {ModelId} is ready", id);
+                return;
+            }
             foreach (var file in ModelFiles(Require(id).Source.File))
                 ExistingFile(id, file);
             var path = ExistingFile(id, Require(id).Source.File);
@@ -441,7 +574,7 @@ public sealed class ModelCatalog(
                     || !Convert.ToHexString(await SHA256.HashDataAsync(file, linked.Token)).Equals(preset.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Downloaded model does not match the catalog size and SHA-256.");
             }
-            var inspection = ModelInspector.Inspect(path, Require(id).Source.Kind);
+            var inspection = ModelInspector.Inspect(path, Require(id).Source.Kind, options.Value.RequireTensorSharp);
             if (await SetStateAsync(id, ModelDownloadState.Ready, inspection: inspection))
                 logger.LogInformation("Model download {ModelId} is ready", id);
         }
@@ -479,7 +612,9 @@ public sealed class ModelCatalog(
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        foreach (var argument in new[] { "download", model.Source.Repository }.Concat(ModelFiles(model.Source.File)))
+        var files = model.Source.Format == ModelFormat.Safetensors
+            ? SnapshotFiles.SelectMany(pattern => new[] { "--include", pattern }) : ModelFiles(model.Source.File);
+        foreach (var argument in new[] { "download", model.Source.Repository }.Concat(files))
             start.ArgumentList.Add(argument);
         foreach (var argument in new[] { "--revision", model.Source.Revision, "--local-dir", FilesFor(model.Id), "--quiet" })
             start.ArgumentList.Add(argument);
@@ -544,6 +679,12 @@ public sealed class ModelCatalog(
         return Regex.Replace(text, @"\x1B\[[0-?]*[ -/]*[@-~]", "").Trim();
     }
 
+    /// <summary>
+    /// What vLLM needs from a repository: weights, configs and tokenizer files. Code (<c>*.py</c>) is left out because
+    /// Lucia never runs vLLM with trust_remote_code, and other weight formats would only double the download.
+    /// </summary>
+    public static readonly string[] SnapshotFiles = ["*.safetensors", "*.json", "*.model", "*.txt", "*.jinja", "*.tiktoken"];
+
     public static IReadOnlyList<string> ModelFiles(string file)
     {
         var shard = Regex.Match(file, @"-00001-of-(\d{5})\.gguf$", RegexOptions.IgnoreCase);
@@ -568,6 +709,7 @@ public sealed class ModelCatalog(
         model = await SaveRecoveryAsync(model, CancellationToken.None);
         _models[id] = model.PersistenceError is null || state is ModelDownloadState.Canceled or ModelDownloadState.Interrupted
             ? model : model with { State = ModelDownloadState.Failed, Error = error ?? "Model state could not be saved. Free disk space or repair storage permissions, then retry." };
+        MirrorLlamaCache();
         return model.PersistenceError is null;
     }
 

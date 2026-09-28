@@ -23,7 +23,7 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
 {
     public const long GiB = 1024L * 1024 * 1024;
 
-    public static ModelInspection Inspect(string path, ModelKind kind)
+    public static ModelInspection Inspect(string path, ModelKind kind, bool requireTensorSharp = true)
     {
         using var file = new GgufFile(path);
         if (file.Tensors.Count == 0)
@@ -42,22 +42,15 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
                 || file.GetUint32("bert.embedding_length") == 0
                 || !file.Tensors.ContainsKey("token_embd.weight"))
                 throw new NotSupportedException("Embeddings require a supported BERT or XLM-R sentence-encoder GGUF with tokenizer, dimensions, pooling, and token embeddings.");
-            long floatWeights = 0;
-            foreach (var tensor in file.Tensors.Values)
-            {
-                long elements = 1;
-                foreach (var dimension in tensor.Shape)
-                    elements = checked(elements * (long)dimension);
-                floatWeights = checked(floatWeights + elements * sizeof(float));
-            }
-            return new(architecture, kind, fileBytes, floatWeights, context, 0, 0, tensorTypes);
+            // CPU embeddings keep GGUF quantized rows and dequantize per row, so resident weights track the file.
+            return new(architecture, kind, fileBytes, fileBytes, context, 0, 0, tensorTypes);
         }
 
-        ModelArchitectureRegistry.Resolve(architecture, file);
+        if (requireTensorSharp) ModelArchitectureRegistry.Resolve(architecture, file);
         if (string.IsNullOrWhiteSpace(file.GetString("tokenizer.ggml.model"))
             || file.GetStringArray("tokenizer.ggml.tokens") is not { Length: > 0 })
             throw new InvalidDataException("The GGUF must include its tokenizer.");
-        if (ChatProtocolRegistry.For(architecture) is null)
+        if (requireTensorSharp && ChatProtocolRegistry.For(architecture) is null)
             throw new NotSupportedException($"Architecture '{architecture}' does not have a chat protocol in this TensorSharp build.");
         var layers = checked((int)file.GetUint32($"{architecture}.block_count"));
         var heads = file.GetUint32($"{architecture}.attention.head_count");
@@ -92,8 +85,10 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
                 ? layerTypes.Count(t => !string.Equals(t, "linear_attention", StringComparison.OrdinalIgnoreCase))
                 : checked(decoderLayers / (int)interval);
         }
-        // ponytail: conservative F32 K/V plus a host/device mirror; calibrate from measured backend allocations.
-        var kvBytes = checked((long)attentionLayers * kvHeads * ((long)keyLength + valueLength) * sizeof(float) * 2);
+        // TensorSharp stores K/V as F16 for quantized models unless KV_CACHE_DTYPE says otherwise; there is no host mirror.
+        // Measured on GB10: a 180K-token qwen35 cache used exactly layers × kv heads × (key + value) × 2 bytes per token.
+        var element = string.Equals(Environment.GetEnvironmentVariable("KV_CACHE_DTYPE"), "f32", StringComparison.OrdinalIgnoreCase) ? 4 : 2;
+        var kvBytes = checked((long)attentionLayers * kvHeads * ((long)keyLength + valueLength) * element);
         if (kvBytes <= 0)
             throw new NotSupportedException("A context estimate is unavailable for this cache layout.");
         return new(architecture, ModelKind.Chat, fileBytes, fileBytes, context, attentionLayers, kvBytes, tensorTypes ?? []);
@@ -106,9 +101,10 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
         if (model.Kind == ModelKind.Chat && (settings.Backend is "cuda" or "ggml_cuda") && settings.MemoryBudgetGiB is null
             && !(OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64))
             throw new InvalidOperationException("Set HostPlatform:MemoryBudgetGiB to the usable device-memory budget on a non-Spark GPU host. Host RAM is not discrete GPU VRAM.");
-        var limit = model.Kind == ModelKind.Chat && settings.MemoryBudgetGiB is { } configured
-            ? checked((long)(configured * GiB)) : detected;
-        if (detected > 0)
+        var explicitBudget = model.Kind == ModelKind.Chat && settings.MemoryBudgetGiB is not null;
+        var limit = explicitBudget ? checked((long)(settings.MemoryBudgetGiB!.Value * GiB)) : detected;
+        // An explicit budget is device VRAM on discrete GPUs, so host RAM doesn't bound it.
+        if (detected > 0 && !explicitBudget)
             limit = Math.Min(limit, detected);
         if (limit <= 0)
             throw new InvalidOperationException("Memory capacity could not be detected. Configure MemoryBudgetGiB explicitly.");

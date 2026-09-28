@@ -542,6 +542,24 @@ internal static class InstallationChecks
             "Only plain named volumes may be redirected to the stack directory.");
         Check(StackRunner.VolumeOverride("""{"services":{}}""", "/srv/lucia/stacks/x") is null, "A stack without volumes needs no override.");
 
+        var nfs = new NodeMount("home-nas", "Media-4K", "nfs", "192.168.0.172:/var/nfs/shared/Media");
+        var smb = new NodeMount("office", "Photos", "smb", "//nas.lan/Photos", "zack", "p@ss word");
+        Check(NasMounts.UnitName(nfs) == @"mnt-lucia-nas-home\x2dnas-Media\x2d4K.mount", "NAS unit names must follow systemd's path escaping.");
+        var nfsUnit = NasMounts.UnitText(nfs);
+        var smbUnit = NasMounts.UnitText(smb);
+        Check(nfsUnit.StartsWith("# Managed by Lucia.", StringComparison.Ordinal) && nfsUnit.Contains("\nWhat=192.168.0.172:/var/nfs/shared/Media\n", StringComparison.Ordinal)
+            && nfsUnit.Contains("\nWhere=/mnt/lucia/nas/home-nas/Media-4K\n", StringComparison.Ordinal) && nfsUnit.Contains("\nType=nfs\n", StringComparison.Ordinal)
+            && nfsUnit.Contains("\nWantedBy=remote-fs.target\n", StringComparison.Ordinal) && nfsUnit.Contains("nofail", StringComparison.Ordinal)
+            && smbUnit.Contains("\nType=cifs\n", StringComparison.Ordinal) && smbUnit.Contains("credentials=/etc/lucia/nas/office.credentials", StringComparison.Ordinal)
+            && !smbUnit.Contains("p@ss", StringComparison.Ordinal), "NAS mount units are wrong or leak the SMB password.");
+        Check(NasMounts.Valid(nfs) && NasMounts.Valid(smb)
+            && !NasMounts.Valid(nfs with { Source = "192.168.0.172:/var/../etc" }) && !NasMounts.Valid(nfs with { Source = "h:/a\nOptions=x" })
+            && !NasMounts.Valid(nfs with { Share = "../x" }) && !NasMounts.Valid(nfs with { Nas = "Bad" }) && !NasMounts.Valid(nfs with { Password = "x" })
+            && !NasMounts.Valid(smb with { Password = "a\nb" }) && !NasMounts.Valid(smb with { Source = "//nas.lan/a b" })
+            && !NasMounts.Valid(smb with { Password = null }) && !NasMounts.Valid(nfs with { Kind = "ftp" }), "Unsafe NAS mounts must be refused.");
+        Check(NasMounts.Unmounted("services: {}") is null
+            && NasMounts.Unmounted("volumes:\n  - /mnt/lucia/nas/unas/Media/Movies:/movies:ro") == "unas/Media", "Compose NAS paths must be found.");
+
         var merged = NodeRequests.MergeLogs("2024-05-01T10:00:00.5Z out two\n2024-05-01T10:00:00.123456789Z \u001b[32mout one\u001b[0m\n",
             "2024-05-01T10:00:00.2Z err\u0007 one\n");
         Check(merged == "2024-05-01T10:00:00.123456789Z out one\n2024-05-01T10:00:00.2Z err one\n2024-05-01T10:00:00.5Z out two",

@@ -130,7 +130,7 @@ internal static class NodeRuntime
         return copy.ToArray();
     }
 
-    private static bool WriteIfChanged(string path, byte[] bytes)
+    internal static bool WriteIfChanged(string path, byte[] bytes)
     {
         try
         {
@@ -141,21 +141,21 @@ internal static class NodeRuntime
         return true;
     }
 
-    private static async Task<string?> InstalledVersionAsync(string package, CancellationToken token)
+    internal static async Task<string?> InstalledVersionAsync(string package, CancellationToken token)
     {
         var output = await TryCaptureAsync("/usr/bin/dpkg-query", ["-W", "-f=${db:Status-Status} ${Version}", package], token);
         var parts = output?.Split(' ', 2);
         return parts is ["installed", { Length: > 0 } version] ? version.Trim() : null;
     }
 
-    private static async Task<string?> TryCaptureAsync(string executable, string[] arguments, CancellationToken token)
+    internal static async Task<string?> TryCaptureAsync(string executable, string[] arguments, CancellationToken token)
     {
         try { return await RunAsync(executable, arguments, TimeSpan.FromSeconds(30), token, allowFailure: true); }
         catch (Exception ex) when (ex is NodeAgentException or System.ComponentModel.Win32Exception
             || ex is OperationCanceledException && !token.IsCancellationRequested) { return null; }
     }
 
-    private static async Task<string?> RunAsync(string executable, string[] arguments, TimeSpan limit, CancellationToken token,
+    internal static async Task<string?> RunAsync(string executable, string[] arguments, TimeSpan limit, CancellationToken token,
         bool allowFailure = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -195,7 +195,7 @@ internal static class NodeRuntime
         return text.ToString();
     }
 
-    private static string? Bounded(string? value, int maximum)
+    internal static string? Bounded(string? value, int maximum)
     {
         var clean = new string((value ?? "").Where(c => !char.IsControl(c) && !char.IsSurrogate(c)).ToArray()).Trim();
         return clean.Length == 0 ? null : clean.Length > maximum ? clean[..maximum] : clean;

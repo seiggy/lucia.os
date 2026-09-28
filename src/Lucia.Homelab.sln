@@ -21,6 +21,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lucia.Desktop.UiChecks", ".
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lucia.Homelab.AuthChecks", "..\tests\Lucia.Homelab.AuthChecks\Lucia.Homelab.AuthChecks.csproj", "{32541534-2A23-4354-90E1-D7E4A543F805}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lucia.Inference.Worker", "Lucia.Inference.Worker\Lucia.Inference.Worker.csproj", "{BD10E078-579A-40A1-A6E4-B46D33F0D15E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -135,6 +137,18 @@ Global
 		{32541534-2A23-4354-90E1-D7E4A543F805}.Release|x64.Build.0 = Release|Any CPU
 		{32541534-2A23-4354-90E1-D7E4A543F805}.Release|x86.ActiveCfg = Release|Any CPU
 		{32541534-2A23-4354-90E1-D7E4A543F805}.Release|x86.Build.0 = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|x64.Build.0 = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Debug|x86.Build.0 = Debug|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|x64.ActiveCfg = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|x64.Build.0 = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|x86.ActiveCfg = Release|Any CPU
+		{BD10E078-579A-40A1-A6E4-B46D33F0D15E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -233,6 +233,39 @@ try
     handler.Respond = _ => FakeHandler.Json(Repository(FileEntry("weights.safetensors"), FileEntry("mmproj.gguf")));
     repository = await browser.GetRepositoryAsync("owner/model");
     Check(repository.Availability == "no_standalone_gguf" && repository.Choices.Count == 0, "Unsupported repository was presented as loadable.");
+
+    string Snapshot(string architecture, params object[] files) => JsonSerializer.Serialize(new
+    {
+        id = "owner/model", sha, gated = false, @private = false,
+        config = new { architectures = new[] { architecture }, quantization_config = new { quant_method = "fp8" } }, siblings = files,
+    });
+    handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3ForCausalLM", FileEntry("config.json", 1), FileEntry("model-00001-of-00002.safetensors", 1000),
+        FileEntry("model-00002-of-00002.safetensors", 500), FileEntry("tokenizer.json", 10), FileEntry("README.md", 99), FileEntry("model.gguf", 7)));
+    repository = await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors);
+    Check(repository is { Availability: "available", Choices: [{ File: "config.json", TotalSizeBytes: 1511, Quantization: "FP8",
+            Download: { Format: ModelFormat.Safetensors, File: "config.json", SizeBytes: 1511 } } choice] }
+        && choice.Files.Count == 4 && ModelCatalog.Validate(choice.Download) is null && repository.GgufMetadata?.Architecture == "Qwen3ForCausalLM",
+        "A vLLM repository didn't become one whole-snapshot choice.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("MadeUpForCausalLM", FileEntry("config.json", 1), FileEntry("model.safetensors", 1)));
+    Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "unsupported_architecture", Choices: [] },
+        "A repository vLLM can't load was offered.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3ForCausalLM", FileEntry("config.json", 1), FileEntry("model.gguf", 1)));
+    Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "no_safetensors", Choices: [] },
+        "A repository without safetensors was offered to vLLM.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3ForCausalLM", FileEntry("config.json", 1), FileEntry("model.safetensors", 1)).TrimEnd('}') + ",\"library_name\":\"mlx\"}");
+    Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "mlx", Choices: [] },
+        "An MLX conversion was offered to vLLM.");
+    await Reject(() => browser.GetRepositoryAsync("owner/model", kind: ModelKind.Embedding, format: ModelFormat.Safetensors), "invalid_format", 400);
+    handler.Respond = _ => FakeHandler.Json("""
+        [{"id":"owner/runs","config":{"architectures":["LlamaForCausalLM"]},"safetensors":{"total":8000000000}},
+         {"id":"owner/unknown","config":{"architectures":["MadeUpForCausalLM"]}},{"id":"owner/bare"},
+         {"id":"mlx-community/runs-4bit","library_name":"mlx","config":{"architectures":["LlamaForCausalLM"]}},
+         {"id":"owner/tagged-mlx","tags":["safetensors","mlx"],"config":{"architectures":["LlamaForCausalLM"]}}]
+        """);
+    search = await browser.SearchAsync("model", ModelKind.Chat, format: ModelFormat.Safetensors);
+    Check(search.Items is [{ Repository: "owner/runs", Architecture: "LlamaForCausalLM", Parameters: 8000000000 }]
+        && handler.Requests.Last().Uri.Query.Contains("filter=safetensors") && handler.Requests.Last().Uri.Query.Contains("expand=config"),
+        "vLLM search kept repositories it can't run or didn't ask for their configs.");
     handler.Respond = _ => FakeHandler.Json(Repository(Enumerable.Range(1, 128)
         .Select(i => FileEntry($"model-Q4_K_M-{i:D5}-of-00128.gguf", i)).ToArray()));
     repository = await browser.GetRepositoryAsync("owner/model");

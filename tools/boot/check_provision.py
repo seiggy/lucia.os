@@ -119,5 +119,16 @@ with tempfile.TemporaryDirectory(prefix="lucia-boot-provision-") as temporary:
             raise AssertionError("Unexpected public boot files were accepted.")
         except boot.HostError:
             pass
+        (pathlib.Path(first["assets_directory"]) / "unexpected.txt").unlink()
+        receipt["purpose"] = "approved-installation-with-managed-enrollment"
+        (state / "host-settings.json").write_text(json.dumps({**host, "host_state": str(root / "host/state"), "artifact_sha256": "c" * 64}))
+        (bundle / "installation-qualification.json").write_text(json.dumps({"schemaVersion": 0}))
+        try:
+            prepare(discovery_qualified=True, installation_qualified=True)
+            raise AssertionError("An unqualified installation bundle was accepted.")
+        except boot.HostError:
+            pass
+        skipped = prepare(discovery_qualified=True, installation_qualified=True, skip_qualification=True)
+        assert skipped["installation_qualification_skipped"] is True and first["installation_qualification_skipped"] is False
 
-print("Boot preparation checks passed: immutable ownership, preserved network, correct controller/CA, and default-closed admission.")
+print("Boot preparation checks passed: immutable ownership, preserved network, correct controller/CA, default-closed admission, and explicit qualification skips.")
