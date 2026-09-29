@@ -664,19 +664,26 @@ class AppClientChecks(unittest.TestCase):
 
     def request(self, **changes):
         return {"schemaVersion": 1, "stack": "observability", "name": "Grafana", "clientId": "lucia-app-observability",
-                "clientSecret": "s" * 43, "redirectUri": "https://grafana.homelab.example.com/login/generic_oauth",
+                "clientSecret": "s" * 43, "redirectUris": ["https://grafana.homelab.example.com/login/generic_oauth"],
                 "launchUrl": "https://grafana.homelab.example.com/", **changes}
 
     def test_requests_grant_only_exact_callbacks_under_the_domain(self):
         import app_clients
         self.assertEqual(app_clients._checked(self.request(), "observability", self.PROFILE), self.request())
+        two = ["https://grafana.homelab.example.com/a", "https://grafana.homelab.example.com/b"]
+        self.assertEqual(app_clients._checked(self.request(redirectUris=two), "observability", self.PROFILE)["redirectUris"], two)
+        for uris in (["http://grafana.homelab.example.com/login/generic_oauth"],
+                     ["https://grafana.example.org/login/generic_oauth"],
+                     ["https://lucia.homelab.example.com/login/generic_oauth"],
+                     ["https://grafana.homelab.example.com:8443/login/generic_oauth"],
+                     ["https://grafana.homelab.example.com/login?next=x"],
+                     ["https://x@grafana.homelab.example.com/login"],
+                     ["https://grafana.homelab.example.com/a", "https://other.homelab.example.com/a"],
+                     ["https://grafana.homelab.example.com/a", "https://grafana.homelab.example.com/a"],
+                     ["app.immich:///oauth-callback"], [], two * 3, "https://grafana.homelab.example.com/a"):
+            with self.assertRaises((ValueError, app.ApplicationDrift), msg=str(uris)):
+                app_clients._checked(self.request(redirectUris=uris), "observability", self.PROFILE)
         for changes in ({"clientId": "grafana"}, {"stack": "other"}, {"clientSecret": "short"}, {"extra": 1},
-                        {"redirectUri": "http://grafana.homelab.example.com/login/generic_oauth"},
-                        {"redirectUri": "https://grafana.example.org/login/generic_oauth"},
-                        {"redirectUri": "https://lucia.homelab.example.com/login/generic_oauth"},
-                        {"redirectUri": "https://grafana.homelab.example.com:8443/login/generic_oauth"},
-                        {"redirectUri": "https://grafana.homelab.example.com/login?next=x"},
-                        {"redirectUri": "https://x@grafana.homelab.example.com/login"},
                         {"launchUrl": "https://evil.homelab.example.com/"}, {"name": "a\nb"}):
             with self.assertRaises((ValueError, app.ApplicationDrift), msg=str(changes)):
                 app_clients._checked(self.request(**changes), "observability", self.PROFILE)

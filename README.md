@@ -324,14 +324,14 @@ for the relay to scrape. vLLM's and llama.cpp's own metrics fill the same panels
 llama.cpp keeps only running token and time totals, so it has no time to first token,
 request time or request count.
 
-**App sign-in.** Catalog apps that support SSO (Grafana today) get an Authentik
+**App sign-in.** Catalog apps that support SSO (Grafana and Immich today) get an Authentik
 client once a domain is active. The controller writes a request per app to
 `data/domains/app-sso-requests/`; the Spark's `lucia-domain-activation` worker,
 which alone holds Authentik admin credentials, reconciles an owner-only OIDC client
-(`lucia-app-<stack>`, bound to `lucia-owners`) and deletes clients no longer
-requested. After a matching success response the controller adds `LUCIA_SSO_*` to the
-app's env and redeploys it. Grafana signs owners in as Admin; its local admin form
-stays at `/login?disableAutoLogin=true`.
+(`lucia-app-<stack>`, bound to `lucia-owners`, with up to four exact callbacks on the
+app's address) and deletes clients no longer requested. After a matching success
+response the controller adds `LUCIA_SSO_*` to the app's env and redeploys it. Grafana
+signs owners in as Admin; its local admin form stays at `/login?disableAutoLogin=true`.
 
 **MusicBrainz mirror.** The catalog's MusicBrainz app runs the website and `/ws/2`
 API over its own copy of the database, with Solr search. A new install imports the
@@ -341,6 +341,15 @@ never in its manifest) it replicates every hour. Replication doesn't update sear
 so the indexer rebuilds the indexes weekly while search keeps answering. Picard can
 use the mirror directly; Lidarr reads metadata from its own API and needs a
 separate metadata bridge to use it.
+
+**Immich.** The catalog's Immich app keeps photos in a folder on a NAS share
+(`/mnt/lucia/nas/<nas>/<share>/...`, which also pins it to servers with that share
+mounted) or, left blank, on its server. Machine learning runs on the CPU or, when
+chosen, an NVIDIA GPU. Backups stop the app so its database is consistent; photos on
+a NAS share aren't part of the app's backup. Its `sso` service writes Lucia's client
+into Immich's OAuth settings (which Immich reads on every sign-in); the phone app signs
+in through the web address's `/api/oauth/mobile-redirect`. Immich finds existing users
+by their Authentik user UUID, then by email.
 
 Managed OpenAI endpoints require `Owner` or `Inference` authorization.
 Authentik access tokens are checked for issuer, audience, signature, expiry,

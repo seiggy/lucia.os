@@ -131,6 +131,26 @@ internal static class StackChecks
             && mb.Routes is [{ Host: "musicbrainz", Port: 5000, GrpcPort: null }] && musicBrainz.BackupMode == "stop",
             "MusicBrainz must keep its token out of the manifest, replicate hourly only with a token and route its website.");
         Rejects(() => StackCatalog.Settings(musicBrainz, new() { ["metabrainz-access-token"] = "a$b" }), "A secret that compose would interpolate was accepted.");
+        var immich = StackCatalog.Find("immich");
+        var im = immich.Render(StackCatalog.Settings(immich, new() { ["library"] = "/mnt/lucia/nas/unas/Media/Photos/library/", ["machine-learning"] = "cuda" }),
+            new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string> { ["DB_PASSWORD"] = new string('a', 48) });
+        var imLocal = immich.Render(StackCatalog.Settings(immich, null), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        check(im.Compose.Contains("      - /mnt/lucia/nas/unas/Media/Photos/library:/data\n", StringComparison.Ordinal)
+            && im.Compose.Contains("-cuda@sha256:", StringComparison.Ordinal) && im.Compose.Contains("driver: nvidia", StringComparison.Ordinal)
+            && im.Require.SequenceEqual(["nas=unas/Media", "gpu.vendor=nvidia"]) && im.Env.StartsWith($"DB_PASSWORD={new string('a', 48)}\n{StackStore.SsoSecret}=", StringComparison.Ordinal)
+            && imLocal.Compose.Contains("      - library:/data\n", StringComparison.Ordinal) && imLocal.Compose.Contains("\n  library:\n", StringComparison.Ordinal)
+            && !imLocal.Compose.Contains("nvidia", StringComparison.Ordinal) && imLocal.Require.Length == 0
+            && StackCatalog.ReadEnv(imLocal.Env)["DB_PASSWORD"].All(char.IsAsciiLetterOrDigit)
+            && imLocal.Routes is [{ Host: "photos", Port: 2283, GrpcPort: null }] && immich.BackupMode == "stop",
+            "Immich must keep photos on the chosen NAS folder or the server, use the GPU only when asked and route its website.");
+        check(immich.Sso(StackCatalog.Settings(immich, null)) == new AppSso("Immich", "photos", "/auth/login", "/user-settings", "/api/oauth/mobile-redirect")
+            && imLocal.Compose.Contains("      APP_URL: ${LUCIA_URL_PHOTOS:-}\n", StringComparison.Ordinal)
+            && imLocal.Compose.Contains("      CLIENT_SECRET: ${SSO_CLIENT_SECRET}\n", StringComparison.Ordinal)
+            && imLocal.Compose.Contains("\n        SQL\n", StringComparison.Ordinal) && imLocal.Compose.Contains("if [ \"$$ENABLED\" = true ]", StringComparison.Ordinal),
+            "Immich must sign in through Lucia only once Lucia sets its client, and send the phone app through its web address.");
+        foreach (var path in new[] { "/srv/photos", "/mnt/lucia/nas/unas", "/mnt/lucia/nas/unas/Media/../etc", "/mnt/lucia/nas/unas/Media/a b" })
+            Rejects(() => immich.Render(StackCatalog.Settings(immich, new() { ["library"] = path }), new(Guid.NewGuid(), "lucialab01", true, null),
+                new Dictionary<string, string>()), $"Immich accepted {path} as its photo library.");
         check(StackStore.SsoLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\n")
                 == "LUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\n" && StackStore.SsoLines("A=1\n") == "",
             "A catalog app's sign-in variables must survive re-rendering.");

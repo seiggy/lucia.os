@@ -2,8 +2,9 @@
 
 The web host asks for one through host/data/domains/app-sso-requests/<stack>.json; the native activation worker
 passes the parsed requests here. reconcile keeps exactly one client per request and removes owned clients whose
-request is gone. It creates only confidential authorization-code clients bound to lucia-owners, with an exact https
-callback under the active domain that isn't one of Lucia's own names, and never changes the Lucia host registration.
+request is gone. It creates only confidential authorization-code clients bound to lucia-owners, with up to four exact
+https callbacks on one app address under the active domain that isn't one of Lucia's own names, and never changes the
+Lucia host registration.
 """
 
 import re
@@ -16,7 +17,7 @@ PREFIX = "lucia-app-"
 STACK = re.compile(r"[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?")
 SECRET = re.compile(r"[A-Za-z0-9_-]{43,128}")
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-FIELDS = {"schemaVersion", "stack", "name", "clientId", "clientSecret", "redirectUri", "launchUrl"}
+FIELDS = {"schemaVersion", "stack", "name", "clientId", "clientSecret", "redirectUris", "launchUrl"}
 
 
 def _marker(stack, installation):
@@ -30,20 +31,23 @@ def _checked(value, stack, profile):
             or value["clientId"] != PREFIX + stack or not isinstance(value["name"], str)
             or not 0 < len(value["name"]) <= 64 or any(ord(c) < 32 for c in value["name"])
             or not isinstance(value["clientSecret"], str) or not SECRET.fullmatch(value["clientSecret"])
-            or not isinstance(value["redirectUri"], str) or not isinstance(value["launchUrl"], str)):
+            or not isinstance(value["redirectUris"], list) or not 0 < len(value["redirectUris"]) <= 4
+            or len(set(map(str, value["redirectUris"]))) != len(value["redirectUris"])
+            or not all(isinstance(uri, str) for uri in value["redirectUris"]) or not isinstance(value["launchUrl"], str)):
         raise ValueError("Invalid app sign-in request.")
     if profile is None:
         raise ApplicationDrift("App sign-in needs an active domain.")
-    redirect = urllib.parse.urlsplit(value["redirectUri"])
-    host = redirect.hostname or ""
     own = {urllib.parse.urlsplit(profile[key]).hostname
            for key in ("canonicalLuciaOrigin", "canonicalAuthentikOrigin", "sparkOrigin")}
-    if (redirect.scheme != "https" or value["redirectUri"] != f"https://{host}{redirect.path}"
-            or not re.fullmatch(r"/[A-Za-z0-9/_-]{1,64}", redirect.path) or len(host) > 253
-            or not host.endswith("." + profile["verifiedZone"]) or host in own
-            or not all(LABEL.fullmatch(label) for label in host.split("."))
-            or value["launchUrl"] != f"https://{host}/"):
-        raise ValueError("App sign-in callbacks must be exact https addresses under the active domain.")
+    host = urllib.parse.urlsplit(value["launchUrl"]).hostname or ""
+    for uri in value["redirectUris"]:
+        redirect = urllib.parse.urlsplit(uri)
+        if (redirect.scheme != "https" or redirect.hostname != host or uri != f"https://{host}{redirect.path}"
+                or not re.fullmatch(r"/[A-Za-z0-9/_-]{1,64}", redirect.path) or len(host) > 253
+                or not host.endswith("." + profile["verifiedZone"]) or host in own
+                or not all(LABEL.fullmatch(label) for label in host.split("."))
+                or value["launchUrl"] != f"https://{host}/"):
+            raise ValueError("App sign-in callbacks must be exact https addresses under the active domain.")
     return value
 
 
@@ -63,7 +67,8 @@ def _client(p, snapshot, offline, installation, value, providers, apps):
         "issuer_mode": "per_provider", "sub_mode": "user_uuid", "signing_key": snapshot["signing_key"]["pk"],
         "encryption_key": None, "include_claims_in_id_token": True,
         "property_mappings": snapshot["defaults"] + [offline["pk"]],
-        "redirect_uris": [{"matching_mode": "strict", "url": value["redirectUri"], "redirect_uri_type": "authorization"}],
+        "redirect_uris": [{"matching_mode": "strict", "url": uri, "redirect_uri_type": "authorization"}
+                          for uri in value["redirectUris"]],
     }
     if provider is None:
         provider = _api(p, "POST", PROVIDERS, body)

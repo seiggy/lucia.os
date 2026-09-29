@@ -59,7 +59,7 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -1070,4 +1070,156 @@ internal sealed class MusicBrainzApp() : CatalogApp("musicbrainz", 1, "MusicBrai
             + (replicating ? $"{TokenKey}={env[TokenKey]}\n" : "");
         return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
     }
+}
+
+/// <summary>
+/// Immich, a photo and video library with face and smart search. Photos go to a folder on a NAS share, or to the server when
+/// none is given. Machine learning runs on the CPU or on an NVIDIA GPU.
+/// </summary>
+internal sealed partial class ImmichApp() : CatalogApp("immich", 1, "Immich",
+    "Back up and browse your photos and videos, with face and smart search.",
+    "Any server with Docker ready and 6 GB of memory. For GPU machine learning, an NVIDIA GPU.",
+    [],
+    [
+        new("web-host", "Web name", "text", "photos", "Immich's web address is this name under your domain."),
+        new("port", "Web port", "port", "2283", "Immich also answers on http://<server>:<port>, which its mobile app can use."),
+        new("library", "Photo library", "text", Optional: true,
+            Help: "A folder on a NAS share, such as /mnt/lucia/nas/unas/Media/Photos/library. Leave it blank to keep photos on this server."),
+        new("machine-learning", "Machine learning", "choice", "cpu", Options:
+        [
+            new("cpu", "CPU", "Runs on any server."),
+            new("cuda", "NVIDIA GPU", "Faster face and smart search. The server needs an NVIDIA GPU."),
+        ]),
+    ])
+{
+    private const string Server = "ghcr.io/immich-app/immich-server:v3.2.4@sha256:d317916b28090c33eb36b308464ea391f8b7df1d850fcfea227a39ec879718c2";
+    private const string Ml = "ghcr.io/immich-app/immich-machine-learning:v3.2.4@sha256:e16c2f166a8174901959fdf85e2e4c7bd1ebc4b37e0b6655de97c41408a260c4";
+    private const string MlCuda = "ghcr.io/immich-app/immich-machine-learning:v3.2.4-cuda@sha256:b9fdebfe7f07ff71f77e9d67d509d83c5e055da486a07c12080669c82a80c65e";
+    private const string Db = "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23";
+    private const string Valkey = "docker.io/valkey/valkey:9@sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf";
+
+    // The database is only consistent while it's stopped; models download again.
+    public override string BackupMode => "stop";
+    public override string[] BackupExclude => ["volumes/model-cache"];
+
+    public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
+        new("Immich", settings["web-host"].ToLowerInvariant(), "/auth/login", "/user-settings", "/api/oauth/mobile-redirect");
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (host, port, library) = (settings["web-host"].ToLowerInvariant(), settings["port"], settings["library"].TrimEnd('/'));
+        var share = NasFolder().Match(library);
+        if (library.Length > 0 && !share.Success)
+            throw new HardwareOnboardingException(400, "invalid_setting", "Photo library must be a folder under a NAS share, such as /mnt/lucia/nas/unas/Media/Photos.");
+        var cuda = settings["machine-learning"] == "cuda";
+        var devices = !cuda ? "" : """
+                deploy:
+                  resources:
+                    reservations:
+                      devices:
+                        - driver: nvidia
+                          count: 1
+                          capabilities: [gpu]
+
+            """;
+        var compose = $$"""
+            # Installed from Lucia's catalog (immich, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              server:
+                image: {{Server}}
+                restart: unless-stopped
+                environment:
+                  DB_HOSTNAME: database
+                  DB_USERNAME: postgres
+                  DB_PASSWORD: ${DB_PASSWORD}
+                  DB_DATABASE_NAME: immich
+                  REDIS_HOSTNAME: redis
+                  IMMICH_MACHINE_LEARNING_URL: http://machine-learning:3003
+                volumes:
+                  - {{(library.Length > 0 ? library : "library")}}:/data
+                  - /etc/localtime:/etc/localtime:ro
+                ports:
+                  - "{{port}}:2283"
+                depends_on:
+                  - redis
+                  - database
+              machine-learning:
+                image: {{(cuda ? MlCuda : Ml)}}
+                restart: unless-stopped
+                volumes:
+                  - model-cache:/cache
+            {{devices}}  redis:
+                image: {{Valkey}}
+                restart: unless-stopped
+                healthcheck:
+                  test: redis-cli ping | grep -q PONG || exit 1
+              database:
+                image: {{Db}}
+                restart: unless-stopped
+                environment:
+                  POSTGRES_USER: postgres
+                  POSTGRES_PASSWORD: ${DB_PASSWORD}
+                  POSTGRES_DB: immich
+                  POSTGRES_INITDB_ARGS: --data-checksums
+                shm_size: 128mb
+                volumes:
+                  - pgdata:/var/lib/postgresql/data
+              # Once Lucia registers Immich's Authentik client, writes it into Immich's sign-in settings (read on every
+              # sign-in), then waits. The phone app signs in through the web address's mobile redirect.
+              sso:
+                image: {{Db}}
+                restart: unless-stopped
+                init: true
+                environment:
+                  PGHOST: database
+                  PGUSER: postgres
+                  PGPASSWORD: ${DB_PASSWORD}
+                  PGDATABASE: immich
+                  ENABLED: ${LUCIA_SSO_ENABLED:-false}
+                  CLIENT_ID: ${LUCIA_SSO_CLIENT_ID:-}
+                  CLIENT_SECRET: ${SSO_CLIENT_SECRET}
+                  ORIGIN: ${LUCIA_SSO_ORIGIN:-}
+                  APP_URL: ${{{StackStore.RouteVariable(host)}}:-}
+                entrypoint: ["/bin/sh", "-c"]
+                command:
+                  - |
+                    set -e
+                    rm -f /tmp/done
+                    until [ "$$(psql -Atc "select to_regclass('system_metadata') is not null" 2>/dev/null)" = t ]; do sleep 5; done
+                    if [ "$$ENABLED" = true ]; then
+                      psql -v ON_ERROR_STOP=1 -q -v id="$$CLIENT_ID" -v secret="$$CLIENT_SECRET" \
+                        -v issuer="$$ORIGIN/application/o/$$CLIENT_ID/" -v account="$$ORIGIN/if/user/" \
+                        -v mobile="$$APP_URL/api/oauth/mobile-redirect" <<'SQL'
+                    insert into system_metadata (key, value) values ('system-config', '{}') on conflict (key) do nothing;
+                    update system_metadata set value = jsonb_set(value, '{oauth}', coalesce(value -> 'oauth', '{}') || jsonb_build_object(
+                      'enabled', true, 'autoLaunch', true, 'issuerUrl', :'issuer', 'clientId', :'id', 'clientSecret', :'secret',
+                      'accountManagementUrl', :'account', 'mobileOverrideEnabled', true, 'mobileRedirectUri', :'mobile'))
+                      where key = 'system-config';
+                    SQL
+                    fi
+                    touch /tmp/done
+                    exec sleep infinity
+                healthcheck:
+                  test: ["CMD", "test", "-e", "/tmp/done"]
+                  interval: 10s
+                  start_period: 10m
+                depends_on:
+                  - database
+            volumes:
+              pgdata:
+              model-cache:
+            {{(library.Length > 0 ? "" : "  library:\n")}}
+            """;
+        // Immich's database password allows only letters and digits.
+        var password = env.GetValueOrDefault("DB_PASSWORD") is { Length: >= 32 } kept && kept.All(char.IsAsciiLetterOrDigit) ? kept
+            : Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(24));
+        string[] require = [.. share.Success ? [$"nas={share.Groups["nas"].Value}/{share.Groups["share"].Value}"] : Array.Empty<string>(),
+            .. cuda ? ["gpu.vendor=nvidia"] : Array.Empty<string>()];
+        return new(compose.ReplaceLineEndings("\n"), $"DB_PASSWORD={password}\n{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n",
+            require, [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
+    }
+
+    [GeneratedRegex(@"\A/mnt/lucia/nas/(?<nas>[A-Za-z0-9][A-Za-z0-9._-]{0,63})/(?<share>[A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*\z")]
+    private static partial Regex NasFolder();
 }

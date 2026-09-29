@@ -6,8 +6,12 @@ using Microsoft.AspNetCore.DataProtection;
 
 namespace Lucia.Homelab.Server.Stacks;
 
-/// <summary>A catalog app that signs in through Lucia's Authentik: its name there, its web address name and its OIDC callback path.</summary>
-public sealed record AppSso(string Name, string Host, string Callback);
+/// <summary>A catalog app that signs in through Lucia's Authentik: its name there, its web address name and its OIDC callback paths.</summary>
+public sealed record AppSso(string Name, string Host, params string[] Callbacks)
+{
+    public bool Equals(AppSso? other) => other is not null && (Name, Host) == (other.Name, other.Host) && Callbacks.SequenceEqual(other.Callbacks);
+    public override int GetHashCode() => HashCode.Combine(Name, Host, Callbacks.Length);
+}
 
 public sealed partial class StackStore
 {
@@ -89,7 +93,7 @@ public sealed class AppSsoRegistrations(StackStore stacks, DomainOnboardingStore
             var bytes = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 schemaVersion = 1, stack, name = sso.Name, clientId = ClientPrefix + stack, clientSecret = secret,
-                redirectUri = url + sso.Callback, launchUrl = url + "/",
+                redirectUris = sso.Callbacks.Select(callback => url + callback).ToArray(), launchUrl = url + "/",
             }, DomainOnboardingStore.Json);
             var path = Path.Combine(requests, stack + ".json");
             DomainOnboardingStore.RejectLinks(path);
