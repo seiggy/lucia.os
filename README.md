@@ -324,7 +324,7 @@ for the relay to scrape. vLLM's and llama.cpp's own metrics fill the same panels
 llama.cpp keeps only running token and time totals, so it has no time to first token,
 request time or request count.
 
-**App sign-in.** Catalog apps that support SSO (Grafana and Immich today) get an Authentik
+**App sign-in.** Catalog apps that support SSO (Grafana, Immich and LiteLLM today) get an Authentik
 client once a domain is active. The controller writes a request per app to
 `data/domains/app-sso-requests/`; the Spark's `lucia-domain-activation` worker,
 which alone holds Authentik admin credentials, reconciles an owner-only OIDC client
@@ -350,6 +350,18 @@ a NAS share aren't part of the app's backup. Its `sso` service writes Lucia's cl
 into Immich's OAuth settings (which Immich reads on every sign-in); the phone app signs
 in through the web address's `/api/oauth/mobile-redirect`. Immich finds existing users
 by their Authentik user UUID, then by email.
+
+**App telemetry.** Catalog apps that export OpenTelemetry get `LUCIA_OTLP_ENDPOINT`
+and `LUCIA_OTLP_AUTHORIZATION` in their env while an Observability app is installed
+(the controller re-checks every 15 seconds and redeploys the app when they change);
+the lines are removed when Observability goes away.
+
+**LiteLLM.** The catalog's LiteLLM app is an OpenAI-compatible gateway over the lab's
+inference endpoints, with its own Postgres. Models are added in its UI. Owners sign
+in through Authentik as proxy admins (their Authentik account needs an email), and
+while that's on, the UI's master-key/password login is off; the master key,
+`LITELLM_MASTER_KEY` in the app's env, still works for the API. Traces and metrics go to
+Observability as service `litellm`.
 
 Managed OpenAI endpoints require `Owner` or `Inference` authorization.
 Authentik access tokens are checked for issuer, audience, signature, expiry,

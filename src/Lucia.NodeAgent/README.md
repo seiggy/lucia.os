@@ -262,7 +262,7 @@ Each stack lives in `/srv/lucia/stacks/<name>/` (root-only, `0700`):
 - `compose.lucia.json`: points each plain named volume at a bind directory under
   `volumes/<key>`, so data is visible on disk and easy to back up. External
   volumes and volumes with their own driver or options are left alone.
-- `.lucia-applied.json`: the revision and action counters last applied.
+- `.lucia-applied.json`: the revision, action counters and compose/env hash last applied.
 
 The compose project is `lucia-<name>`. Actions map to Compose commands:
 
@@ -271,6 +271,7 @@ The compose project is `lucia-<name>`. Actions map to Compose commands:
 | Stopped | `down --remove-orphans` |
 | Update | `pull`, then `up -d` |
 | Restart | `up -d --force-recreate` |
+| Compose file or env changed | `up -d --force-recreate` (Compose alone misses inline `configs` changes) |
 | Any other change | `up -d --remove-orphans` |
 
 A failed apply is reported with its error and retried after two minutes. When a

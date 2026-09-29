@@ -19,6 +19,8 @@ public sealed partial class StackStore
     internal const string SsoPrefix = "LUCIA_SSO_";
     /// <summary>The app's OIDC client secret, generated with its other secrets when it renders.</summary>
     internal const string SsoSecret = "SSO_CLIENT_SECRET";
+    /// <summary>Variables Lucia adds to a telemetry-sending app's environment while an Observability app runs.</summary>
+    internal const string OtlpPrefix = "LUCIA_OTLP_";
 
     /// <summary>Every installed catalog app that signs in through Lucia, with its client secret.</summary>
     internal async Task<(string Stack, AppSso Sso, string Secret)[]> SsoApps(CancellationToken ct) =>
@@ -29,8 +31,13 @@ public sealed partial class StackStore
             ? (stack.Name, sso, secret) : default)
             .Where(item => item.Name is not null)];
 
-    /// <summary>Replaces the stack's sign-in variables. The stack reapplies when they change; a moving or restoring stack waits.</summary>
-    internal async Task SetSso(string name, string lines, CancellationToken ct)
+    internal Task SetSso(string name, string lines, CancellationToken ct) => SetLucia(name, SsoPrefix, lines, ct);
+
+    /// <summary>
+    /// Replaces the stack's variables that start with <paramref name="prefix"/>, which Lucia owns. The stack reapplies when
+    /// they change; a moving or restoring stack waits.
+    /// </summary>
+    internal async Task SetLucia(string name, string prefix, string lines, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
@@ -38,7 +45,8 @@ public sealed partial class StackStore
             var stacks = ReadUnlocked().ToList();
             if (stacks.FirstOrDefault(stack => stack.Name == name) is not { Move: null, Restore: null } stack) return;
             var env = _protector.Unprotect(stack.ProtectedEnv);
-            var kept = string.Join('\n', env.Split('\n').Where(line => !line.StartsWith(SsoPrefix, StringComparison.Ordinal)));
+            if (string.Concat(env.Split('\n').Where(line => line.StartsWith(prefix, StringComparison.Ordinal)).Select(line => line + "\n")) == lines) return;
+            var kept = string.Join('\n', env.Split('\n').Where(line => !line.StartsWith(prefix, StringComparison.Ordinal)));
             var wanted = lines.Length == 0 || kept.Length == 0 || kept.EndsWith('\n') ? kept + lines : $"{kept}\n{lines}";
             if (wanted == env) return;
             stacks[stacks.IndexOf(stack)] = stack with
@@ -50,9 +58,10 @@ public sealed partial class StackStore
         finally { _gate.Release(); }
     }
 
-    /// <summary>The stack's sign-in variables, kept when its catalog app re-renders.</summary>
-    internal static string SsoLines(string env) =>
-        string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal)).Select(line => line + "\n"));
+    /// <summary>The stack's sign-in and telemetry variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
+    internal static string LuciaLines(string env) =>
+        string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal) || line.StartsWith(OtlpPrefix, StringComparison.Ordinal))
+            .Select(line => line + "\n"));
 }
 
 /// <summary>

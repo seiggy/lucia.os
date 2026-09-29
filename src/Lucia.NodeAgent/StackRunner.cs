@@ -21,7 +21,12 @@ internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[]
 internal sealed record NodeDesiredStack(string Name, long Revision, string Desired, long RestartCount, long PullCount,
     string Compose, string Env, Guid? Send = null, Guid? Receive = null, NodeBackupRequest? Backup = null, NodeRestoreRequest? Restore = null,
     string? Address = null);
-internal sealed record AppliedStack(long Revision, string Desired, long RestartCount, long PullCount);
+internal sealed record AppliedStack(long Revision, string Desired, long RestartCount, long PullCount, string? Files = null)
+{
+    /// <summary>A hash of the compose file and env, since Compose doesn't recreate a container when only its inline configs change.</summary>
+    public static string Hash(NodeDesiredStack stack) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(stack.Compose + "\0" + stack.Env)));
+}
 internal sealed record NodeLink(DiscoveryClient Client, Guid Node, Func<string> Certificate, System.Security.Cryptography.ECDsa Key);
 
 /// <summary>
@@ -121,7 +126,7 @@ internal static partial class StackRunner
             if (failures.TryGetValue(name, out var stale) && stale.Key != "remove") failures.TryRemove(name, out _);
         foreach (var stack in valid)
         {
-            var target = new AppliedStack(stack.Revision, stack.Desired, stack.RestartCount, stack.PullCount);
+            var target = new AppliedStack(stack.Revision, stack.Desired, stack.RestartCount, stack.PullCount, AppliedStack.Hash(stack));
             var applied = ReadApplied(stack.Name);
             // A receiving node waits for the data before anything else; Lucia hands it the stack once it reports the marker.
             if (stack.Receive is { } incoming)
@@ -228,6 +233,7 @@ internal static partial class StackRunner
             foreach (var path in redirect.Value.Paths) Directory.CreateDirectory(path);
             WritePrivate(overridePath, redirect.Value.Json);
         }
+        var files = AppliedStack.Hash(stack);
         if (stack.Desired == "Stopped")
             await ComposeAsync(stack.Name, ["down", "--remove-orphans"], TimeSpan.FromMinutes(5), token);
         else
@@ -238,13 +244,15 @@ internal static partial class StackRunner
             if (stack.Address is { } address && !StackAddresses.Held(address)) throw new NodeAgentException(StackAddresses.Problem(address));
             if (applied is not null && stack.PullCount != applied.PullCount)
                 await ComposeAsync(stack.Name, ["pull", "--quiet"], TimeSpan.FromMinutes(30), token);
-            string[] up = applied is not null && stack.RestartCount != applied.RestartCount
+            // A saved change to the compose file or env recreates every container, as a restart does; stacks applied before
+            // the hash was recorded just catch up without a restart.
+            string[] up = applied is not null && (stack.RestartCount != applied.RestartCount || applied.Files is not null && applied.Files != files)
                 ? ["up", "-d", "--remove-orphans", "--quiet-pull", "--force-recreate"]
                 : ["up", "-d", "--remove-orphans", "--quiet-pull"];
             await ComposeAsync(stack.Name, up, TimeSpan.FromMinutes(30), token);
         }
         WritePrivate(Path.Combine(directory, ".lucia-applied.json"),
-            JsonSerializer.Serialize(new AppliedStack(stack.Revision, stack.Desired, stack.RestartCount, stack.PullCount), AgentJson.Options));
+            JsonSerializer.Serialize(new AppliedStack(stack.Revision, stack.Desired, stack.RestartCount, stack.PullCount, files), AgentJson.Options));
     }
 
     private static async Task RemoveAsync(string name, CancellationToken token)

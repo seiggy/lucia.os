@@ -48,6 +48,7 @@ builder.Services.AddSingleton<OwnerSshKeys>();
 builder.AddStacks();
 builder.Services.AddHostedService<ManagedNodeDns>();
 builder.Services.AddHostedService<Lucia.Homelab.Server.Stacks.AppSsoRegistrations>();
+builder.Services.AddHostedService<Lucia.Homelab.Server.Stacks.AppTelemetry>();
 builder.Services.AddSingleton<ManagedNodeDhcp>();
 builder.Services.AddHostedService(services => services.GetRequiredService<ManagedNodeDhcp>());
 builder.AddSparkTelemetry();

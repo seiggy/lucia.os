@@ -118,8 +118,11 @@ public sealed class HardwareInspector
     private NetworkInterfaceReport[] ReadInterfaces()
     {
         var networkAddresses = addresses();
-        var entries = Entries(Path.Combine(roots.Sys, "class", "net"), 17)
-            .Where(entry => Path.GetFileName(entry) != "lo").ToArray();
+        // Docker adds a bridge per network and a veth per container; they're not the server's hardware.
+        var entries = Entries(Path.Combine(roots.Sys, "class", "net"), 1024)
+            .Where(entry => Path.GetFileName(entry) is var name && name != "lo" && name != "docker0"
+                && !name.StartsWith("veth", StringComparison.Ordinal) && !Regex.IsMatch(name, @"\Abr-[0-9a-f]{12}\z", RegexOptions.CultureInvariant))
+            .ToArray();
         if (entries.Length is < 1 or > 16)
             throw new NodeAgentException("Inventory requires 1..16 non-loopback interfaces; interfaces will not be omitted to fit the limit.");
         return entries.Select(entry =>

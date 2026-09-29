@@ -36,6 +36,16 @@ public sealed partial class StackStore
         return value;
     }
 
+    /// <summary>Gives every installed catalog app that sends telemetry the Observability app's address, or takes it away.</summary>
+    internal async Task SyncTelemetry(CancellationToken ct)
+    {
+        var lines = await TelemetryEndpoint(ct) is { } destination
+            ? $"{OtlpPrefix}ENDPOINT={destination.Endpoint.AbsoluteUri.TrimEnd('/')}\n{OtlpPrefix}AUTHORIZATION={destination.Authorization}\n" : "";
+        foreach (var stack in await Read(ct))
+            if (stack.Manifest.Template is { } template && StackCatalog.Apps.FirstOrDefault(app => app.Id == template.Id) is { Telemetry: true })
+                await SetLucia(stack.Name, OtlpPrefix, lines, ct);
+    }
+
     /// <summary>Its web address once the domain is active, since that one follows the app between servers; the server's port until then.</summary>
     private TelemetryDestination? Destination(IEnumerable<StoredStack> stacks, string? ns, IEnumerable<ManagedNodeAddress> addresses)
     {
@@ -107,4 +117,23 @@ public sealed partial class StackStore
     // Model names go into the relay's YAML; these characters need no escaping there, in compose or in the collector.
     [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}\z")]
     private static partial Regex ModelName();
+}
+
+/// <summary>Keeps catalog apps that send telemetry pointed at the Observability app while one runs.</summary>
+public sealed class AppTelemetry(StackStore stacks, ILogger<AppTelemetry> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stop)
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            try { await stacks.SyncTelemetry(stop); }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+            catch (Exception error)
+            {
+                logger.LogWarning("App telemetry addresses could not be updated ({ErrorType}); retrying.", error.GetType().Name);
+            }
+            try { await Task.Delay(TimeSpan.FromSeconds(15), stop); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
 }

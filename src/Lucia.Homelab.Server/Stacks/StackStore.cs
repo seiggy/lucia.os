@@ -176,7 +176,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                     throw new HardwareOnboardingException(409, "already_installed", $"{node} already runs {app.Name} as {other.Name}.");
                 var previous = existing is null ? "" : _protector.Unprotect(existing.ProtectedEnv);
                 var output = app.Render(settings!, target, StackCatalog.KeepSecrets(app, settings!, StackCatalog.ReadEnv(previous)));
-                (compose, env, require) = (output.Compose, output.Env + SsoLines(previous), StackRequirements.Normalize(output.Require));
+                (compose, env, require) = (output.Compose, output.Env + LuciaLines(previous), StackRequirements.Normalize(output.Require));
                 manifest = manifest with { Placement = manifest.Placement with { Require = require },
                     Routes = await ValidRoutes(output.Routes, name, stacks, ct) };
             }

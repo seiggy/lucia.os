@@ -53,13 +53,18 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     public virtual CatalogGpu[]? Gpus(ManagedNodeFacts node) => null;
     /// <summary>The app's sign-in through Lucia's Authentik, when it has one. Its render must generate <c>SSO_CLIENT_SECRET</c>.</summary>
     public virtual AppSso? Sso(IReadOnlyDictionary<string, string> settings) => null;
+    /// <summary>
+    /// True when the app sends OpenTelemetry: while an Observability app runs, Lucia keeps its OTLP/HTTP address and
+    /// <c>Authorization</c> header in the app's environment as <c>LUCIA_OTLP_ENDPOINT</c> and <c>LUCIA_OTLP_AUTHORIZATION</c>.
+    /// </summary>
+    public virtual bool Telemetry => false;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
     internal abstract CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env);
 }
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -1222,4 +1227,117 @@ internal sealed partial class ImmichApp() : CatalogApp("immich", 1, "Immich",
 
     [GeneratedRegex(@"\A/mnt/lucia/nas/(?<nas>[A-Za-z0-9][A-Za-z0-9._-]{0,63})/(?<share>[A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*\z")]
     private static partial Regex NasFolder();
+}
+/// <summary>
+/// LiteLLM, one OpenAI-compatible gateway in front of every model endpoint, with virtual keys, budgets and usage. Models
+/// are added in its admin UI and kept in its database. Owners sign in to the UI through Lucia's Authentik as proxy
+/// admins; while an Observability app runs, it sends its traces and metrics there.
+/// </summary>
+internal sealed class LiteLlmApp() : CatalogApp("litellm", 1, "LiteLLM",
+    "One OpenAI-compatible gateway for all your models, with keys, budgets and usage tracking.",
+    "Any server with Docker ready and 2 GB of memory.",
+    [],
+    [
+        new("web-host", "Web name", "text", "litellm", "LiteLLM's web address is this name under your domain."),
+        new("port", "Web port", "port", "4000", "LiteLLM also answers on http://<server>:<port>."),
+    ])
+{
+    private const string Image = "docker.litellm.ai/berriai/litellm-database:v1.102.1@sha256:c38fe5eff11874941a21f5630ceb842f640dee7d5d5cde440b60ed0a71798f33";
+    private const string Postgres = "postgres:16.15@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54";
+
+    public override string BackupMode => "stop";
+    public override bool Telemetry => true;
+
+    public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
+        new("LiteLLM", settings["web-host"].ToLowerInvariant(), "/sso/callback");
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (host, port) = (settings["web-host"].ToLowerInvariant(), settings["port"]);
+        var baseUrl = "${" + StackStore.RouteVariable(host) + $":-http://{node.Hostname}:{port}}}";
+        var compose = $$"""
+            # Installed from Lucia's catalog (litellm, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              litellm:
+                image: {{Image}}
+                restart: unless-stopped
+                environment:
+                  DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@db:5432/litellm
+                  LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+                  # Encrypts the provider keys it stores; it must never change.
+                  LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+                  STORE_MODEL_IN_DB: "True"
+                  PROXY_BASE_URL: {{baseUrl}}
+                  # Lucia sets LUCIA_SSO_* once LiteLLM's Authentik client exists; until then the entrypoint drops the client
+                  # so the UI keeps its admin form (admin and the master key). Owners sign in as proxy admins.
+                  SSO: ${LUCIA_SSO_ENABLED:-false}
+                  GENERIC_CLIENT_ID: ${LUCIA_SSO_CLIENT_ID:-}
+                  GENERIC_CLIENT_SECRET: ${SSO_CLIENT_SECRET}
+                  GENERIC_AUTHORIZATION_ENDPOINT: ${LUCIA_SSO_ORIGIN:-}/application/o/authorize/
+                  GENERIC_TOKEN_ENDPOINT: ${LUCIA_SSO_ORIGIN:-}/application/o/token/
+                  GENERIC_USERINFO_ENDPOINT: ${LUCIA_SSO_ORIGIN:-}/application/o/userinfo/
+                  GENERIC_SCOPE: openid email profile
+                  GENERIC_ROLE_MAPPINGS_GROUP_CLAIM: groups
+                  GENERIC_ROLE_MAPPINGS_ROLES: "{'proxy_admin': ['lucia-owners']}"
+                  GENERIC_ROLE_MAPPINGS_DEFAULT_ROLE: internal_user_viewer
+                  # Lucia sets LUCIA_OTLP_* while an Observability app runs; the config turns the exporter on only then.
+                  LITELLM_OTEL_INTEGRATION_ENABLE_METRICS: "true"
+                  OTEL_EXPORTER: otlp_http
+                  OTEL_ENDPOINT: ${LUCIA_OTLP_ENDPOINT:-}/v1/traces
+                  OTEL_HEADERS: Authorization=${LUCIA_OTLP_AUTHORIZATION:-}
+                  OTEL_SERVICE_NAME: litellm
+                entrypoint:
+                  - /bin/sh
+                  - -c
+                  - '[ "$$SSO" = true ] || unset GENERIC_CLIENT_ID GENERIC_CLIENT_SECRET; exec docker/prod_entrypoint.sh "$$@"'
+                  - litellm
+                command: ["--config", "/app/config.yaml", "--port", "4000"]
+                configs:
+                  - source: config
+                    target: /app/config.yaml
+                ports:
+                  - "{{port}}:4000"
+                healthcheck:
+                  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"]
+                  interval: 30s
+                  start_period: 5m
+                depends_on:
+                  db:
+                    condition: service_healthy
+              db:
+                image: {{Postgres}}
+                restart: unless-stopped
+                environment:
+                  POSTGRES_USER: litellm
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                  POSTGRES_DB: litellm
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+                  interval: 5s
+                  retries: 10
+                volumes:
+                  - pgdata:/var/lib/postgresql/data
+            configs:
+              config:
+                content: |
+                  general_settings:
+                    background_health_checks: true
+                    health_check_interval: 300
+                    health_check_details: false
+                    disable_env_credential_login: ${LUCIA_SSO_ENABLED:-false}
+                  litellm_settings:
+                    callbacks: [${LUCIA_OTLP_ENDPOINT:+otel}]
+            volumes:
+              pgdata:
+
+            """;
+        var master = env.GetValueOrDefault("LITELLM_MASTER_KEY") is { Length: >= 35 } kept && kept.StartsWith("sk-", StringComparison.Ordinal) ? kept
+            : "sk-" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(24));
+        var envText = $"POSTGRES_PASSWORD={StackCatalog.Secret(env, "POSTGRES_PASSWORD")}\n"
+            + $"LITELLM_MASTER_KEY={master}\n"
+            + $"LITELLM_SALT_KEY={StackCatalog.Secret(env, "LITELLM_SALT_KEY")}\n"
+            + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
+        return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
+    }
 }

@@ -151,9 +151,23 @@ internal static class StackChecks
         foreach (var path in new[] { "/srv/photos", "/mnt/lucia/nas/unas", "/mnt/lucia/nas/unas/Media/../etc", "/mnt/lucia/nas/unas/Media/a b" })
             Rejects(() => immich.Render(StackCatalog.Settings(immich, new() { ["library"] = path }), new(Guid.NewGuid(), "lucialab01", true, null),
                 new Dictionary<string, string>()), $"Immich accepted {path} as its photo library.");
-        check(StackStore.SsoLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\n")
-                == "LUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\n" && StackStore.SsoLines("A=1\n") == "",
-            "A catalog app's sign-in variables must survive re-rendering.");
+        check(StackStore.LuciaLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\n")
+                == "LUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\n" && StackStore.LuciaLines("A=1\n") == "",
+            "A catalog app's sign-in and telemetry variables must survive re-rendering.");
+        var liteLlm = StackCatalog.Find("litellm");
+        var ll = liteLlm.Render(StackCatalog.Settings(liteLlm, null), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        var llEnv = StackCatalog.ReadEnv(ll.Env);
+        var llAgain = liteLlm.Render(StackCatalog.Settings(liteLlm, null), new(Guid.NewGuid(), "lucialab01", true, null), llEnv);
+        check(llAgain.Env == ll.Env && llEnv["LITELLM_MASTER_KEY"].StartsWith("sk-", StringComparison.Ordinal) && llEnv["LITELLM_SALT_KEY"].Length >= 32
+            && llEnv.ContainsKey(StackStore.SsoSecret) && liteLlm.Telemetry && !immich.Telemetry && liteLlm.BackupMode == "stop"
+            && liteLlm.Sso(StackCatalog.Settings(liteLlm, null)) == new AppSso("LiteLLM", "litellm", "/sso/callback")
+            && ll.Compose.Contains("      PROXY_BASE_URL: ${LUCIA_URL_LITELLM:-http://lucialab01:4000}\n", StringComparison.Ordinal)
+            && ll.Compose.Contains("'[ \"$$SSO\" = true ] || unset GENERIC_CLIENT_ID GENERIC_CLIENT_SECRET;", StringComparison.Ordinal)
+            && ll.Compose.Contains("      OTEL_HEADERS: Authorization=${LUCIA_OTLP_AUTHORIZATION:-}\n", StringComparison.Ordinal)
+            && ll.Compose.Contains("        callbacks: [${LUCIA_OTLP_ENDPOINT:+otel}]\n", StringComparison.Ordinal)
+            && ll.Compose.Contains("        disable_env_credential_login: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
+            && ll.Routes is [{ Host: "litellm", Port: 4000, GrpcPort: null }],
+            "LiteLLM must keep its keys, sign in through Lucia only once its client exists and export telemetry only with an Observability app.");
         Rejects(() => StackStore.ValidateName(StackStore.RelayName), "An app could take the telemetry relay's name.");
         var relayConfig = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"lucialab01\"", true,
             [new("vllm", "127.0.0.1:8000"), new("llama-cpp", "127.0.0.1:8080", ["org/model:Q4_K_M"])],

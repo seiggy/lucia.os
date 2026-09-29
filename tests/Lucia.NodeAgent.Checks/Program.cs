@@ -122,6 +122,13 @@ try
     Write(roots.Sys, "class/net/eth16/address", "AA:BB:CC:00:11:22");
     Rejects(() => Inspector().Inspect(), "Seventeen NICs were accepted or silently dropped.");
     for (var i = 1; i <= 16; i++) Directory.Delete(Path.Combine(roots.Sys, "class", "net", $"eth{i}"), true);
+    for (var i = 0; i < 20; i++) Write(roots.Sys, $"class/net/veth{i:x7}/address", "AA:BB:CC:00:11:22");
+    Write(roots.Sys, "class/net/docker0/address", "AA:BB:CC:00:11:22");
+    Write(roots.Sys, "class/net/br-6f34759cb496/address", "AA:BB:CC:00:11:22");
+    Check(Inspector().Inspect().Interfaces.Single().Name == "eth0", "Docker's bridges and veths were counted as NICs.");
+    for (var i = 0; i < 20; i++) Directory.Delete(Path.Combine(roots.Sys, "class", "net", $"veth{i:x7}"), true);
+    Directory.Delete(Path.Combine(roots.Sys, "class", "net", "docker0"), true);
+    Directory.Delete(Path.Combine(roots.Sys, "class", "net", "br-6f34759cb496"), true);
     var longNic = Path.Combine(roots.Sys, "class", "net", new string('n', 64));
     Directory.Move(nicDirectory, longNic);
     Check(Inspector().Inspect().Interfaces.Single().Name.Length == 64, "A 64-character NIC name failed.");
