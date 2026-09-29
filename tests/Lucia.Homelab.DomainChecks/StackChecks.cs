@@ -71,6 +71,97 @@ internal static class StackChecks
         check(StackStore.NodeEnv("TZ=UTC\n", manifest) == "TZ=UTC\nLUCIA_ADDRESS=192.168.1.230\n"
             && StackStore.NodeEnv("", manifest) == "LUCIA_ADDRESS=192.168.1.230\n" && StackStore.NodeEnv("TZ=UTC\n", manifest with { Address = null }) == "TZ=UTC\n",
             "The node must get the app's address in its environment.");
+        var routedManifest = new StackManifest(1, new(), Routes: [new("grafana", 3030), new("otlp-in", 4318, 4317)]);
+        check(StackStore.NodeEnv("TZ=UTC\n", routedManifest, "homelab.example.com")
+                == "TZ=UTC\nLUCIA_URL_GRAFANA=https://grafana.homelab.example.com\nLUCIA_URL_OTLP_IN=https://otlp-in.homelab.example.com\n"
+            && StackStore.NodeEnv("TZ=UTC\n", routedManifest) == "TZ=UTC\n", "The node must get each web address once a domain is active.");
+        var gateway = System.Text.Json.Nodes.JsonNode.Parse(AppGateway.Build(
+            [new("obs", new("grafana", 3030), "192.168.1.9"), new("obs", new("otlp", 4318, 4317), "192.168.1.9")], "homelab.example.com")!)!;
+        check(gateway["http"]!["routers"]!["app-obs-otlp-grpc"]!["rule"]!.GetValue<string>()
+                == "Host(`otlp.homelab.example.com`) && HeaderRegexp(`Content-Type`, `^application/grpc`)"
+            && gateway["http"]!["services"]!["app-obs-otlp-grpc"]!["loadBalancer"]!["servers"]![0]!["url"]!.GetValue<string>() == "h2c://192.168.1.9:4317"
+            && gateway["http"]!["services"]!["app-obs-grafana"]!["loadBalancer"]!["servers"]![0]!["url"]!.GetValue<string>() == "http://192.168.1.9:3030"
+            && gateway["http"]!["routers"]!["app-obs-grafana"]!["tls"] is not null && AppGateway.Build([], "homelab.example.com") is null,
+            "The gateway must send gRPC to the app's gRPC port and everything else to its web port.");
+        foreach (var label in new[] { "", "Grafana!", "-x", "a.b", new string('a', 64) })
+            check(!StackStore.RouteHostPattern().IsMatch(label), $"The web address name '{label}' was accepted.");
+        var observability = StackCatalog.Find("observability");
+        var obs = observability.Render(StackCatalog.Settings(observability, null), new(Guid.NewGuid(), "lucialab01", true, null),
+            new Dictionary<string, string> { ["OTLP_PASSWORD"] = new string('p', 43) });
+        check(obs.Env.Contains($"OTLP_PASSWORD={new string('p', 43)}\n", StringComparison.Ordinal) && obs.Env.Contains("GRAFANA_ADMIN_PASSWORD=", StringComparison.Ordinal)
+            && obs.Compose.Contains("$${env:OTLP_USERNAME}:$${env:OTLP_PASSWORD}", StringComparison.Ordinal)
+            && obs.Compose.Contains("url: '$$$${__value.raw}'", StringComparison.Ordinal)
+            && obs.Compose.Contains("GF_SERVER_ROOT_URL: ${LUCIA_URL_GRAFANA:-http://lucialab01:3030}\n", StringComparison.Ordinal)
+            && obs.Compose.Split('\n').Count(line => System.Text.RegularExpressions.Regex.IsMatch(line, "^      lucia\\.configs: \"[0-9a-f]{16}\"$")) == 5
+            && obs.Routes is [{ Host: "grafana", Port: 3030, GrpcPort: null }, { Host: "otlp", Port: 4318, GrpcPort: 4317 }],
+            "Observability must keep its secrets, escape its configs for compose, recreate services whose configs change and route Grafana and OTLP.");
+        foreach (var dashboard in new[] { "hardware", "inference" })
+        {
+            var dashboardLine = obs.Compose.Split('\n').Single(line => line.TrimStart().StartsWith($"{{\"uid\":\"lucia-{dashboard}\"", StringComparison.Ordinal));
+            System.Text.Json.JsonDocument.Parse(dashboardLine.Replace("$$", "$", StringComparison.Ordinal)).Dispose();
+            check(!System.Text.RegularExpressions.Regex.IsMatch(dashboardLine.Replace("$$", "", StringComparison.Ordinal), @"\$")
+                && dashboardLine.Contains("$$__rate_interval", StringComparison.Ordinal)
+                && obs.Compose.Contains($"target: /etc/grafana/dashboards/lucia/{dashboard}.json\n", StringComparison.Ordinal),
+                $"The {dashboard} dashboard must be valid JSON with every Grafana variable escaped for compose.");
+        }
+        check(observability.Sso(StackCatalog.Settings(observability, null)) == new AppSso("Grafana", "grafana", "/login/generic_oauth")
+            && obs.Env.Contains($"{StackStore.SsoSecret}=", StringComparison.Ordinal)
+            && obs.Compose.Contains("GF_AUTH_GENERIC_OAUTH_ENABLED: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
+            && obs.Compose.Contains("GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${SSO_CLIENT_SECRET}\n", StringComparison.Ordinal)
+            && obs.Compose.Contains("GF_AUTH_SIGNOUT_REDIRECT_URL: ${LUCIA_SSO_SIGNOUT:-}\n", StringComparison.Ordinal)
+            && StackCatalog.Find("local-ai").Sso(new Dictionary<string, string>()) is null,
+            "Grafana must sign in through Lucia only once Lucia sets its client, with a generated secret.");
+        var musicBrainz = StackCatalog.Find("musicbrainz");
+        var mbSettings = StackCatalog.Settings(musicBrainz, new() { ["metabrainz-access-token"] = " tok_EN.123 " });
+        var mbEnv = StackCatalog.KeepSecrets(musicBrainz, mbSettings, new() { ["POSTGRES_PASSWORD"] = new string('p', 43) });
+        var mb = musicBrainz.Render(mbSettings, new(Guid.NewGuid(), "lucialab01", true, null), mbEnv);
+        var kept = StackCatalog.KeepSecrets(musicBrainz, StackCatalog.Settings(musicBrainz, null), new(mbEnv));
+        var mbPlain = musicBrainz.Render(StackCatalog.Settings(musicBrainz, null),         new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        check(mbSettings["metabrainz-access-token"] == "" && kept["METABRAINZ_ACCESS_TOKEN"] == "tok_EN.123"
+            && mb.Env == $"POSTGRES_PASSWORD={new string('p', 43)}\nMETABRAINZ_ACCESS_TOKEN=tok_EN.123\n"
+            && mb.Compose.Contains("      - metabrainz_access_token\n", StringComparison.Ordinal)
+            && mb.Compose.Contains("    environment: METABRAINZ_ACCESS_TOKEN\n", StringComparison.Ordinal)
+            && mb.Compose.Contains("      0 * * * * /usr/local/bin/replication.sh\n", StringComparison.Ordinal)
+            && mb.Compose.Contains("      password = $${POSTGRES_PASSWORD}\n", StringComparison.Ordinal)
+            && mb.Compose.Contains("      LUCIA_URL: ${LUCIA_URL_MUSICBRAINZ:-}\n", StringComparison.Ordinal)
+            && !mbPlain.Compose.Contains("secrets:", StringComparison.Ordinal) && !mbPlain.Compose.Contains("replication.sh", StringComparison.Ordinal)
+            && !mbPlain.Env.Contains("METABRAINZ", StringComparison.Ordinal)
+            // Nothing waits on the import, so it must idle rather than exit or the app would read as needing attention.
+            && !mb.Compose.Contains("on-failure", StringComparison.Ordinal) && mb.Compose.Contains("then touch .ready; exec sleep infinity;", StringComparison.Ordinal)
+            && mb.Routes is [{ Host: "musicbrainz", Port: 5000, GrpcPort: null }] && musicBrainz.BackupMode == "stop",
+            "MusicBrainz must keep its token out of the manifest, replicate hourly only with a token and route its website.");
+        Rejects(() => StackCatalog.Settings(musicBrainz, new() { ["metabrainz-access-token"] = "a$b" }), "A secret that compose would interpolate was accepted.");
+        check(StackStore.SsoLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\n")
+                == "LUCIA_SSO_ENABLED=true\nLUCIA_SSO_ORIGIN=https://auth.example\n" && StackStore.SsoLines("A=1\n") == "",
+            "A catalog app's sign-in variables must survive re-rendering.");
+        Rejects(() => StackStore.ValidateName(StackStore.RelayName), "An app could take the telemetry relay's name.");
+        var relayConfig = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"lucialab01\"", true,
+            [new("vllm", "127.0.0.1:8000"), new("llama-cpp", "127.0.0.1:8080", ["org/model:Q4_K_M"])],
+            Lucia.Homelab.Server.Telemetry.TelemetryRelay.EnvExporter);
+        check(relayConfig.Contains("""
+                  - job_name: llama-cpp
+                    authorization:
+                      credentials: ${env:LOCAL_AI_KEY}
+                    params:
+                      autoload: ["false"]
+                    static_configs:
+                      - targets: [127.0.0.1:8080]
+                        labels:
+                          model: "org/model:Q4_K_M"
+                    relabel_configs:
+                      - source_labels: [model]
+                        target_label: __param_model
+                      - target_label: instance
+                        replacement: "lucialab01"
+            """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
+            && relayConfig.Contains("      - job_name: gpu\n", StringComparison.Ordinal),
+            "The relay must scrape each llama.cpp model with the Local AI key, without loading it, labelled with the machine.");
+        var relayCompose = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Compose(relayConfig, gpu: false);
+        check(relayCompose.Contains("credentials: $${env:LOCAL_AI_KEY}", StringComparison.Ordinal)
+            && relayCompose.Contains("LOCAL_AI_KEY: ${LOCAL_AI_KEY}\n", StringComparison.Ordinal)
+            && !relayCompose.Contains("gpu-exporter", StringComparison.Ordinal)
+            && Lucia.Homelab.Server.Telemetry.TelemetryRelay.Compose(relayConfig, gpu: true).Contains("  gpu-exporter:\n", StringComparison.Ordinal),
+            "The relay's compose must escape its config and run the GPU exporter only with a GPU.");
         var adguard = StackCatalog.Find("adguard");
         var adguardCompose = adguard.Render(StackCatalog.Settings(adguard, null), null!, new Dictionary<string, string>()).Compose;
         check(adguard.UsesAddress && !adguard.ServerBound && adguardCompose.Contains("      - \"${LUCIA_ADDRESS}:53:53/udp\"\n", StringComparison.Ordinal)
@@ -185,7 +276,7 @@ internal static class StackChecks
         var rendered = localAi.Render(settings, gpuNode, new Dictionary<string, string>());
         var env = StackCatalog.ReadEnv(rendered.Env);
         check(!rendered.Compose.Contains('\r'), "Local AI's compose has Windows line endings.");
-        check(rendered.Compose.Contains("lucia-inference:0.1.4-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
+        check(rendered.Compose.Contains("lucia-inference:0.1.5-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
             && rendered.Compose.Contains("HostPlatform__MemoryBudgetGiB: \"23\"") && rendered.Require.Contains("cuda=13")
             && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
             "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");

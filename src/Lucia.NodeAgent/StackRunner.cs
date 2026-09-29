@@ -13,7 +13,7 @@ internal sealed record StackServiceStatus(string Service, string State, string? 
 internal sealed record NodeStackStatus(string Name, string State, long? AppliedRevision, string? Message, StackServiceStatus[] Services,
     Guid? Received = null, NodeBackupStatus? Backup = null, Guid? Restored = null);
 internal sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
-    string? Service, string? Ports);
+    string? Service, string? Ports, [property: System.Text.Json.Serialization.JsonIgnore] string[]? Awaits = null);
 internal sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 internal sealed record SocketOwner(string Process, string? ContainerId);
 internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
@@ -52,6 +52,7 @@ internal static partial class StackRunner
         do
         {
             if (NodeRuntime.Current.State != "Ready") continue;
+            using var sync = AgentTelemetry.Source.StartActivity("stack sync");
             try
             {
                 var containers = await ContainersAsync(token);
@@ -75,9 +76,11 @@ internal static partial class StackRunner
             catch (Exception ex) when (ex is NodeAgentException or IOException or UnauthorizedAccessException or JsonException
                 || ex is OperationCanceledException && !token.IsCancellationRequested)
             {
+                sync?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
                 if (ex.Message != lastError) Console.Error.WriteLine("Stack sync failed; retrying. " + ex.Message);
                 lastError = ex.Message;
             }
+            sync?.Stop();
         } while (await timer.WaitForNextTickAsync(token));
     }
 
@@ -85,8 +88,11 @@ internal static partial class StackRunner
     {
         var stacks = known.Union(busy.Keys).Distinct().Take(64).Select(name =>
         {
-            var services = containers.Where(item => item.Project == Project(name)).Take(64).Select(item =>
+            var project = containers.Where(item => item.Project == Project(name)).Take(64).ToArray();
+            var services = project.Select(item =>
                 new StackServiceStatus(item.Service ?? item.Name, item.State, Health(item.Status), item.Image, ExitCode(item.Status))).ToArray();
+            // A one-shot service other services wait on, such as a setup step, is done once it exits cleanly.
+            var oneShots = project.SelectMany(item => item.Awaits ?? []).ToHashSet(StringComparer.Ordinal);
             var applied = ReadApplied(name);
             var received = ReadMarker(name, ReceivedMarker);
             var backup = ResticBackups.Status(name);
@@ -96,7 +102,8 @@ internal static partial class StackRunner
                 return new NodeStackStatus(name, working, applied?.Revision, null, services, received, backup, restored);
             if (failures.TryGetValue(name, out var failure))
                 return new NodeStackStatus(name, "Failed", applied?.Revision, failure.Message, services, received, backup, restored);
-            var running = services.Count(item => item.State == "running" && item.Health != "unhealthy");
+            var running = services.Count(item => item.State == "running" && item.Health != "unhealthy"
+                || item.State == "exited" && item.ExitCode == 0 && oneShots.Contains(item.Service));
             var state = applied is null ? "Pending"
                 : applied.Desired == "Stopped" ? "Stopped"
                 : services.Length > 0 && running == services.Length ? "Running" : "Degraded";
@@ -419,7 +426,9 @@ internal static partial class StackRunner
             string? Label(string key) => Bounded(Regex.Match(labels, @"(?:^|,)" + Regex.Escape(key) + "=([^,]*)").Groups[1].Value, 128);
             containers.Add(new(id, name, Bounded(Field("Image"), 512) ?? "unknown", Bounded(Field("State"), 32) ?? "unknown",
                 Bounded(Field("Status"), 128), Label("com.docker.compose.project"), Label("com.docker.compose.service"),
-                Bounded(Field("Ports"), 1024)));
+                Bounded(Field("Ports"), 1024),
+                // Compose's depends_on label is itself comma-separated (service:condition:restart), so match its entries anywhere.
+                [.. CompletedDependency().Matches(labels).Select(match => match.Groups[1].Value).Where(service => service.Length <= 128).Distinct().Take(16)]));
         }
         return containers.ToArray();
     }
@@ -544,6 +553,8 @@ internal static partial class StackRunner
     private static partial Regex ContainerIdPattern();
     [GeneratedRegex(@"\AExited \((-?\d{1,4})\)")]
     private static partial Regex ExitPattern();
+    [GeneratedRegex(@"[=,]([A-Za-z0-9][A-Za-z0-9_.-]*):service_completed_successfully:(?:true|false)(?=,|\z)")]
+    private static partial Regex CompletedDependency();
 }
 
 /// <summary>Runs fixed executables with argument arrays, bounded time and bounded output.</summary>

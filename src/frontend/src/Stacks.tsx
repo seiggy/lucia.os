@@ -8,7 +8,7 @@ import type { IconName } from './Icon'
 import { bytes } from './sparkTelemetry'
 import {
   ago, appAddressProblem, appAddressState, backupFolderProblem, backupOrder, formatBytes, backupState, parseBackupRecovery, parseBackups,
-  catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory,
+  catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory, secretKey,
   parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
   validateStackDraft,
 } from './stackManagement'
@@ -358,6 +358,7 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
     </section>
 
     {stack.template?.id === 'local-ai' && <LocalAiSection stack={stack} detail={detail.data} />}
+    {stack.template?.id === 'observability' && <ObservabilitySection stack={stack} detail={detail.data} />}
     {stack.template?.id === 'adguard' && stack.appAddress && <section className="surface network-section"><h2>AdGuard Home</h2>
       <p className="section-note">Its filters, clients and upstream servers are set in AdGuard itself. The first time, finish its setup at <a href={`http://${stack.appAddress.ip}:3000`} target="_blank" rel="noreferrer">{stack.appAddress.ip}:3000</a>; after that it’s at <a href={`http://${stack.appAddress.ip}`} target="_blank" rel="noreferrer">{stack.appAddress.ip}</a>. Point your router’s DHCP DNS setting at {stack.appAddress.ip} so every device uses it.</p></section>}
 
@@ -518,8 +519,8 @@ function CatalogView(props: Session) {
   </section>
 }
 
-function SettingsFields({ app, server, values: given, onChange, disabled }: {
-  app: CatalogApp; server: CatalogServer | undefined; values: Record<string, string>; onChange: (id: string, value: string) => void; disabled: boolean
+function SettingsFields({ app, server, values: given, onChange, disabled, env = '' }: {
+  app: CatalogApp; server: CatalogServer | undefined; values: Record<string, string>; onChange: (id: string, value: string) => void; disabled: boolean; env?: string
 }) {
   // Installs from an older catalog version lack newer settings; the server fills the same defaults when it saves.
   const values = { ...Object.fromEntries(app.fields.map(field => [field.id, field.default ?? ''])), ...given }
@@ -533,6 +534,9 @@ function SettingsFields({ app, server, values: given, onChange, disabled }: {
         <span><strong>{option.label}</strong><span className="network-cell-note">{option.help}</span></span>
       </label>)}</div>
     </fieldset>
+    if (field.kind === 'secret') return <label key={field.id} className="stack-field-wide">{field.label}<input type="password" value={values[field.id] ?? ''} disabled={disabled}
+      maxLength={128} spellCheck={false} autoComplete="new-password" aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}
+      placeholder={envValue(env, secretKey(field.id)) ? 'Saved. Leave blank to keep it.' : ''} onChange={event => onChange(field.id, event.target.value.trim())} />{hint}</label>
     if (field.kind !== 'gpus') return <label key={field.id} className={field.kind === 'text' ? 'stack-field-wide' : undefined}>{field.label}<input value={values[field.id] ?? ''} disabled={disabled} required={!field.optional}
       inputMode={field.kind === 'port' ? 'numeric' : undefined} maxLength={field.kind === 'port' ? 5 : 128} spellCheck={false} autoComplete="off"
       className={field.kind === 'port' ? 'stack-number' : undefined} aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}
@@ -708,7 +712,7 @@ function ManagedSettings({ stack, detail, locked, onSaved, ...props }: Session &
     {catalogError && <p className="network-error" role="alert">{catalogError}</p>}
     {catalog && !app && <p className="section-note">This app is no longer in Lucia's catalog. Convert it to a custom app below to keep changing it.</p>}
     {app && <form onSubmit={event => { event.preventDefault(); if (problem) setError(problem); else void save(values, 'Saved. The server applies the change within about 20 seconds.') }}>
-      <SettingsFields app={app} server={server} values={values} disabled={busy || locked} onChange={(field, value) => setValues(current => ({ ...current, [field]: value }))} />
+      <SettingsFields app={app} server={server} values={values} env={detail.env} disabled={busy || locked} onChange={(field, value) => setValues(current => ({ ...current, [field]: value }))} />
       {error && <p className="network-error" role="alert">{error}</p>}
       <div className="network-actions">
         <button className="button primary" disabled={busy || locked || !dirty || !!problem}>{busy ? 'Saving…' : 'Save and apply'}</button>
@@ -748,6 +752,33 @@ function LocalAiSection({ stack, detail }: { stack: StackSummary; detail: StackD
       <div><dt>Address</dt><dd><code>{endpoint}</code> <button className="text-link" onClick={() => void copy(endpoint, 'Address')}><Icon name="copy" />Copy</button></dd></div>
       <div><dt>API key</dt><dd>{key ? <><span className="stack-hint">Kept encrypted in the app's environment.</span> <button className="text-link" onClick={() => void copy(key, 'API key')}><Icon name="copy" />Copy key</button></>
         : 'Missing. Save the settings again to generate one.'}</dd></div>
+    </dl>
+    <p className="network-notice" role="status">{copied}</p>
+  </section>
+}
+
+function ObservabilitySection({ stack, detail }: { stack: StackSummary; detail: StackDetail }) {
+  const [copied, setCopied] = useState('')
+  const settings = stack.template?.settings ?? {}
+  const server = detail.address ?? stack.node
+  const grafana = detail.urls[settings['grafana-host'] ?? 'grafana'] ?? `http://${server}:${settings['grafana-port'] ?? '3030'}`
+  const otlp = detail.urls[settings['otlp-host'] ?? 'otlp'] ?? `http://${server}:${settings['otlp-http-port'] ?? '4318'}`
+  const [user, password, admin] = [envValue(detail.env, 'OTLP_USERNAME'), envValue(detail.env, 'OTLP_PASSWORD'), envValue(detail.env, 'GRAFANA_ADMIN_PASSWORD')]
+  const exporter = user && password ? `OTEL_EXPORTER_OTLP_ENDPOINT=${otlp}\nOTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n`
+    + `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic ${btoa(`${user}:${password}`)}\n` : null
+  async function copy(value: string, what: string) {
+    try { await navigator.clipboard.writeText(value); setCopied(`${what} copied.`) } catch { setCopied(`Your browser blocked copying the ${what.toLowerCase()}.`) }
+  }
+  const missing = 'Missing. Save the settings again to generate one.'
+  return <section className="surface network-section">
+    <div className="network-overview-header"><h2>Observability</h2><a className="button primary" href={grafana} target="_blank" rel="noreferrer">Open Grafana<Icon name="arrow" /></a></div>
+    <p className="section-note">Apps send traces, metrics and logs to the OTLP address, over gRPC or HTTP, with the username and password below. Most OpenTelemetry SDKs pick up the environment variables as they are.</p>
+    <dl className="stack-connect">
+      <div><dt>Grafana</dt><dd><code>{grafana}</code> <button className="text-link" onClick={() => void copy(grafana, 'Grafana address')}><Icon name="copy" />Copy</button></dd></div>
+      <div><dt>Admin</dt><dd>{admin ? <><code>admin</code> <button className="text-link" onClick={() => void copy(admin, 'Admin password')}><Icon name="copy" />Copy password</button></> : missing}</dd></div>
+      <div><dt>OTLP</dt><dd><code>{otlp}</code> <button className="text-link" onClick={() => void copy(otlp, 'OTLP address')}><Icon name="copy" />Copy</button></dd></div>
+      <div><dt>OTLP login</dt><dd>{user && password ? <><code>{user}</code> <button className="text-link" onClick={() => void copy(password, 'OTLP password')}><Icon name="copy" />Copy password</button></> : missing}</dd></div>
+      {exporter && <div><dt>SDK settings</dt><dd><span className="stack-hint">Endpoint, protocol and login as environment variables.</span> <button className="text-link" onClick={() => void copy(exporter, 'SDK settings')}><Icon name="copy" />Copy variables</button></dd></div>}
     </dl>
     <p className="network-notice" role="status">{copied}</p>
   </section>

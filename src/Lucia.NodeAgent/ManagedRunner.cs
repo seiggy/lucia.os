@@ -141,6 +141,7 @@ internal static class ManagedRunner
                 await heartbeatTimer.WaitForNextTickAsync(token);
                 continue;
             }
+            using var heartbeat = AgentTelemetry.Source.StartActivity("heartbeat");
             try
             {
                 using var heartbeatIdentity = ManagedIdentity.ValidateConfiguration(configuration, plan, key, client.Server);
@@ -162,8 +163,10 @@ internal static class ManagedRunner
             }
             catch (NodeAgentException ex)
             {
+                heartbeat?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
                 Console.Error.WriteLine("Authenticated heartbeat was not accepted; management freshness is not confirmed. " + ex.Message);
             }
+            heartbeat?.Stop();
             await heartbeatTimer.WaitForNextTickAsync(token);
         }
     }

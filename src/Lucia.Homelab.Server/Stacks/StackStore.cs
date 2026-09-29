@@ -23,8 +23,10 @@ public sealed record StackPlacement(string? Node = null, string[]? Require = nul
 /// An IPv4 address of its own on your network, taken by the server it runs on. The compose binds ports to <c>${LUCIA_ADDRESS}</c>.
 /// Saving without one keeps the current address; an empty one removes it.
 /// </param>
+/// <param name="Routes">Web addresses under the active domain; see <see cref="StackRoute"/>. Catalog apps set their own; saving a custom app
+/// without them keeps the current ones, and an empty list removes them.</param>
 public sealed record StackManifest(int SchemaVersion, StackPlacement Placement, StackTemplate? Template = null, StackBackup? Backup = null,
-    string? Address = null);
+    string? Address = null, StackRoute[]? Routes = null);
 /// <param name="Compose">Ignored for catalog apps: Lucia renders their compose and environment.</param>
 public sealed record SaveStackRequest(string? Compose, string? Env, StackManifest Manifest, long? ExpectedRevision = null);
 public sealed record CatalogPreviewRequest(string Node, Dictionary<string, string>? Settings);
@@ -71,7 +73,7 @@ internal sealed record StackFile(int SchemaVersion, StoredStack[] Stacks);
 /// node reports stay in memory only and reappear within one sync after a restart.
 /// </summary>
 public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> options, IDataProtectionProvider protection,
-    ManagedNodeEnrollment nodes, StackTransfers transfers, TimeProvider time)
+    ManagedNodeEnrollment nodes, StackTransfers transfers, DomainOnboardingStore domains, TimeProvider time)
 {
     public const int MaxStacks = 64, MaxStacksPerNode = 32, MaxComposeBytes = 128 * 1024, MaxEnvBytes = 32 * 1024;
     private const int MaxNodePayloadBytes = 1536 * 1024;
@@ -93,7 +95,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         var names = await NodeNames(ct);
         var stack = Find(await Read(ct), name);
         var address = (await nodes.Addresses(ct)).FirstOrDefault(item => item.Hostname == stack.Assigned)?.Address;
-        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address };
+        var ns = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Namespace;
+        var urls = ns is null ? null : (stack.Manifest.Routes ?? []).ToDictionary(route => route.Host, route => $"https://{route.Host}.{ns}");
+        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address, urls };
     }
 
     /// <summary>Saves a server's GPU choices. Changing the CUDA line is refused while an app on (or moving to) the server requires the old one.</summary>
@@ -143,6 +147,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             {
                 Backup = request.Manifest.Backup is { } backup ? ValidBackup(backup) : existing?.Manifest.Backup,
                 Address = request.Manifest.Address is null ? existing?.Manifest.Address : await ValidAddress(request.Manifest.Address, name, stacks, ct),
+                Routes = app is not null ? null
+                    : request.Manifest.Routes is null ? existing?.Manifest.Routes : await ValidRoutes(request.Manifest.Routes, name, stacks, ct),
             };
             if (app is { UsesAddress: true } && manifest.Address is null)
                 throw new HardwareOnboardingException(400, "address_required", $"{app.Name} needs an address of its own on your network.");
@@ -168,9 +174,11 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 if (app.ServerBound && stacks.FirstOrDefault(stack => stack.Name != name && stack.Manifest.Template?.Id == app.Id
                     && (stack.Assigned == node || stack.Move?.To == node)) is { } other)
                     throw new HardwareOnboardingException(409, "already_installed", $"{node} already runs {app.Name} as {other.Name}.");
-                var output = app.Render(settings!, target, StackCatalog.ReadEnv(existing is null ? "" : _protector.Unprotect(existing.ProtectedEnv)));
-                (compose, env, require) = (output.Compose, output.Env, StackRequirements.Normalize(output.Require));
-                manifest = manifest with { Placement = manifest.Placement with { Require = require } };
+                var previous = existing is null ? "" : _protector.Unprotect(existing.ProtectedEnv);
+                var output = app.Render(settings!, target, StackCatalog.KeepSecrets(app, settings!, StackCatalog.ReadEnv(previous)));
+                (compose, env, require) = (output.Compose, output.Env + SsoLines(previous), StackRequirements.Normalize(output.Require));
+                manifest = manifest with { Placement = manifest.Placement with { Require = require },
+                    Routes = await ValidRoutes(output.Routes, name, stacks, ct) };
             }
             if (existing is not null && !require.SequenceEqual(existing.Manifest.Placement.Require ?? [])
                 && facts.FirstOrDefault(item => item.Hostname == node) is var current
@@ -345,9 +353,11 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         var restored = report.Stacks.Where(item => item.Restored is not null).GroupBy(item => item.Name)
             .ToDictionary(group => group.Key, group => group.First().Restored);
         await _gate.WaitAsync(ct);
+        StoredStack[] stacks;
+        NodeDesiredStack[] desired;
         try
         {
-            var stacks = ReadUnlocked();
+            stacks = ReadUnlocked();
             var finished = false;
             for (var i = 0; i < stacks.Length; i++)
             {
@@ -365,12 +375,14 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             }
             if (finished) await Write(stacks, ct);
             var backups = await SyncBackups(stacks, hostname, report, ct);
-            return stacks.Select(stack => Desired(stack, hostname, backups.GetValueOrDefault(stack.Name))).OfType<NodeDesiredStack>().ToArray();
+            var ns = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Namespace;
+            desired = stacks.Select(stack => Desired(stack, hostname, ns, backups.GetValueOrDefault(stack.Name))).OfType<NodeDesiredStack>().ToArray();
         }
         finally { _gate.Release(); }
+        return await Relay(nodeId, hostname, stacks, ct) is { } relay ? [.. desired, relay] : desired;
     }
 
-    private NodeDesiredStack? Desired(StoredStack stack, string hostname, NodeBackupRequest? backup = null)
+    private NodeDesiredStack? Desired(StoredStack stack, string hostname, string? ns, NodeBackupRequest? backup = null)
     {
         (string? Desired, Guid? Send, Guid? Receive) plan = stack.Move switch
         {
@@ -381,7 +393,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         };
         var settled = stack.Move is null && stack.Assigned == hostname;
         return plan.Desired is null ? null : new(stack.Name, stack.Revision, plan.Desired, stack.RestartCount, stack.PullCount,
-            stack.Compose, NodeEnv(_protector.Unprotect(stack.ProtectedEnv), stack.Manifest), plan.Send, plan.Receive,
+            stack.Compose, NodeEnv(_protector.Unprotect(stack.ProtectedEnv), stack.Manifest, ns), plan.Send, plan.Receive,
             settled && stack.Restore is null ? backup : null,
             settled && stack.Restore is { } restore ? new NodeRestoreRequest(restore.Id, restore.Snapshot, Policy(stack).Exclude) : null,
             settled ? stack.Manifest.Address : null);
@@ -444,7 +456,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         var app = StackCatalog.Find(id);
         var node = (await nodes.Facts(ct)).FirstOrDefault(item => item.Hostname == request.Node)
             ?? throw new HardwareOnboardingException(400, "unknown_node", "Choose a managed server.");
-        var output = app.Render(StackCatalog.Settings(app, request.Settings), node, new Dictionary<string, string>());
+        var settings = StackCatalog.Settings(app, request.Settings);
+        var output = app.Render(settings, node, StackCatalog.KeepSecrets(app, settings, []));
         return new { output.Compose, require = output.Require };
     }
 
@@ -565,7 +578,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             throw new HardwareOnboardingException(400, "invalid_stack_name",
                 "Use up to 40 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen.");
         // The portal uses these as page addresses under #/apps/.
-        if (name is "new" or "containers" or "catalog" or "install" or "backups")
+        if (name is "new" or "containers" or "catalog" or "install" or "backups" or RelayName)
             throw new HardwareOnboardingException(400, "invalid_stack_name", $"\"{name}\" is reserved. Choose another name.");
     }
 
@@ -656,8 +669,13 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         return file.Stacks;
     }
 
-    private Task Write(IEnumerable<StoredStack> stacks, CancellationToken ct) =>
-        DomainOnboardingStore.WriteJson(FilePath, new StackFile(1, stacks.OrderBy(stack => stack.Name, StringComparer.Ordinal).ToArray()), ct);
+    private async Task Write(IEnumerable<StoredStack> stacks, CancellationToken ct)
+    {
+        var sorted = stacks.OrderBy(stack => stack.Name, StringComparer.Ordinal).ToArray();
+        await DomainOnboardingStore.WriteJson(FilePath, new StackFile(1, sorted), ct);
+        _destination = default;
+        NoticeRoutes(sorted);
+    }
 
     [GeneratedRegex(@"\A[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?\z")]
     internal static partial Regex NamePattern();

@@ -188,6 +188,8 @@ if (hostSettings is not null)
         .WithEnvironment("SparkTelemetry__Enabled", "true")
         .WithEnvironment("SparkTelemetry__ProcDirectory", "/host-metrics")
         .WithEnvironment("SparkTelemetry__StoragePath", "/data")
+        // The controller's telemetry carries the machine's name, as the relay's does.
+        .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", $"host.name={Environment.MachineName.ToLowerInvariant()},lucia.node={Environment.MachineName.ToLowerInvariant()}")
         .WithBindMount("/proc/stat", "/host-metrics/stat", isReadOnly: true)
         .WithBindMount("/proc/meminfo", "/host-metrics/meminfo", isReadOnly: true)
         .WithBindMount("/proc/loadavg", "/host-metrics/loadavg", isReadOnly: true)
@@ -221,6 +223,48 @@ if (hostSettings is not null)
     var index = 0;
     foreach (var network in host.GetProperty("trusted_proxy_networks").EnumerateArray())
         managedHost.WithEnvironment($"HostAuthentication__TrustedProxyNetworks__{index++}", network.GetString()!);
+
+    // This machine's telemetry relay: the controller writes its configuration, and it sends through the controller to the
+    // Observability app. It and its exporters share the host's network and listen on loopback only.
+    var relayDirectory = Path.Combine(host.GetProperty("data_directory").GetString()!, "telemetry");
+    Directory.CreateDirectory(relayDirectory);
+    managedHost.WithEnvironment("Telemetry__RelayDirectory", "/data/telemetry");
+    static void Relay(Service service, string name)
+    {
+        Persistent(service, name);
+        service.Labels["io.lucia.component"] = "telemetry";
+        service.Networks.Clear();
+        service.NetworkMode = "host";
+    }
+    builder.AddContainer("telemetry-relay", "otel/opentelemetry-collector-contrib", "0.161.0")
+        .WithImageSHA256("fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1")
+        .WithArgs("--config=/etc/lucia-relay/relay.yaml")
+        .WithEnvironment("LUCIA_NODE", Environment.MachineName.ToLowerInvariant())
+        .WithBindMount(relayDirectory, "/etc/lucia-relay", isReadOnly: true)
+        .WithBindMount(StatePath("trust"), "/trust", isReadOnly: true)
+        .PublishAsDockerComposeService((_, service) =>
+        {
+            Relay(service, "telemetry-relay");
+            service.User = $"{uid}:{gid}";
+            service.DependsOn["lucia-host"] = new ServiceDependency { Condition = "service_healthy" };
+        });
+    builder.AddContainer("telemetry-node-exporter", "prom/node-exporter", "v1.10.2")
+        .WithImageSHA256("3ac34ce007accad95afed72149e0d2b927b7e42fd1c866149b945b84737c62c3")
+        .WithArgs("--path.rootfs=/host", "--web.listen-address=127.0.0.1:19100")
+        .WithBindMount("/", "/host", isReadOnly: true)
+        .PublishAsDockerComposeService((_, service) =>
+        {
+            Relay(service, "telemetry-node-exporter");
+            service.Pid = "host";
+        });
+    builder.AddContainer("telemetry-gpu-exporter", "utkuozdemir/nvidia_gpu_exporter", "1.15.1")
+        .WithImageSHA256("7aee2d42836ad29d4adb2722b7cfdc806ec9cc8d45fd0b8971ebbad2d9f3d087")
+        .WithArgs("--web.listen-address=127.0.0.1:19835")
+        .PublishAsDockerComposeService((_, service) =>
+        {
+            Relay(service, "telemetry-gpu-exporter");
+            service.Devices.Add("nvidia.com/gpu=all");
+        });
     if (bootSettings is not null)
     {
         var boot = bootSettings.RootElement;

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Onboarding;
+using Lucia.Homelab.Server.Telemetry;
 
 namespace Lucia.Homelab.Server.Stacks;
 
@@ -10,7 +11,8 @@ namespace Lucia.Homelab.Server.Stacks;
 public sealed record StackTemplate(string Id, int Version, Dictionary<string, string>? Settings = null);
 /// <param name="Kind">
 /// <c>port</c>, <c>text</c>, <c>gpus</c> (comma-separated GPU UUIDs from the server's report), <c>choice</c> (one of
-/// <paramref name="Options"/>) or <c>hidden</c> (set by Lucia's own screens, never shown as a field).
+/// <paramref name="Options"/>), <c>secret</c> (kept in the app's environment as the id in upper snake case, never in its
+/// manifest; blank keeps the saved value) or <c>hidden</c> (set by Lucia's own screens, never shown as a field).
 /// </param>
 /// <param name="When">Shown only when another setting has a value, written <c>id=value</c>.</param>
 /// <param name="Optional">An empty value is allowed.</param>
@@ -21,7 +23,8 @@ public sealed record CatalogGpu(string Uuid, string Model, long? MemoryBytes, st
 /// <param name="Unmet">The placement requirement the server misses, for the portal to describe.</param>
 /// <param name="Reason">Why the server can't run the app, in words, when it isn't a plain requirement.</param>
 public sealed record CatalogServer(Guid NodeId, string Hostname, string? Unmet, string? Reason, CatalogGpu[]? Gpus = null);
-internal sealed record CatalogOutput(string Compose, string Env, string[] Require);
+/// <param name="Routes">The app's web addresses, checked and stored in its manifest.</param>
+internal sealed record CatalogOutput(string Compose, string Env, string[] Require, StackRoute[]? Routes = null);
 
 /// <summary>An app Lucia ships ready to install. Its compose belongs to Lucia until the owner converts the app to a custom one.</summary>
 public abstract class CatalogApp(string id, int version, string name, string summary, string needs, string[] require, CatalogField[] fields)
@@ -48,13 +51,15 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     public virtual string[] BackupExclude => [];
     public virtual string? Reason(ManagedNodeFacts node) => null;
     public virtual CatalogGpu[]? Gpus(ManagedNodeFacts node) => null;
+    /// <summary>The app's sign-in through Lucia's Authentik, when it has one. Its render must generate <c>SSO_CLIENT_SECRET</c>.</summary>
+    public virtual AppSso? Sso(IReadOnlyDictionary<string, string> settings) => null;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
     internal abstract CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env);
 }
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -86,6 +91,8 @@ public static class StackCatalog
                 "port" => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var port) && port is >= 1 and <= 65535,
                 "gpus" => value.Length is > 0 and <= 1024,
                 "choice" => field.Options!.Any(option => option.Value == value),
+                // It's written to the app's .env unquoted.
+                "secret" => value.Length <= 128 && value.All(c => char.IsAsciiLetterOrDigit(c) || "._~+/=-".Contains(c)),
                 _ => value.Length is > 0 and <= 128 && !value.Any(char.IsControl),
             };
             if (!valid)
@@ -94,6 +101,7 @@ public static class StackCatalog
                     "port" => $"{field.Label} must be a port from 1 to 65535.",
                     "gpus" => "Choose at least one GPU.",
                     "choice" => $"{field.Label} must be one of: {string.Join(", ", field.Options!.Select(option => option.Label))}.",
+                    "secret" => $"{field.Label} must be up to 128 letters, digits and . _ ~ + / = -",
                     _ => $"{field.Label} needs a value of up to 128 characters.",
                 });
             result[field.Id] = value;
@@ -112,6 +120,19 @@ public static class StackCatalog
     internal static string Secret(IReadOnlyDictionary<string, string> env, string key) =>
         env.TryGetValue(key, out var value) && value.Length >= 32 ? value
             : Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    internal static string SecretKey(CatalogField field) => field.Id.ToUpperInvariant().Replace('-', '_');
+
+    /// <summary>Moves typed <c>secret</c> settings into <paramref name="env"/> and blanks them in <paramref name="settings"/>.</summary>
+    internal static Dictionary<string, string> KeepSecrets(CatalogApp app, Dictionary<string, string> settings, Dictionary<string, string> env)
+    {
+        foreach (var field in app.Fields.Where(field => field.Kind == "secret"))
+        {
+            if (settings[field.Id].Length > 0) env[SecretKey(field)] = settings[field.Id];
+            settings[field.Id] = "";
+        }
+        return env;
+    }
 }
 
 /// <summary>
@@ -121,7 +142,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 6, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -148,8 +169,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 6, "Local AI
     // Pinned by digest so every server runs exactly what was tested. Published from deployment/inference/Dockerfile.
     private static readonly Dictionary<int, string> Images = new()
     {
-        [12] = "seiggy/lucia-inference:0.1.4-cuda12@sha256:8e2c0b81e425db1dc5fcf038a4d4a815226f0d79ecbd3211f59d95d89fe3827b",
-        [13] = "seiggy/lucia-inference:0.1.4-cuda13@sha256:af3de9cefd991df065fd922694bbe80aa94bc49fcf5b89baaf3d84da5d4da171",
+        [12] = "seiggy/lucia-inference:0.1.5-cuda12@sha256:20115802198c371465c50ccbe5864fd8b8bff04743c10d6f7a1782261034555f",
+        [13] = "seiggy/lucia-inference:0.1.5-cuda13@sha256:c82e4d1a137184b7a6739f9a7bf75cb636e9518bf3e87d1b541f1514ad465a95",
     };
 
     private static readonly Dictionary<int, string> VllmImages = new()
@@ -317,6 +338,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 6, "Local AI
                   - "{{settings["port"]}}:8080"
                 environment:
                   LLAMA_API_KEY: ${LUCIA_INFERENCE_KEY}
+                  # Prometheus metrics at /metrics?model=<name>, which Lucia's telemetry relay scrapes.
+                  LLAMA_ARG_ENDPOINT_METRICS: "1"
                 command: ["--models-preset", "/cache/llama-models.ini", "--models-max", "1", "--host", "0.0.0.0", "--port", "8080"]
                 volumes:
                   - llama-cache:/cache:ro
@@ -406,5 +429,645 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 
             """;
         return new(compose.ReplaceLineEndings("\n"), "", []);
+    }
+}
+
+/// <summary>
+/// Lucia's telemetry backend: an OpenTelemetry collector that takes OTLP with a password and stores traces in Tempo,
+/// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
+/// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
+/// </summary>
+internal sealed class ObservabilityApp() : CatalogApp("observability", 5, "Observability",
+    "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
+    "Any server with Docker ready, and room for about 50 GB of telemetry.",
+    [],
+    [
+        new("grafana-host", "Grafana name", "text", "grafana", "Grafana's web address is this name under your domain."),
+        new("otlp-host", "OTLP name", "text", "otlp", "Apps send telemetry to this name under your domain, over gRPC or HTTP."),
+        new("grafana-port", "Grafana port", "port", "3030", "Grafana also answers on http://<server>:<port>."),
+        new("otlp-grpc-port", "OTLP gRPC port", "port", "4317"),
+        new("otlp-http-port", "OTLP HTTP port", "port", "4318"),
+    ])
+{
+    internal const string Collector = "otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1";
+    private const string Prometheus = "prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e";
+    private const string Loki = "grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193";
+    private const string Tempo = "grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a";
+    private const string Grafana = "grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
+    private const string Alpine = "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
+    public const string User = "lucia";
+
+    public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
+        new("Grafana", settings["grafana-host"].ToLowerInvariant(), "/login/generic_oauth");
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (grafanaHost, otlpHost) = (settings["grafana-host"].ToLowerInvariant(), settings["otlp-host"].ToLowerInvariant());
+        var (grafanaPort, grpcPort, httpPort) = (settings["grafana-port"], settings["otlp-grpc-port"], settings["otlp-http-port"]);
+        // The collector expands ${env:...} itself, so compose must leave it alone; Grafana expands $var, so its literal needs a second escape.
+        var collector = """
+            extensions:
+              basicauth/server:
+                htpasswd:
+                  inline: |
+                    $${env:OTLP_USERNAME}:$${env:OTLP_PASSWORD}
+              file_storage:
+                directory: /var/lib/otelcol
+                create_directory: true
+                compaction:
+                  directory: /var/lib/otelcol
+                  on_start: true
+                  on_rebound: true
+              health_check:
+                endpoint: 0.0.0.0:13133
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                    auth:
+                      authenticator: basicauth/server
+                  http:
+                    endpoint: 0.0.0.0:4318
+                    auth:
+                      authenticator: basicauth/server
+            processors:
+              memory_limiter:
+                check_interval: 1s
+                limit_percentage: 65
+                spike_limit_percentage: 15
+              batch:
+                timeout: 5s
+                send_batch_size: 1024
+                send_batch_max_size: 2048
+            exporters:
+              otlp/tempo:
+                endpoint: tempo:4317
+                tls:
+                  insecure: true
+                sending_queue: &queue
+                  enabled: true
+                  storage: file_storage
+                  queue_size: 5000
+                  num_consumers: 2
+                retry_on_failure: &retry
+                  enabled: true
+                  max_elapsed_time: 0s
+              otlphttp/prometheus:
+                endpoint: http://prometheus:9090/api/v1/otlp
+                sending_queue: *queue
+                retry_on_failure: *retry
+              otlphttp/loki:
+                endpoint: http://loki:3100/otlp
+                sending_queue: *queue
+                retry_on_failure: *retry
+            service:
+              extensions: [basicauth/server, file_storage, health_check]
+              telemetry:
+                metrics:
+                  readers:
+                    - pull:
+                        exporter:
+                          prometheus:
+                            host: 0.0.0.0
+                            port: 8888
+              pipelines:
+                traces:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [otlp/tempo]
+                metrics:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [otlphttp/prometheus]
+                logs:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [otlphttp/loki]
+            """;
+        var prometheus = """
+            global:
+              scrape_interval: 30s
+              evaluation_interval: 30s
+            otlp:
+              promote_resource_attributes: [service.instance.id, service.name, service.namespace, host.name, lucia.node, lucia.app, container.name]
+            storage:
+              tsdb:
+                out_of_order_time_window: 30m
+            scrape_configs:
+              - job_name: otel-collector
+                static_configs:
+                  - targets: [collector:8888]
+            """;
+        var loki = """
+            auth_enabled: false
+            server:
+              http_listen_port: 3100
+            common:
+              path_prefix: /var/loki
+              replication_factor: 1
+              ring:
+                kvstore:
+                  store: inmemory
+            schema_config:
+              configs:
+                - from: 2024-04-01
+                  store: tsdb
+                  object_store: filesystem
+                  schema: v13
+                  index:
+                    prefix: index_
+                    period: 24h
+            storage_config:
+              filesystem:
+                directory: /var/loki/chunks
+              tsdb_shipper:
+                active_index_directory: /var/loki/index
+                cache_location: /var/loki/index_cache
+            compactor:
+              working_directory: /var/loki/compactor
+              retention_enabled: true
+              delete_request_store: filesystem
+            limits_config:
+              allow_structured_metadata: true
+              retention_period: 168h
+            analytics:
+              reporting_enabled: false
+            """;
+        var tempo = """
+            stream_over_http_enabled: true
+            server:
+              http_listen_port: 3200
+            distributor:
+              receivers:
+                otlp:
+                  protocols:
+                    grpc:
+                      endpoint: 0.0.0.0:4317
+            ingester:
+              max_block_duration: 5m
+            compactor:
+              compaction:
+                block_retention: 336h
+            storage:
+              trace:
+                backend: local
+                wal:
+                  path: /var/tempo/wal
+                local:
+                  path: /var/tempo/blocks
+            usage_report:
+              reporting_enabled: false
+            """;
+        var datasources = """
+            apiVersion: 1
+            datasources:
+              - name: Prometheus
+                type: prometheus
+                uid: prometheus
+                access: proxy
+                url: http://prometheus:9090
+                isDefault: true
+                jsonData:
+                  timeInterval: 30s
+              - name: Loki
+                type: loki
+                uid: loki
+                access: proxy
+                url: http://loki:3100
+                jsonData:
+                  derivedFields:
+                    - name: TraceID
+                      matcherRegex: '"trace_id"[=:]"?([a-f0-9]{32})'
+                      datasourceUid: tempo
+                      url: '$$$${__value.raw}'
+              - name: Tempo
+                type: tempo
+                uid: tempo
+                access: proxy
+                url: http://tempo:3200
+                jsonData:
+                  tracesToLogsV2:
+                    datasourceUid: loki
+                    spanStartTimeShift: -5m
+                    spanEndTimeShift: 5m
+                    tags: [service.name]
+                    filterByTraceID: true
+                  tracesToMetrics:
+                    datasourceUid: prometheus
+                    spanStartTimeShift: -5m
+                    spanEndTimeShift: 5m
+                    tags:
+                      - key: service.name
+                        value: service_name
+                  nodeGraph:
+                    enabled: true
+                  serviceMap:
+                    datasourceUid: prometheus
+            """;
+        var dashboards = """
+            apiVersion: 1
+            providers:
+              - name: Lucia
+                folder: Lucia
+                type: file
+                disableDeletion: true
+                allowUiUpdates: false
+                options:
+                  path: /etc/grafana/dashboards/lucia
+            """;
+        static string Content(string text) => string.Join("\n", text.ReplaceLineEndings("\n").Split('\n').Select(line => "      " + line));
+        // Compose before 2.30 keeps a container when only its inline configs change; the label makes it recreate.
+        static string Hash(params string[] texts) =>
+            Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\0', texts))))[..16];
+        var hardware = HardwareDashboard.Json().Replace("$", "$$");
+        var inference = InferenceDashboard.Json().Replace("$", "$$");
+        // Grafana links to itself at its web address once the domain is active, and at the server's port until then.
+        var rootUrl = "${" + StackStore.RouteVariable(grafanaHost) + $":-http://{node.Hostname}:{grafanaPort}}}";
+        var compose = $$"""
+            # Installed from Lucia's catalog (observability, version {{Version}}). Lucia rewrites this file when the catalog
+            # updates the app. Convert the app to a custom app to edit it by hand.
+            services:
+              # Each image runs as its own user; give each its data directory once.
+              init:
+                image: {{Alpine}}
+                restart: "no"
+                user: "0:0"
+                command:
+                  - sh
+                  - -c
+                  - |
+                    own() { [ "$$(stat -c %u:%g "$$2")" = "$$1" ] || chown -R "$$1" "$$2"; }
+                    own 10001:10001 /data/collector && own 10001:10001 /data/loki && own 10001:10001 /data/tempo \
+                      && own 65534:65534 /data/prometheus && own 472:0 /data/grafana
+                volumes:
+                  - collector:/data/collector
+                  - loki:/data/loki
+                  - tempo:/data/tempo
+                  - prometheus:/data/prometheus
+                  - grafana:/data/grafana
+              collector:
+                image: {{Collector}}
+                restart: unless-stopped
+                mem_limit: 512m
+                command: ["--config=/etc/otelcol-contrib/config.yaml"]
+                environment:
+                  OTLP_USERNAME: ${OTLP_USERNAME}
+                  OTLP_PASSWORD: ${OTLP_PASSWORD}
+                labels:
+                  lucia.configs: "{{Hash(collector)}}"
+                configs:
+                  - source: collector
+                    target: /etc/otelcol-contrib/config.yaml
+                volumes:
+                  - collector:/var/lib/otelcol
+                ports:
+                  - "{{grpcPort}}:4317"
+                  - "{{httpPort}}:4318"
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+                healthcheck:
+                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+              prometheus:
+                image: {{Prometheus}}
+                restart: unless-stopped
+                command:
+                  - --config.file=/etc/prometheus/prometheus.yaml
+                  - --storage.tsdb.path=/prometheus
+                  - --storage.tsdb.retention.time=30d
+                  - --storage.tsdb.retention.size=40GB
+                  - --web.enable-otlp-receiver
+                labels:
+                  lucia.configs: "{{Hash(prometheus)}}"
+                configs:
+                  - source: prometheus
+                    target: /etc/prometheus/prometheus.yaml
+                volumes:
+                  - prometheus:/prometheus
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+              loki:
+                image: {{Loki}}
+                restart: unless-stopped
+                command: ["-config.file=/etc/loki/config.yaml"]
+                labels:
+                  lucia.configs: "{{Hash(loki)}}"
+                configs:
+                  - source: loki
+                    target: /etc/loki/config.yaml
+                volumes:
+                  - loki:/var/loki
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+              tempo:
+                image: {{Tempo}}
+                restart: unless-stopped
+                command: ["-config.file=/etc/tempo/config.yaml"]
+                labels:
+                  lucia.configs: "{{Hash(tempo)}}"
+                configs:
+                  - source: tempo
+                    target: /etc/tempo/config.yaml
+                volumes:
+                  - tempo:/var/tempo
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+              grafana:
+                image: {{Grafana}}
+                restart: unless-stopped
+                environment:
+                  GF_SECURITY_ADMIN_USER: admin
+                  GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+                  GF_USERS_ALLOW_SIGN_UP: "false"
+                  GF_ANALYTICS_REPORTING_ENABLED: "false"
+                  GF_SERVER_ROOT_URL: {{rootUrl}}
+                  GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/lucia/hardware.json
+                  # Lucia sets LUCIA_SSO_* once Grafana's Authentik client exists. /login?disableAutoLogin=true reaches the admin form.
+                  GF_AUTH_GENERIC_OAUTH_ENABLED: ${LUCIA_SSO_ENABLED:-false}
+                  GF_AUTH_OAUTH_AUTO_LOGIN: ${LUCIA_SSO_ENABLED:-false}
+                  GF_AUTH_GENERIC_OAUTH_NAME: Lucia
+                  GF_AUTH_GENERIC_OAUTH_CLIENT_ID: ${LUCIA_SSO_CLIENT_ID:-}
+                  GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${SSO_CLIENT_SECRET}
+                  GF_AUTH_GENERIC_OAUTH_SCOPES: openid profile email offline_access
+                  GF_AUTH_GENERIC_OAUTH_AUTH_URL: ${LUCIA_SSO_ORIGIN:-}/application/o/authorize/
+                  GF_AUTH_GENERIC_OAUTH_TOKEN_URL: ${LUCIA_SSO_ORIGIN:-}/application/o/token/
+                  GF_AUTH_GENERIC_OAUTH_API_URL: ${LUCIA_SSO_ORIGIN:-}/application/o/userinfo/
+                  GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+                  GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: preferred_username
+                  # Grafana needs an email; directory accounts often have none.
+                  GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH: "email || join('@', [preferred_username, 'lucia.invalid'])"
+                  GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'lucia-owners') && 'Admin' || 'Viewer'"
+                  GF_AUTH_SIGNOUT_REDIRECT_URL: ${LUCIA_SSO_SIGNOUT:-}
+                labels:
+                  lucia.configs: "{{Hash(datasources, dashboards, hardware, inference)}}"
+                configs:
+                  - source: datasources
+                    target: /etc/grafana/provisioning/datasources/lucia.yaml
+                  - source: dashboards
+                    target: /etc/grafana/provisioning/dashboards/lucia.yaml
+                  - source: hardware
+                    target: /etc/grafana/dashboards/lucia/hardware.json
+                  - source: inference
+                    target: /etc/grafana/dashboards/lucia/inference.json
+                volumes:
+                  - grafana:/var/lib/grafana
+                ports:
+                  - "{{grafanaPort}}:3000"
+                depends_on:
+                  - prometheus
+                  - loki
+                  - tempo
+            configs:
+              collector:
+                content: |
+            {{Content(collector)}}
+              prometheus:
+                content: |
+            {{Content(prometheus)}}
+              loki:
+                content: |
+            {{Content(loki)}}
+              tempo:
+                content: |
+            {{Content(tempo)}}
+              datasources:
+                content: |
+            {{Content(datasources)}}
+              dashboards:
+                content: |
+            {{Content(dashboards)}}
+              hardware:
+                content: |
+            {{Content(hardware)}}
+              inference:
+                content: |
+            {{Content(inference)}}
+            volumes:
+              collector:
+              prometheus:
+              loki:
+              tempo:
+              grafana:
+
+            """;
+        var envText = $"OTLP_USERNAME={User}\n"
+            + $"OTLP_PASSWORD={StackCatalog.Secret(env, "OTLP_PASSWORD")}\n"
+            + $"GRAFANA_ADMIN_PASSWORD={StackCatalog.Secret(env, "GRAFANA_ADMIN_PASSWORD")}\n"
+            + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
+        return new(compose.ReplaceLineEndings("\n"), envText, [],
+            [new(grafanaHost, int.Parse(grafanaPort, CultureInfo.InvariantCulture)),
+             new(otlpHost, int.Parse(httpPort, CultureInfo.InvariantCulture), int.Parse(grpcPort, CultureInfo.InvariantCulture))]);
+    }
+}
+
+/// <summary>
+/// A MusicBrainz mirror: the website and its <c>/ws/2</c> API over a copy of MusicBrainz's database, with Solr search.
+/// A new install imports the latest data dump once. With a MetaBrainz access token it replicates MusicBrainz's changes every
+/// hour; the search indexes, which replication doesn't reach, are rebuilt weekly.
+/// </summary>
+internal sealed class MusicBrainzApp() : CatalogApp("musicbrainz", 1, "MusicBrainz",
+    "Mirror MusicBrainz's music database and search, for Picard and other taggers.",
+    "Any server with Docker ready, 16 GB of memory and about 350 GB of disk. The first import takes a few hours.",
+    [],
+    [
+        new("web-host", "Web name", "text", "musicbrainz", "The mirror's web address is this name under your domain."),
+        new("port", "Web port", "port", "5000", "The mirror also answers on http://<server>:<port>."),
+        new("metabrainz-access-token", "MetaBrainz access token", "secret", Optional: true,
+            Help: "From metabrainz.org/profile. With it, the mirror fetches MusicBrainz's changes every hour."),
+    ])
+{
+    private const string Server = "metabrainz/musicbrainz-docker-musicbrainz:v-2026-09-21.0-build0@sha256:791a31e4a7933aa6c55ae5f59054daf2ecc870dd329eb85fbb87f87a8b60e716";
+    private const string Db = "metabrainz/musicbrainz-docker-db:18-build0@sha256:15809586e1a1ebd89c328bb680ea164b0e6a1d0a2c3ef6db7934d88062e34fc8";
+    private const string Solr = "metabrainz/mb-solr:4.1.1@sha256:83e59a49f465771006f86a6ce806198abee5109e9f32b4be3c2622c0bd22473b";
+    private const string Sir = "metabrainz/sir:5.0.0-rc.3@sha256:ef2463e04676b542130b8db3e84ccce630d195ec8bf5e150d790994f54a5acd2";
+    private const string Valkey = "valkey/valkey:9-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11";
+    internal const string TokenKey = "METABRAINZ_ACCESS_TOKEN";
+
+    public override string BackupMode => "stop";
+    public override string[] BackupExclude => ["volumes/dbdump", "volumes/solrdata", "volumes/indexer"];
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (host, port) = (settings["web-host"].ToLowerInvariant(), settings["port"]);
+        var replicating = env.GetValueOrDefault(TokenKey) is { Length: > 0 };
+        // sir expands ${...} itself.
+        var indexer = """
+            [database]
+            dbname = musicbrainz_db
+            host = db
+            password = $${POSTGRES_PASSWORD}
+            port = 5432
+            user = musicbrainz
+
+            [solr]
+            uri = http://search:8983/solr
+            batch_size = 200
+
+            [sir]
+            import_threads = 8
+            index_limit = 200000
+            live_index_batch_size = 100
+            max_retries = 4
+            poll_interval = 5
+            process_delay = 15
+            query_batch_size = 5000
+            wscompat = on
+
+            [sentry]
+            dsn =
+            """;
+        var cron = """
+            SHELL=/bin/bash
+            BASH_ENV=/noninteractive.bash_env
+            0 * * * * /usr/local/bin/replication.sh
+            """;
+        static string Content(string text) => string.Join("\n", text.ReplaceLineEndings("\n").Split('\n').Select(line => "      " + line));
+        static string Hash(params string[] texts) =>
+            Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\0', texts))))[..16];
+        var replication = !replicating ? "" : $$"""
+                labels:
+                  lucia.configs: "{{Hash(cron)}}"
+                configs:
+                  - source: cron
+                    target: /crons.conf
+                secrets:
+                  - metabrainz_access_token
+
+            """;
+        var compose = $$"""
+            # Installed from Lucia's catalog (musicbrainz, version {{Version}}). Lucia rewrites this file when the catalog
+            # updates the app. Convert the app to a custom app to edit it by hand.
+            services:
+              db:
+                image: {{Db}}
+                restart: unless-stopped
+                command: postgres -c shared_buffers=2048MB
+                shm_size: 2gb
+                environment:
+                  POSTGRES_USER: musicbrainz
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                volumes:
+                  - pgdata:/var/lib/postgresql
+              valkey:
+                image: {{Valkey}}
+                restart: unless-stopped
+              search:
+                image: {{Solr}}
+                restart: unless-stopped
+                # Solr's start script runs lsof, which takes minutes per call under Docker's default open-file limit.
+                ulimits:
+                  nofile: 65536
+                environment:
+                  SOLR_HEAP: 2g
+                  LOG4J_FORMAT_MSG_NO_LOOKUPS: "true"
+                volumes:
+                  - solrdata:/var/solr
+              # Imports the latest data dump when the database doesn't exist yet, marks it ready, then idles so the app reads as
+              # running. A marker left by an interrupted import means the database is partial, so it starts over. A failure
+              # turns the service unhealthy until the app is restarted.
+              import:
+                image: {{Server}}
+                restart: unless-stopped
+                init: true
+                environment:
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                command:
+                  - bash
+                  - -c
+                  - |
+                    cd /media/dbdump && rm -f .failed
+                    fail() { echo "$$1 Restart the app to try again."; touch .failed; exec sleep infinity; }
+                    dockerize -wait tcp://db:5432 -timeout 600s true || fail "The database didn't start."
+                    carton exec -- /musicbrainz-server/script/database_exists MAINTENANCE && found=0 || found=$$?
+                    if [ "$$found" = 0 ] && [ ! -e .importing ]; then touch .ready; exec sleep infinity; fi
+                    if [ "$$found" = 0 ]; then
+                      PGPASSWORD="$$POSTGRES_PASSWORD" psql -h db -U musicbrainz -d postgres -c 'DROP DATABASE musicbrainz_db WITH (FORCE)' \
+                        || fail "The partial import couldn't be removed."
+                    elif [ "$$found" != 1 ]; then fail "The database couldn't be checked."; fi
+                    rm -f .ready && touch .importing
+                    createdb.sh -fetch || fail "The import failed."
+                    find /media/dbdump -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +
+                    rm .importing && touch .ready
+                    exec sleep infinity
+                healthcheck:
+                  test: ["CMD", "bash", "-c", "[ ! -e /media/dbdump/.failed ]"]
+                  interval: 1m
+                volumes:
+                  - dbdump:/media/dbdump
+              musicbrainz:
+                image: {{Server}}
+                restart: unless-stopped
+                # Links use the web address once the domain is active, and the server's port until then.
+                entrypoint:
+                  - bash
+                  - -c
+                  - |
+                    until [ -e /media/dbdump/.ready ]; do echo "Waiting for the database import."; sleep 60; done
+                    if [ -n "$$LUCIA_URL" ]; then export MUSICBRAINZ_WEB_SERVER_HOST="$${LUCIA_URL#https://}" MUSICBRAINZ_WEB_SERVER_PORT=443; fi
+                    exec docker-entrypoint.sh "$$@"
+                  - musicbrainz
+                command: ["start.sh"]
+                environment:
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                  MUSICBRAINZ_SERVER_PROCESSES: "10"
+                  MUSICBRAINZ_USE_PROXY: "1"
+                  MUSICBRAINZ_WEB_SERVER_HOST: {{node.Hostname}}
+                  MUSICBRAINZ_WEB_SERVER_PORT: "{{port}}"
+                  LUCIA_URL: ${{{StackStore.RouteVariable(host)}}:-}
+            {{replication}}    volumes:
+                  - dbdump:/media/dbdump:ro
+                ports:
+                  - "{{port}}:5000"
+                depends_on:
+                  - db
+                  - valkey
+                  - search
+              # Replication doesn't reach the search indexes, so they're rebuilt weekly. Search keeps answering meanwhile.
+              indexer:
+                image: {{Sir}}
+                restart: unless-stopped
+                environment:
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                command:
+                  - bash
+                  - -c
+                  - |
+                    until [ -e /media/dbdump/.ready ]; do sleep 60; done
+                    while :; do
+                      if [ -z "$$(find /state/indexed -mtime -7 2>/dev/null)" ]; then python -m sir reindex && touch /state/indexed; fi
+                      sleep 300
+                    done
+                labels:
+                  lucia.configs: "{{Hash(indexer)}}"
+                configs:
+                  - source: indexer
+                    target: /code/config.ini
+                volumes:
+                  - dbdump:/media/dbdump:ro
+                  - indexer:/state
+                depends_on:
+                  - db
+                  - search
+            configs:
+              indexer:
+                content: |
+            {{Content(indexer)}}
+            {{(replicating ? $"  cron:\n    content: |\n{Content(cron)}\nsecrets:\n  metabrainz_access_token:\n    environment: {TokenKey}\n" : "")}}volumes:
+              pgdata:
+              solrdata:
+              dbdump:
+              indexer:
+
+            """;
+        var envText = $"POSTGRES_PASSWORD={StackCatalog.Secret(env, "POSTGRES_PASSWORD")}\n"
+            + (replicating ? $"{TokenKey}={env[TokenKey]}\n" : "");
+        return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
     }
 }

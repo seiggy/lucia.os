@@ -298,6 +298,50 @@ flags less than 5% available host-volume capacity or 3% available system memory.
 High CPU/GPU utilization alone is not a fault. These are host telemetry checks,
 not a claim that every application, disk controller, or identity service is healthy.
 
+### Telemetry relays
+
+While the Observability app is installed and running, every managed server and the
+Spark run a **telemetry relay**: an OpenTelemetry collector plus node-exporter (and
+nvidia_gpu_exporter where there is an NVIDIA GPU), all on the host network and bound
+to loopback. Apps and the node agent send OTLP to `127.0.0.1:14317` (gRPC) or
+`127.0.0.1:14318` (HTTP); the relay adds `host.name`/`lucia.node`, scrapes hardware
+and Local AI's engine (vLLM, or llama.cpp per loaded model), and forwards everything
+to the Observability app. Servers get it as the reserved system app `telemetry-relay`;
+the Spark's relay runs beside the controller and posts through
+`/api/host/telemetry/relay/v1/{signal}` with a token only the relay can read. The
+controller exports its own traces, metrics and logs the same way. Grafana opens on the
+provisioned **Hardware** dashboard for every machine. llama.cpp has no OTLP support,
+so only its Prometheus metrics are collected.
+
+**Inference metrics.** The **Inference** dashboard puts every engine's raw performance
+side by side: requests, input/output/KV-cache-reused tokens, time to first token,
+prompt and generation tok/s, and total request time, per machine and model. Lucia
+Inference (TensorSharp) reports each finished chat only as a log entry, so
+`InferenceMetrics` turns that entry's numbers into `lucia.inference.*` metrics and
+keeps the entry itself (prompt and answer) out of every other log. The controller
+exports them over OTLP; node workers serve them at `/metrics` behind the inference key
+for the relay to scrape. vLLM's and llama.cpp's own metrics fill the same panels.
+llama.cpp keeps only running token and time totals, so it has no time to first token,
+request time or request count.
+
+**App sign-in.** Catalog apps that support SSO (Grafana today) get an Authentik
+client once a domain is active. The controller writes a request per app to
+`data/domains/app-sso-requests/`; the Spark's `lucia-domain-activation` worker,
+which alone holds Authentik admin credentials, reconciles an owner-only OIDC client
+(`lucia-app-<stack>`, bound to `lucia-owners`) and deletes clients no longer
+requested. After a matching success response the controller adds `LUCIA_SSO_*` to the
+app's env and redeploys it. Grafana signs owners in as Admin; its local admin form
+stays at `/login?disableAutoLogin=true`.
+
+**MusicBrainz mirror.** The catalog's MusicBrainz app runs the website and `/ws/2`
+API over its own copy of the database, with Solr search. A new install imports the
+latest data dump once (a few hours, about 100 GB); the website waits for it. With a
+MetaBrainz access token (a `secret` setting: kept only in the app's encrypted env,
+never in its manifest) it replicates every hour. Replication doesn't update search,
+so the indexer rebuilds the indexes weekly while search keeps answering. Picard can
+use the mirror directly; Lidarr reads metadata from its own API and needs a
+separate metadata bridge to use it.
+
 Managed OpenAI endpoints require `Owner` or `Inference` authorization.
 Authentik access tokens are checked for issuer, audience, signature, expiry,
 and `lucia_api` scope; ID tokens are not accepted as API access tokens.

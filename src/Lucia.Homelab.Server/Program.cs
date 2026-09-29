@@ -26,6 +26,7 @@ DomainActivationConfiguration.Apply(builder);
 
 // Add service defaults & Aspire client integrations.
 builder.AddServiceDefaults();
+InferenceMetrics.Add(builder.Logging);
 builder.AddHostOutputCache();
 
 // Add services to the container.
@@ -46,12 +47,15 @@ builder.Services.AddSingleton<ManagedNodeEnrollment>();
 builder.Services.AddSingleton<OwnerSshKeys>();
 builder.AddStacks();
 builder.Services.AddHostedService<ManagedNodeDns>();
+builder.Services.AddHostedService<Lucia.Homelab.Server.Stacks.AppSsoRegistrations>();
 builder.Services.AddSingleton<ManagedNodeDhcp>();
 builder.Services.AddHostedService(services => services.GetRequiredService<ManagedNodeDhcp>());
 builder.AddSparkTelemetry();
+builder.AddControllerRelay();
 builder.AddPackageUpdates();
 
 var app = builder.Build();
+TelemetryForwarder.Destination = app.Services.GetRequiredService<StackStore>().TelemetryEndpoint;
 
 // Configure the HTTP request pipeline.
 app.UseExceptionHandler();
@@ -74,6 +78,7 @@ app.MapManagedInstallation();
 app.MapOwnerSshKeys();
 app.MapStacks();
 app.MapSparkTelemetry();
+app.MapControllerRelay();
 app.MapPackageUpdates();
 
 app.MapDevelopmentApiDocumentation();

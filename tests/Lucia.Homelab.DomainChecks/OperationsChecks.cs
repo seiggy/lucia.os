@@ -74,10 +74,23 @@ internal static class OperationsChecks
             check(DomainOperationsService.Records(job, [new(naming.LocalHostnames[0], plan.IngressAddress) { Enabled = false }], provider.Health)[0].State == "Disabled",
                 "Disabled exact record was not identified.");
 
+            var app = new Lucia.Homelab.Server.Stacks.ActiveRoute("musicbrainz", new("musicbrainz", 5000), "192.168.1.172");
+            var appJson = JsonNode.Parse(Lucia.Homelab.Server.Stacks.AppGateway.Build([app], naming.Namespace)!)!;
+            var appRoute = DomainOperationsService.AppRoutes([app], naming.Namespace, appJson);
+            appJson["http"]!["services"]!["app-musicbrainz-musicbrainz"]!["loadBalancer"]!["servers"]![0]!["url"] = "http://192.168.1.9:5000";
+            check(appRoute is [{ Name: "MusicBrainz", Configuration: "Published", Target: "http://192.168.1.172:5000" }]
+                && appRoute[0].Origin == $"https://musicbrainz.{naming.Namespace}"
+                && DomainOperationsService.AppRoutes([app], naming.Namespace, appJson)[0].Configuration == "Changed"
+                && DomainOperationsService.AppRoutes([app], naming.Namespace, new JsonObject())[0].Configuration == "Missing",
+                "App routes weren't reported against the published gateway configuration.");
             var wanted = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(naming,
                 [new("node1", "192.168.1.172"), new("atlas", "192.168.1.5"), new("public", "8.8.8.8"), new("taken", "192.168.1.9")]);
             check(wanted.Length == 2 && wanted[0] == new AdGuardRewrite("node1.lab.example.com", "192.168.1.172"),
                 "Node DNS accepted a public address or a Lucia service name.");
+            var routed = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(naming, [new("node1", "192.168.1.172")], plan.IngressAddress,
+                [new Lucia.Homelab.Server.Stacks.ActiveRoute("obs", new("grafana", 3030), "192.168.1.172")]);
+            check(routed.Contains(new AdGuardRewrite("grafana.lab.example.com", plan.IngressAddress)) && routed.Length == 2,
+                "An app's web address must point at Lucia's gateway, not at the app's server.");
             var state = Path.Combine(root, "nodes", "dns-records.json");
             var dns = new WritableDns { Entries = [new("taken.lab.example.com", "192.168.1.50")] };
             await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, wanted, default);

@@ -65,9 +65,13 @@ public sealed partial class StackStore
         return address;
     }
 
-    /// <summary>The environment the node writes, with the address for the compose's port bindings. Always set, so compose parses when stopped.</summary>
-    internal static string NodeEnv(string env, StackManifest manifest) =>
-        manifest.Address is { } address ? $"{env.TrimEnd('\n')}\n{AddressVariable}={address}\n".TrimStart('\n') : env;
+    /// <summary>The environment the node writes, with the address for the compose's port bindings and the app's web addresses.
+    /// The address is always set, so compose parses when stopped.</summary>
+    internal static string NodeEnv(string env, StackManifest manifest, string? ns = null)
+    {
+        var extra = (manifest.Address is { } address ? $"{AddressVariable}={address}\n" : "") + RouteEnv(manifest, ns);
+        return extra.Length == 0 ? env : $"{env.TrimEnd('\n')}\n{extra}".TrimStart('\n');
+    }
 
     private static void ValidateAddresses(NodeAddressStatus[]? addresses)
     {

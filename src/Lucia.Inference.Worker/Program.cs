@@ -3,6 +3,7 @@ using System.Text;
 using Lucia.Homelab.Server.Host;
 using Microsoft.Extensions.Configuration.Memory;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,11 +37,19 @@ builder.Services.AddSingleton<InferenceRuntime>();
 // Beside vLLM the worker only keeps the model library, and has no GPU to load a saved selection onto.
 if (!builder.Configuration.GetValue<bool>("Worker:LibraryOnly")) builder.Services.AddHostedService<SavedModelStartup>();
 else builder.Configuration["HostPlatform:RequireTensorSharp"] = "false";
-builder.Logging.AddFilter("TensorSharp", LogLevel.Warning);
+InferenceMetrics.Add(builder.Logging);
+// The node's telemetry relay scrapes /metrics with the inference key.
+builder.Services.AddOpenTelemetry().WithMetrics(metrics => metrics.AddMeter(InferenceMetrics.MeterName).AddPrometheusExporter());
 builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 16 * 1024 * 1024);
 
 var app = builder.Build();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapPrometheusScrapingEndpoint("/metrics", null, metrics => metrics.Use(async (context, next) =>
+{
+    if (WorkerAuthentication.Authorized(context, context.RequestServices.GetRequiredService<IOptions<HostPlatformOptions>>().Value.InferenceApiKey!))
+        await next(context);
+    else context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+}), null);
 app.MapGroup("/api/worker").RequireKey(o => o.ApiKey).AddEndpointFilter<HostErrorFilter>().MapModelManagement("/api/worker");
 app.MapGroup("/v1").RequireKey(o => o.InferenceApiKey!).AddEndpointFilter<HostErrorFilter>().MapOpenAIInference();
 app.Run();
@@ -51,15 +60,17 @@ static class WorkerAuthentication
     public static RouteGroupBuilder RequireKey(this RouteGroupBuilder group, Func<HostPlatformOptions, string> key)
     {
         group.AddEndpointFilter(async (context, next) =>
-        {
-            var expected = key(context.HttpContext.RequestServices.GetRequiredService<IOptions<HostPlatformOptions>>().Value);
-            var header = context.HttpContext.Request.Headers.Authorization.ToString();
-            var given = header.StartsWith("Bearer ", StringComparison.Ordinal) ? header[7..] : "";
-            return given.Length > 0 && CryptographicOperations.FixedTimeEquals(
-                SHA256.HashData(Encoding.UTF8.GetBytes(given)), SHA256.HashData(Encoding.UTF8.GetBytes(expected)))
-                ? await next(context) : Results.Unauthorized();
-        });
+            Authorized(context.HttpContext, key(context.HttpContext.RequestServices.GetRequiredService<IOptions<HostPlatformOptions>>().Value))
+                ? await next(context) : Results.Unauthorized());
         return group;
+    }
+
+    public static bool Authorized(HttpContext context, string expected)
+    {
+        var header = context.Request.Headers.Authorization.ToString();
+        var given = header.StartsWith("Bearer ", StringComparison.Ordinal) ? header[7..] : "";
+        return given.Length > 0 && CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(Encoding.UTF8.GetBytes(given)), SHA256.HashData(Encoding.UTF8.GetBytes(expected)));
     }
 }
 

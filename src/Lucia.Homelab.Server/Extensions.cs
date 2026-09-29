@@ -1,3 +1,4 @@
+using Lucia.Homelab.Server.Telemetry;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
@@ -5,7 +6,10 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.ServiceDiscovery;
 using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 namespace Microsoft.Extensions.Hosting;
@@ -57,7 +61,8 @@ public static class Extensions
             {
                 metrics.AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation();
+                    .AddRuntimeInstrumentation()
+                    .AddMeter(Lucia.Homelab.Server.Host.InferenceMetrics.MeterName);
             })
             .WithTracing(tracing =>
             {
@@ -67,6 +72,8 @@ public static class Extensions
                         tracing.Filter = context =>
                             !context.Request.Path.StartsWithSegments(HealthEndpointPath)
                             && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
+                            // The machine's relay posts every few seconds; its batches show up on their own.
+                            && !context.Request.Path.StartsWithSegments("/api/host/telemetry/relay")
                     )
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
@@ -85,6 +92,21 @@ public static class Extensions
         if (useOtlpExporter)
         {
             builder.Services.AddOpenTelemetry().UseOtlpExporter();
+        }
+        else
+        {
+            // Installed: send to the Observability app, wherever it runs; see TelemetryForwarder.
+            static void Lucia(OtlpExporterOptions options, string signal)
+            {
+                options.Protocol = OtlpExportProtocol.HttpProtobuf;
+                options.Endpoint = new Uri(TelemetryForwarder.Placeholder, "v1/" + signal);
+                options.HttpClientFactory = () => new HttpClient(new TelemetryForwarder()) { Timeout = TimeSpan.FromSeconds(10) };
+            }
+            builder.Services.AddOpenTelemetry()
+                .ConfigureResource(resource => resource.AddService(builder.Configuration["OTEL_SERVICE_NAME"] ?? "lucia-controller"))
+                .WithTracing(tracing => tracing.AddOtlpExporter(options => Lucia(options, "traces")))
+                .WithMetrics(metrics => metrics.AddOtlpExporter(options => Lucia(options, "metrics")))
+                .WithLogging(logging => logging.AddOtlpExporter(options => Lucia(options, "logs")));
         }
 
         // Uncomment the following lines to enable the Azure Monitor exporter (requires the Azure.Monitor.OpenTelemetry.AspNetCore package)

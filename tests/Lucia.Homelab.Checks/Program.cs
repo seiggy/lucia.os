@@ -282,7 +282,31 @@ try
     Check((await productionClient.GetAsync("/scalar/v1")).StatusCode == HttpStatusCode.NotFound, "Scalar was exposed outside development.");
     Check((await productionClient.GetAsync("/openapi/v1.json")).StatusCode == HttpStatusCode.NotFound, "OpenAPI was exposed outside development.");
     await productionApp.StopAsync();
-    Console.WriteLine("Host checks passed: format, memory budget, tool round trip, downloads, cancellation, persistence, deletion, API auth and unavailable inference.");
+
+    // Inference metrics come from TensorSharp's completion log entry; only its numbers are kept.
+    var recorded = new Dictionary<string, double>();
+    string? recordedModel = null;
+    using (var listener = new System.Diagnostics.Metrics.MeterListener())
+    {
+        listener.InstrumentPublished = (instrument, owner) => { if (instrument.Meter.Name == InferenceMetrics.MeterName) owner.EnableMeasurementEvents(instrument); };
+        listener.SetMeasurementEventCallback<long>((instrument, value, _, _) => recorded[instrument.Name] = recorded.GetValueOrDefault(instrument.Name) + value);
+        listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
+        {
+            recorded[instrument.Name] = recorded.GetValueOrDefault(instrument.Name) + value;
+            foreach (var tag in tags) if (tag.Key == "model") recordedModel = tag.Value as string;
+        });
+        listener.Start();
+        using var factory = LoggerFactory.Create(logging => InferenceMetrics.Add(logging));
+        var tensorSharp = factory.CreateLogger("TensorSharp.Server.ModelService");
+        InferenceMetrics.LoadedModel = () => "test-model";
+        tensorSharp.LogInformation("chat.complete tokens={Tokens} promptTokens={PromptTokens} kvReused={KvReusedTokens} kvReusePercent={KvReusePercent:F1} ttftMs={TimeToFirstTokenMs} elapsedMs={ElapsedMs:F1} tokensPerSec={TokensPerSec:F2} finishReason={FinishReason} assistantOutput=\"{AssistantContent}\"",
+            20, 100, 60, 60.0, 500L, 2500.0, 10.0, "eos", "answer");
+        factory.CreateLogger("Other").LogInformation("chat.complete tokens={Tokens}", 999);
+    }
+    Check(recorded.GetValueOrDefault("lucia.inference.input_tokens") == 100 && recorded.GetValueOrDefault("lucia.inference.cached_tokens") == 60
+        && recorded.GetValueOrDefault("lucia.inference.output_tokens") == 20 && recorded.GetValueOrDefault("lucia.inference.time_to_first_token") == 0.5
+        && recorded.GetValueOrDefault("lucia.inference.duration") == 2.5 && recordedModel == "test-model", "Inference metrics were not read from TensorSharp's completion log.");
+    Console.WriteLine("Host checks passed: format, memory budget, tool round trip, downloads, cancellation, persistence, deletion, API auth, unavailable inference and inference metrics.");
 }
 finally
 {

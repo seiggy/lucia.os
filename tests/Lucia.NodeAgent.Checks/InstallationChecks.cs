@@ -529,6 +529,11 @@ internal static class InstallationChecks
         var containers = StackRunner.ParseContainers(ps);
         Check(containers.Length == 2 && containers[0] is { Project: "lucia-media", Service: "sonarr", State: "running", Ports: "0.0.0.0:8989->8989/tcp" }
             && containers[1] is { Project: null, Service: null, Name: "eager_turing" }, "docker ps parsing lost or invented container fields.");
+        var awaiting = StackRunner.ParseContainers("""
+            {"ID":"%ID%","Image":"x","Labels":"com.docker.compose.depends_on=init:service_completed_successfully:false,db:service_healthy:true,prep:service_completed_successfully:true,com.docker.compose.project=lucia-obs","Names":"n","State":"running"}
+            """.Replace("%ID%", new string('a', 64)));
+        Check(awaiting is [{ Awaits: ["init", "prep"] }] && containers[0].Awaits is null or [],
+            "One-shot dependencies must come from the compose depends_on label.");
         Check(StackRunner.Health(containers[0].Status) == "healthy" && StackRunner.ExitCode(containers[1].Status) == 137
             && StackRunner.ExitCode(containers[0].Status) is null, "Container health or exit code parsing is wrong.");
 

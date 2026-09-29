@@ -41,6 +41,7 @@ try
     }
     if (args is ["managed-run"])
     {
+        using var telemetry = AgentTelemetry.Start();
         await ManagedRunner.RunAsync(cancellation.Token);
         return 0;
     }

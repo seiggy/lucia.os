@@ -52,6 +52,7 @@ public sealed class InferenceRuntime : IAsyncDisposable
         var root = Path.GetFullPath(_options.ModelDirectory, environment.ContentRootPath);
         _chatOptions = CreateOptions(Path.Combine(root, ".uploads"));
         Chat = new ModelService(loggerFactory.CreateLogger<ModelService>());
+        InferenceMetrics.LoadedModel = () => ChatModelName;
         var queue = new InferenceQueue();
         var uploads = new UploadStoragePolicy(_chatOptions.UploadDirectory, maxFileBytes: 0, quotaBytes: 1);
         var skills = new SkillRegistry(new SkillRegistryOptions(), loggerFactory.CreateLogger<SkillRegistry>());

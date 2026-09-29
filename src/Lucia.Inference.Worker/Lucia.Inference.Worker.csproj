@@ -16,6 +16,7 @@
     <Compile Include="..\Lucia.Homelab.Server\Host\HostPlatformOptions.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\Lucia.Homelab.Server\Host\HuggingFaceManagementCredentials.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\Lucia.Homelab.Server\Host\InferenceEndpoints.cs" Link="Shared\%(Filename)%(Extension)" />
+    <Compile Include="..\Lucia.Homelab.Server\Host\InferenceMetrics.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\Lucia.Homelab.Server\Host\InferenceRuntime.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\Lucia.Homelab.Server\Host\ModelCatalog.cs" Link="Shared\%(Filename)%(Extension)" />
     <Compile Include="..\Lucia.Homelab.Server\Host\ModelInspector.cs" Link="Shared\%(Filename)%(Extension)" />
@@ -23,6 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.15.3-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
     <PackageReference Include="TensorSharp.Models" Version="$(TensorSharpVersion)" />
     <PackageReference Include="TensorSharp.Server" Version="$(TensorSharpVersion)" />
     <PackageReference Include="TensorSharp.Native.Cuda" Version="$(TensorSharpVersion)" Condition="'$(CudaLine)' == '13'" />

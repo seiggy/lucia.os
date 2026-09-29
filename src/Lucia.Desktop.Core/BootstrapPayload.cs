@@ -16,6 +16,7 @@ internal static class BootstrapPayload
         "tools/identity/provision.py",
         "tools/identity/owner.py",
         "tools/identity/application.py",
+        "tools/identity/app_clients.py",
         "tools/host/provision_host.py",
         "tools/host/package.py",
         "tools/boot/prepare.py",

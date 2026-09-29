@@ -22,7 +22,7 @@ export interface StackRestore { id: string; snapshot: string; startedAt: string;
 export interface CatalogOption { value: string; label: string; help: string }
 /** `when` is `id=value` or `id=one|other`: the field applies only while that setting has one of those values. Hidden fields are set by Lucia's own screens. */
 export interface CatalogField {
-  id: string; label: string; kind: 'port' | 'text' | 'gpus' | 'choice' | 'hidden'; default: string | null; help: string | null
+  id: string; label: string; kind: 'port' | 'text' | 'gpus' | 'choice' | 'secret' | 'hidden'; default: string | null; help: string | null
   options: CatalogOption[]; when: string | null; optional: boolean
 }
 export interface CatalogGpu { uuid: string; model: string; memoryBytes: number | null; unsupported: string | null }
@@ -31,7 +31,7 @@ export interface CatalogApp {
   id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
   serverBound: boolean; usesAddress: boolean; servers: CatalogServer[]
 }
-export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null }
+export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null; urls: Record<string, string> }
 export interface NodeInventory { reportedAt: string; containers: NodeContainer[]; listeners: NodeListener[] }
 
 export const stackNamePattern = /^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/
@@ -154,7 +154,7 @@ export function parseCatalog(value: unknown): CatalogApp[] {
       require: list(app.require, text, 16), serverBound: app.serverBound === true, usesAddress: app.usesAddress === true,
       fields: list(app.fields, field => {
         const row = object(field)
-        if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'hidden') throw invalid()
+        if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'secret' && row.kind !== 'hidden') throw invalid()
         const options = absent(row.options) ? [] : list(row.options, option => {
           const item = object(option)
           return { value: text(item.value), label: text(item.label), help: text(item.help) }
@@ -182,6 +182,9 @@ export function catalogReason(server: CatalogServer): string | null {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`
 }
 
+/** The environment key a secret setting is saved under. */
+export const secretKey = (id: string) => id.toUpperCase().replace(/-/g, '_')
+
 /** The settings a server starts with: field defaults, and every GPU that can run the app. */
 export function catalogDefaults(app: CatalogApp, server: CatalogServer | undefined): Record<string, string> {
   return Object.fromEntries(app.fields.map(field => [field.id, field.kind === 'gpus'
@@ -205,6 +208,7 @@ export function settingsProblem(app: CatalogApp, values: Record<string, string>)
     if (field.kind === 'port' && !(/^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535)) return `${field.label} must be a port from 1 to 65535.`
     if (field.kind === 'gpus' && !value) return 'Choose at least one GPU.'
     if (field.kind === 'text' && value.length > 128) return `${field.label} can be up to 128 characters.`
+    if (field.kind === 'secret' && !/^[A-Za-z0-9._~+/=-]{0,128}$/.test(value)) return `${field.label} can be up to 128 letters, digits and . _ ~ + / = -`
   }
   return null
 }
@@ -221,8 +225,13 @@ export function parseStackList(value: unknown): StackSummary[] {
 
 export function parseStackDetail(value: unknown): StackDetail {
   const item = object(value)
+  const urls = item.urls == null ? {} : Object.fromEntries(Object.entries(object(item.urls)).slice(0, 8).map(([host, url]) => {
+    const address = text(url)
+    if (!address.startsWith('https://')) throw invalid()
+    return [host, address]
+  }))
   return { stack: parseStackSummary(item.stack), compose: text(item.compose), env: text(item.env),
-    placement: parsePlacement(object(item.manifest).placement), address: optional(item.address) }
+    placement: parsePlacement(object(item.manifest).placement), address: optional(item.address), urls }
 }
 
 /** One value from a .env file, or null. */
@@ -332,7 +341,7 @@ export function stackState(stack: StackSummary): { label: string; tone: StackTon
     ? { label: 'Stopping', tone: 'accent', detail: `${stack.node} is taking the containers down.` }
     : { label: 'Stopped', tone: 'muted', detail: 'Its containers are down. Data is kept.' }
   if (state === 'Stopped') return { label: 'Starting', tone: 'accent', detail: `${stack.node} is starting the containers.` }
-  if (state === 'Running') return { label: 'Running', tone: 'green', detail: `${count} running on ${stack.node}.` }
+  if (state === 'Running') return { label: 'Running', tone: 'green', detail: `${running === 1 ? '1 container' : `${running} containers`} running on ${stack.node}.` }
   return { label: 'Needs attention', tone: 'amber',
     detail: services.length === 0 ? 'No containers are running.' : `${running} of ${count} running. Check the logs.` }
 }

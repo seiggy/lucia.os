@@ -72,9 +72,16 @@ public static class DomainIngressConfiguration
             }
             DomainActivationConfiguration.RejectLinks(target);
             File.Move(pending, target, overwrite: true);
+            NotifyGateway(gatewayDirectory);
         }
         finally { if (File.Exists(pending)) File.Delete(pending); }
     }
+
+    /// <summary>
+    /// The gateway watches only its top-level configuration directory, which holds this one. Touching this directory is an
+    /// event in the watched one, so the gateway reloads the files inside it.
+    /// </summary>
+    internal static void NotifyGateway(string gatewayDirectory) => Directory.SetLastWriteTimeUtc(gatewayDirectory, DateTime.UtcNow);
 
     private static string GatewayCertificatePath(string root, string path)
     {

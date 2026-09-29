@@ -52,7 +52,7 @@ ASPIRE_VERSION = "13.5.4"
 APPHOST = "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj"
 FILES = frozenset((
     "tools/desktop/bootstrap.py", "tools/identity/provision.py", "tools/identity/owner.py",
-    "tools/identity/application.py", "tools/host/provision_host.py", "tools/host/package.py",
+    "tools/identity/application.py", "tools/identity/app_clients.py", "tools/host/provision_host.py", "tools/host/package.py",
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
     "tools/packages/package_worker.py",

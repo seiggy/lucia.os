@@ -1,4 +1,4 @@
-"""Narrow native bridge: reconcile only the owned Lucia OIDC callbacks and launch URL."""
+"""Narrow native bridge: reconcile only the owned Lucia OIDC callbacks and launch URL, and owner-only app sign-in clients."""
 
 import argparse
 import contextlib
@@ -18,6 +18,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/identity"))
+import app_clients
 import application
 from provision import Provisioner
 
@@ -227,6 +228,53 @@ def process(p, directory, job_id, snapshot=None):
     return value["action"]
 
 
+def app_sign_ins(p, state, directory, previous):
+    """Reconcile app sign-in clients when their requests change, and every ten minutes (one on failure)."""
+    requests, responses = directory / "app-sso-requests", directory / "app-sso-responses"
+    private_directory(requests)
+    private_directory(responses)
+    files = {path.stem: regular(path) for path in sorted(requests.iterdir())
+             if path.suffix == ".json" and app_clients.STACK.fullmatch(path.stem)}
+    if len(files) > 32:
+        raise ValueError("Too many app sign-in requests; review the queue.")
+    hashes = {stack: hashlib.sha256(data).hexdigest() for stack, data in files.items()}
+    fingerprint = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    if previous[0] == fingerprint and time.monotonic() < previous[1]:
+        return previous
+    try:
+        with contextlib.ExitStack() as stack:
+            for lock_path in (ROOT.parent / ".run.lock", state / ".provision.lock"):
+                lock = stack.enter_context(lock_path.open("a+b"))
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            p.load_existing()
+            p.deadline = time.monotonic() + 300
+            parsed = {}
+            for name, data in files.items():
+                try:
+                    parsed[name] = parse_json(data)
+                except ValueError:
+                    parsed[name] = None
+            origin = read_json(state / "host-settings.json")["authentication"]["public_origin"]
+            results = app_clients.reconcile(p, origin, parsed)
+    except BlockingIOError:
+        return previous
+    except Exception as error:
+        results = {name: type(error).__name__ for name in files}
+    for name in files:
+        error = results.get(name, "ValueError")
+        if error:
+            print(json.dumps({"event": "app-sign-in-failed", "stack": name, "errorType": error}), flush=True)
+        write_file(responses / (name + ".json"), json.dumps({
+            "schemaVersion": 1, "stack": name, "success": error is None, "requestHash": hashes[name],
+            "checkedAt": datetime.datetime.now(UTC).isoformat(),
+        }) + "\n")
+    for path in responses.iterdir():
+        if path.suffix == ".json" and path.stem not in files:
+            path.unlink()
+    retry = 600 if all(results.get(name, "ValueError") is None for name in files) else 60
+    return fingerprint, time.monotonic() + retry
+
+
 def run():
     if sys.platform != "linux" or os.getuid() == 0:
         raise RuntimeError("Run this worker as the non-root Spark setup user.")
@@ -251,6 +299,7 @@ def run():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     seen = {}
+    sign_ins = (None, 0)
     ingress_fingerprint = None
     while not stopping:
         ingress_ready = True
@@ -308,6 +357,10 @@ def run():
                 "requestHash": fingerprint,
                 "checkedAt": datetime.datetime.now(UTC).isoformat(),
             }) + "\n")
+        try:
+            sign_ins = app_sign_ins(p, state, directory, sign_ins)
+        except (OSError, ValueError) as error:
+            print(json.dumps({"event": "app-sign-in-queue-failed", "errorType": type(error).__name__}), flush=True)
         time.sleep(5)
     write_file(directory / "activation-worker.json", json.dumps({
         "schemaVersion": 1, "ready": False, "checkedAt": datetime.datetime.now(UTC).isoformat(),

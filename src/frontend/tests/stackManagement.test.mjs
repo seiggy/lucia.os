@@ -28,6 +28,10 @@ assert.throws(() => parseStackList({ stacks: [{ ...summary, desired: 'Maybe' }] 
 
 const detail = parseStackDetail({ stack: summary, compose: 'services: {}\n', env: 'TZ=UTC\n', manifest: { schemaVersion: 1, placement: { node: 'lucialab01' } } })
 assert.deepEqual(detail.placement, { node: 'lucialab01', require: [] })
+assert.deepEqual(detail.urls, {})
+assert.deepEqual(parseStackDetail({ stack: summary, compose: '', env: '', manifest: { schemaVersion: 1, placement: {} }, urls: { grafana: 'https://grafana.homelab.example.com' } }).urls,
+  { grafana: 'https://grafana.homelab.example.com' })
+assert.throws(() => parseStackDetail({ stack: summary, compose: '', env: '', manifest: { schemaVersion: 1, placement: {} }, urls: { grafana: 'javascript:alert(1)' } }))
 assert.deepEqual(parseStackDetail({ stack: summary, compose: '', env: '', manifest: { schemaVersion: 1, placement: { node: null, require: ['gpu'] } } }).placement, { node: null, require: ['gpu'] })
 assert.deepEqual(stack.placement, { node: null, require: [] })
 assert.equal(stack.move, null)
