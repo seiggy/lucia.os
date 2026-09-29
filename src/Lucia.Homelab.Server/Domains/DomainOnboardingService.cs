@@ -6,6 +6,7 @@ using Lucia.Homelab.Server.Host;
 namespace Lucia.Homelab.Server.Domains;
 
 public sealed record StartDomainSetupRequest(Guid PlanId, string ReviewHash, bool AcceptTerms, bool AcceptDnsChanges);
+public sealed record SetPublicAccessRequest(bool Enabled);
 
 public sealed class DomainOnboardingService(
     DomainOnboardingOptions options, DomainOnboardingStore store, CloudflareDomainService cloudflare,
@@ -30,11 +31,26 @@ public sealed class DomainOnboardingService(
                 job.Id, job.State, job.Phase, job.Message, job.CreatedAt, job.UpdatedAt, job.Events,
                 job.RecoveryRequired, pendingRewrites = job.PendingRewrites ?? [], job.Diagnosis, job.Support, job.Failure,
                 serviceUrls = job.Plan.Naming.ServiceUrls, job.NextRenewalAt, job.RenewalError, job.RenewalCheckedAt, job.RenewalOutcome,
+                job.Public, job.PublicRequested, job.PublicError, zone = job.Plan.Naming.Domain,
                 certificate = job.Certificate is { } certificate ? new
                 { certificate.NotAfter, certificate.DnsNames, certificate.CertificateSha256 } : null
             } : null,
             active
         };
+    }
+
+    /// <summary>Requests public access on or off; the domain worker applies it and restarts Lucia.</summary>
+    public async Task SetPublic(bool enabled, CancellationToken ct)
+    {
+        if (!(await cloudflare.GetStatusAsync(ct)).Configured)
+            throw new InvalidOperationException("Connect Cloudflare before changing public access.");
+        await store.Update(current =>
+        {
+            if (current.Job is not { State: "Active" } job || DomainActivationConfiguration.Read(store.Root)?.ProfileId != job.Id)
+                throw new InvalidOperationException("Public access needs an active domain.");
+            if (job.Phase != "Active") throw new InvalidOperationException("Wait for the current domain operation to finish.");
+            return current with { Job = job with { PublicRequested = enabled == job.Public ? null : enabled, PublicError = null } };
+        }, ct);
     }
 
     public bool WorkerReady()

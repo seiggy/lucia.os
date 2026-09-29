@@ -38,6 +38,14 @@ permissions, AdGuard credentials, certificate coverage, the scoped activation
 service, renewal, and qualification boundaries. No domain or DNS record changes
 occur merely by saving a connection.
 
+**Public access** (Settings → Domains) is optional. When it is on:
+- Lucia adds `*.<zone>` to the certificate and moves Authentik to `auth.<zone>`. Lucia restarts, and everyone signs in again.
+- Traefik gets a `public` entrypoint on port 8445 that only accepts Cloudflare's address ranges.
+- Lucia keeps proxied Cloudflare A records at the network's WAN address, only touching records that carry its "Managed by Lucia" comment or that already point at that address.
+- With UniFi connected, Lucia keeps the router's TCP 443 forward pointed at that entrypoint.
+
+An app's web address becomes public when it gets a public name on the app's page, and its Authentik app then launches at the public URL. Services that Lucia doesn't run can be listed under **Other services on your network**, with a private IPv4 address, a port and an optional public name.
+
 ## Hardware onboarding contract
 
 Hardware onboarding is being implemented; the existing host does not yet provide
@@ -362,6 +370,12 @@ in through Authentik as proxy admins (their Authentik account needs an email), a
 while that's on, the UI's master-key/password login is off; the master key,
 `LITELLM_MASTER_KEY` in the app's env, still works for the API. Traces and metrics go to
 Observability as service `litellm`.
+
+**Plex.** The catalog's Plex app runs on the host network (port 32400) with up to two
+NAS folders mounted at `/data` and `/media`. Transcoding is `cpu` or `nvidia` (NVENC,
+which needs an NVIDIA node). A claim token from plex.tv/claim is only needed for a fresh
+server; a restored config keeps its identity. Backups stop Plex, since its database is
+SQLite.
 
 Managed OpenAI endpoints require `Owner` or `Inference` authorization.
 Authentik access tokens are checked for issuer, audience, signature, expiry,

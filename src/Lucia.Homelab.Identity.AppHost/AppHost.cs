@@ -313,6 +313,9 @@ if (hostSettings is not null)
     }
 }
 
+// Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4); Lucia's DomainIngressConfiguration.CloudflareRanges matches.
+const string CloudflareRanges = "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18," +
+    "190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22";
 var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
     .WithImageSHA256("31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d")
     .WithEntrypoint("/bin/sh")
@@ -321,7 +324,11 @@ var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
         "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.ldaps.address=:8636 " +
         // No read timeout on the host entrypoint: a stack move's upload can wait minutes for its receiver and then stream for
         // hours. Kestrel still enforces header timeouts and minimum body rates on every other route.
-        (hostSettings is not null ? "--entrypoints.host.address=:8444 --entrypoints.host.transport.respondingTimeouts.readTimeout=0 " : "") +
+        (hostSettings is not null ? "--entrypoints.host.address=:8444 --entrypoints.host.transport.respondingTimeouts.readTimeout=0 " +
+            // Internet traffic arrives here through Cloudflare's proxy and the router's port forward. Only public routes join
+            // this entrypoint, and its public-sources middleware (published with public access) admits only Cloudflare.
+            "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file " +
+            "--entrypoints.public.forwardedHeaders.trustedIPs=" + CloudflareRanges + " " : "") +
         "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
     .WithBindMount(StatePath("gateway"), "/config", isReadOnly: true)
     .WithBindMount(StatePath("certificates"), "/certificates", isReadOnly: true)
@@ -336,12 +343,16 @@ var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
         service.Ports.Add($"0.0.0.0:{ports.GetProperty("authentik").GetInt32()}:8443");
         service.Ports.Add($"0.0.0.0:{ports.GetProperty("ldaps").GetInt32()}:8636");
         if (hostSettings is not null)
+        {
             service.Ports.Add("0.0.0.0:443:8444");
+            service.Ports.Add("0.0.0.0:8445:8445");
+        }
     });
 
 if (hostSettings is not null)
 {
     gateway.WithHttpsEndpoint(port: 443, targetPort: 8444, name: "host");
+    gateway.WithHttpsEndpoint(port: 8445, targetPort: 8445, name: "public");
     gateway.WithBindMount(Path.Combine(hostSettings.RootElement.GetProperty("data_directory").GetString()!, "domains", "certificates"),
         "/domain-certificates", isReadOnly: true);
 }

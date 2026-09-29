@@ -40,12 +40,16 @@
 .network-cell-note { display: block; margin-top: 6px; font-size: 14px; font-weight: 400; color: var(--muted); }
 .network-dns-answer { display: block; margin-bottom: 6px; }
 .network-facts { display: grid; gap: 16px; margin: 0; }
+.network-actions + .network-facts { margin-top: 28px; }
 .network-facts dt { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
 .network-facts dd { margin: 0; overflow-wrap: anywhere; }
+.external-route { display: grid; grid-template-columns: 1fr 1fr 7rem 1fr auto; gap: 16px; align-items: end; margin: 0; padding: 0 0 20px; border: 0; border-bottom: 1px solid var(--line); }
+.external-route label { display: block; margin-top: 20px; font-size: 14px; font-weight: 650; }
+.external-route .text-link { min-height: 48px; }
 .network-table-caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 700px) {
   .network-section { padding: 24px 21px; }
-  .network-fields { grid-template-columns: 1fr; gap: 0; }
+  .network-fields, .external-route { grid-template-columns: 1fr; gap: 0; }
   .network-step-heading { scroll-margin-top: 146px; }
   .network-overview-header { display: block; }
   .network-overview-header .button { margin-top: 20px; }

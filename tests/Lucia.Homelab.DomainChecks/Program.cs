@@ -30,6 +30,28 @@ var standard = DomainNames.Plan(new("example.com", "homelab", "atlas"), "example
 Check(standard.ServiceUrls.Lucia == "https://lucia.homelab.example.com", "Default Lucia URL is incorrect.");
 Check(standard.ServiceUrls.Authentik == "https://auth.homelab.example.com", "Default Authentik URL is incorrect.");
 Check(standard.CertificateNames.SequenceEqual(["homelab.example.com", "*.homelab.example.com"]), "Base/wildcard certificate coverage differs.");
+var publicNaming = DomainNames.WithPublic(standard, true);
+Check(publicNaming.ServiceUrls.Authentik == "https://auth.example.com" && publicNaming.ServiceUrls.Lucia == standard.ServiceUrls.Lucia
+    && publicNaming.CertificateNames.SequenceEqual(["*.homelab.example.com", "*.example.com"])
+    && publicNaming.LocalHostnames.Contains("auth.example.com") && !publicNaming.LocalHostnames.Contains("auth.homelab.example.com"),
+    "Public access must move Authentik to auth.<zone> and cover public names with *.<zone>.");
+Check(DomainNames.WithPublic(publicNaming, false).CertificateNames.SequenceEqual(standard.CertificateNames)
+    && DomainNames.WithPublic(publicNaming, false).ServiceUrls == standard.ServiceUrls, "Turning public access off must restore the original names.");
+{
+    var certs = Path.Combine(Path.GetTempPath(), "lucia-public-check-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(certs);
+    File.WriteAllText(Path.Combine(certs, "a.pem"), "");
+    File.WriteAllText(Path.Combine(certs, "k.pem"), "");
+    var ingress = System.Text.Json.Nodes.JsonNode.Parse(DomainIngressConfiguration.Build(publicNaming, certs, Path.Combine(certs, "a.pem"), Path.Combine(certs, "k.pem"), true))!;
+    var closed = System.Text.Json.Nodes.JsonNode.Parse(DomainIngressConfiguration.Build(standard, certs, Path.Combine(certs, "a.pem"), Path.Combine(certs, "k.pem")))!;
+    Directory.Delete(certs, recursive: true);
+    Check(ingress["http"]!["routers"]!["domain-authentik"]!["entryPoints"]!.AsArray().Select(item => item!.GetValue<string>()).SequenceEqual(["host", "public"])
+        && ingress["http"]!["routers"]!["domain-lucia"]!["entryPoints"]!.AsArray().Count == 1
+        && ingress["http"]!["middlewares"]!["public-sources"]!["ipAllowList"]!["sourceRange"]!.AsArray().Count == DomainIngressConfiguration.CloudflareRanges.Length
+        && closed["http"]!["middlewares"]?["public-sources"] is null
+        && closed["http"]!["routers"]!["domain-authentik"]!["entryPoints"]!.AsArray().Count == 1,
+        "Only Authentik may answer on the public entrypoint, and only from Cloudflare.");
+}
 var custom = DomainNames.Plan(new("example.com", "lab", "atlas",
     new("https://dashboard.example.com", "https://login.nested.lab.example.com", "https://atlas.lab.example.com")), "example.com");
 Check(custom.ServiceUrls.Lucia == "https://dashboard.example.com", "Custom service URL was overwritten.");

@@ -22,7 +22,8 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
             throw new InvalidOperationException("An activated domain is required to view its managed configuration.");
         var nodeRecords = nodes is null ? [] : Nodes.ManagedNodeDns.Wanted(job.Plan.Naming, await nodes.Addresses(ct));
         var appRoutes = stacks is null ? [] : await stacks.ActiveRoutes(ct);
-        var appRecords = Nodes.ManagedNodeDns.Wanted(job.Plan.Naming, [], job.Plan.IngressAddress, appRoutes);
+        var zone = job.Public ? job.Plan.Naming.Domain : null;
+        var appRecords = Nodes.ManagedNodeDns.Wanted(job.Plan.Naming, [], job.Plan.IngressAddress, appRoutes, zone);
         string? gatewayError = null;
         ManagedDomainRoute[] routes;
         try
@@ -34,7 +35,7 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
             var actual = JsonNode.Parse(await File.ReadAllBytesAsync(path, ct));
             var certificate = job.Certificate ?? throw new InvalidDataException("Certificate receipt is missing.");
             var expected = JsonNode.Parse(DomainIngressConfiguration.Build(job.Plan.Naming, Path.Combine(store.Root, "certificates"),
-                certificate.CertificateFile, certificate.KeyFile));
+                certificate.CertificateFile, certificate.KeyFile, job.Public));
             routes = Routes(job, actual, expected);
             if (appRoutes.Length > 0)
             {
@@ -43,14 +44,14 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
                 var published = !File.Exists(apps) ? new JsonObject()
                     : new FileInfo(apps).Length > 262144 ? throw new InvalidDataException("App gateway configuration is oversized.")
                     : JsonNode.Parse(await File.ReadAllBytesAsync(apps, ct));
-                routes = [.. routes, .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, published)];
+                routes = [.. routes, .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, published, zone)];
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidOperationException)
         {
             logger.LogWarning("Managed gateway configuration could not be read ({ErrorType}).", error.GetType().Name);
             gatewayError = "Lucia could not read its published gateway configuration. The addresses below are the saved configuration, not a confirmed live state.";
-            routes = [.. Routes(job, null, null), .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, null)];
+            routes = [.. Routes(job, null, null), .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, null, zone)];
         }
         IReadOnlyList<AdGuardRewrite>? records = null;
         AdGuardHealth? health = null;
@@ -78,19 +79,23 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
     }
 
     /// <summary>App routes from the gateway's <c>apps.yml</c>, compared with what Lucia would publish for them now.</summary>
-    internal static ManagedDomainRoute[] AppRoutes(Stacks.ActiveRoute[] routes, string ns, JsonNode? actual)
+    internal static ManagedDomainRoute[] AppRoutes(Stacks.ActiveRoute[] routes, string ns, JsonNode? actual, string? zone = null)
     {
-        var expected = JsonNode.Parse(Stacks.AppGateway.Build(routes, ns) ?? "{}");
-        return routes.OrderBy(item => item.Route.Host, StringComparer.Ordinal).Select(item =>
+        var expected = JsonNode.Parse(Stacks.AppGateway.Build(routes, ns, zone) ?? "{}");
+        return routes.OrderBy(item => item.Route.Host, StringComparer.Ordinal).SelectMany(item =>
         {
             var id = $"app-{item.Stack}-{item.Route.Host}";
             string[] ids = item.Route.GrpcPort is null ? [id] : [id, id + "-grpc"];
+            if (zone is not null && item.Route.Public is not null) ids = [.. ids, id + "-public"];
             var target = Target(actual?["http"]?["services"]?[id]?["loadBalancer"]?["servers"]?[0]?["url"]);
-            var state = actual is null ? "Unavailable" : actual["http"]?["routers"]?[id] is null ? "Missing"
+            var state = actual is null ? "Unavailable" : ids.Any(key => actual["http"]?["routers"]?[key] is null) ? "Missing"
                 : ids.All(key => JsonNode.DeepEquals(actual["http"]?["routers"]?[key], expected?["http"]?["routers"]?[key])
                     && JsonNode.DeepEquals(actual["http"]?["services"]?[key], expected?["http"]?["services"]?[key])) ? "Published" : "Changed";
-            var name = Stacks.StackCatalog.Apps.FirstOrDefault(app => app.Id == item.Stack)?.Name ?? item.Stack;
-            return new ManagedDomainRoute(name, $"https://{item.Route.Host}.{ns}", "Proxy", target, state);
+            var name = item.Stack == Stacks.StackStore.ExternalOwner ? item.Route.Host
+                : Stacks.StackCatalog.Apps.FirstOrDefault(app => app.Id == item.Stack)?.Name ?? item.Stack;
+            ManagedDomainRoute route = new(name, $"https://{item.Route.Host}.{ns}", "Proxy", target, state);
+            return zone is not null && item.Route.Public is { } label
+                ? [route, route with { Origin = $"https://{label}.{zone}", Kind = "Public" }] : new[] { route };
         }).ToArray();
     }
 

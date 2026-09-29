@@ -4,6 +4,7 @@ import { ownerRequest } from './managementApi'
 import { parseDomainOperations } from './networkManagement'
 import type { DomainOperations, DomainState } from './networkManagement'
 import { Icon } from './Icon'
+import { PublicAccess } from './PublicAccess'
 
 export function DomainOverview({ state, session, refreshSession, replaceToken }: {
   state: DomainState; session: AuthenticationSession; refreshSession: () => Promise<void>; replaceToken: () => void
@@ -57,14 +58,15 @@ export function DomainOverview({ state, session, refreshSession, replaceToken }:
       <p className="section-note">Lucia-managed domain routes on HTTPS port 443. “Published” describes the gateway configuration, not a live endpoint health check.</p>
       {snapshot?.gatewayError && <p className="network-error">{snapshot.gatewayError}</p>}
       {snapshot && <table className="network-table"><caption className="network-table-caption">Published Lucia-managed proxy routes</caption>
-        <thead><tr><th>Application</th><th>Public address</th><th>Destination</th><th>Configuration</th></tr></thead>
+        <thead><tr><th>Application</th><th>Address</th><th>Destination</th><th>Configuration</th></tr></thead>
         <tbody>{snapshot.routes.map(route => <tr key={route.origin}>
-          <th scope="row">{route.name}</th><td data-label="Public address"><a className="text-link" href={route.origin}>{route.origin}</a></td>
+          <th scope="row">{route.name}{route.kind === 'Public' && <span className="network-cell-note">From the internet</span>}</th><td data-label="Address"><a className="text-link" href={route.origin}>{route.origin}</a></td>
           <td data-label="Destination">{route.kind === 'Redirect' ? 'Redirect to ' : ''}{route.target ?? 'Not available'}</td>
           <td data-label="Configuration" className={route.configuration !== 'Published' ? 'network-error' : undefined}>{route.configuration}</td>
         </tr>)}</tbody>
       </table>}
     </section>
+    {job && <PublicAccess job={job} ingressAddress={snapshot?.ingressAddress ?? state.defaults.ingressAddress} session={session} refreshSession={refreshSession} />}
     <section className="surface network-section">
       <h2>Let’s Encrypt</h2>
       {certificate ? <dl className="network-facts">

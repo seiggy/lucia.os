@@ -83,6 +83,21 @@ internal static class StackChecks
             && gateway["http"]!["services"]!["app-obs-grafana"]!["loadBalancer"]!["servers"]![0]!["url"]!.GetValue<string>() == "http://192.168.1.9:3030"
             && gateway["http"]!["routers"]!["app-obs-grafana"]!["tls"] is not null && AppGateway.Build([], "homelab.example.com") is null,
             "The gateway must send gRPC to the app's gRPC port and everything else to its web port.");
+        ActiveRoute[] publicRoutes = [new("immich", new("photos", 2283, null, "images"), "192.168.0.241"), new("obs", new("grafana", 3030), "192.168.1.9")];
+        var open = System.Text.Json.Nodes.JsonNode.Parse(AppGateway.Build(publicRoutes, "homelab.example.com", "example.com")!)!;
+        check(open["http"]!["routers"]!["app-immich-photos-public"]!["rule"]!.GetValue<string>() == "Host(`images.example.com`)"
+            && open["http"]!["routers"]!["app-immich-photos-public"]!["service"]!.GetValue<string>() == "app-immich-photos"
+            && open["http"]!["routers"]!["app-immich-photos-public"]!["entryPoints"]!.AsArray().Count == 2
+            && open["http"]!["routers"]!["app-obs-grafana-public"] is null
+            && open["http"]!["routers"]!["app-obs-grafana"]!["entryPoints"]!.AsArray().Count == 1
+            && System.Text.Json.Nodes.JsonNode.Parse(AppGateway.Build(publicRoutes, "homelab.example.com")!)!["http"]!["routers"]!["app-immich-photos-public"] is null,
+            "Only routes with a public name, and only while public access is on, may answer on the public entrypoint.");
+        var publicNaming = Lucia.Homelab.Server.Domains.DomainNames.WithPublic(
+            Lucia.Homelab.Server.Domains.DomainNames.Plan(new("example.com", "homelab", "atlas"), "example.com"), true);
+        var publicDns = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(publicNaming, [], "192.168.0.222", publicRoutes, "example.com");
+        check(publicDns.Any(record => record.Domain == "images.example.com" && record.Answer == "192.168.0.222") && publicDns.Length == 3
+            && Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(publicNaming, [], "192.168.0.222", publicRoutes).Length == 2,
+            "Public names must resolve to the gateway on the LAN while public access is on.");
         foreach (var label in new[] { "", "Grafana!", "-x", "a.b", new string('a', 64) })
             check(!StackStore.RouteHostPattern().IsMatch(label), $"The web address name '{label}' was accepted.");
         var observability = StackCatalog.Find("observability");
@@ -168,6 +183,20 @@ internal static class StackChecks
             && ll.Compose.Contains("        disable_env_credential_login: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
             && ll.Routes is [{ Host: "litellm", Port: 4000, GrpcPort: null }],
             "LiteLLM must keep its keys, sign in through Lucia only once its client exists and export telemetry only with an Observability app.");
+        var plex = StackCatalog.Find("plex");
+        var plexSettings = StackCatalog.Settings(plex, new() { ["media"] = "/mnt/lucia/nas/truenas/media/", ["media-2"] = "/mnt/lucia/nas/unas/Media", ["plex-claim"] = "claim-abc" });
+        var plexEnv = StackCatalog.KeepSecrets(plex, plexSettings, []);
+        var px = plex.Render(plexSettings, new(Guid.NewGuid(), "lucialab01", true, null), plexEnv);
+        var pxGpu = plex.Render(StackCatalog.Settings(plex, new() { ["transcoding"] = "nvidia" }), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        check(plexSettings["plex-claim"] == "" && px.Env == "PLEX_CLAIM=claim-abc\n" && plex.BackupMode == "stop" && plex.BackupExclude.Length == 0
+            && px.Compose.Contains("      - /mnt/lucia/nas/truenas/media:/data\n      - /mnt/lucia/nas/unas/Media:/media\nvolumes:\n", StringComparison.Ordinal)
+            && px.Compose.Contains("    network_mode: host\n", StringComparison.Ordinal) && !px.Compose.Contains("nvidia", StringComparison.Ordinal)
+            && px.Require.SequenceEqual(["nas=truenas/media", "nas=unas/Media"]) && px.Routes is [{ Host: "plex", Port: 32400 }]
+            && pxGpu.Require is ["gpu.vendor=nvidia"] && pxGpu.Env == "" && pxGpu.Compose.Contains("      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility\n    volumes:\n", StringComparison.Ordinal)
+            && pxGpu.Compose.Contains("      - /etc/localtime:/etc/localtime:ro\n    deploy:\n", StringComparison.Ordinal),
+            "Plex must mount its media folders at the same paths, keep its claim token out of the manifest and reserve a GPU only for NVIDIA transcoding.");
+        Rejects(() => plex.Render(StackCatalog.Settings(plex, new() { ["media"] = "/srv/media" }), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()),
+            "Plex must refuse a media folder outside a NAS share.");
         Rejects(() => StackStore.ValidateName(StackStore.RelayName), "An app could take the telemetry relay's name.");
         var relayConfig = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"lucialab01\"", true,
             [new("vllm", "127.0.0.1:8000"), new("llama-cpp", "127.0.0.1:8080", ["org/model:Q4_K_M"])],

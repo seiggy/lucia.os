@@ -24,6 +24,8 @@ export interface DomainJob {
   certificate: { notAfter: string; dnsNames: string[]; certificateSha256: string } | null
   diagnosis: DomainDiagnosis | null; support: DomainSupport | null
   renewalCheckedAt: string | null; renewalOutcome: 'Renewed' | 'NotDue' | 'Failed' | null
+  /** Public access: on, the change waiting for the worker (null when none), and why the last change failed. */
+  public: boolean; publicRequested: boolean | null; publicError: string | null; zone: string | null
 }
 export interface DomainState {
   adguardConfigured: boolean; cloudflareConfigured: boolean; workerReady: boolean; configured: boolean
@@ -170,6 +172,8 @@ export function parseDomainState(value: unknown): DomainState {
         support: 'support' in j ? optional(j.support, support) : null,
         renewalCheckedAt: 'renewalCheckedAt' in j ? optional(j.renewalCheckedAt, date) : null,
         renewalOutcome: 'renewalOutcome' in j ? optional(j.renewalOutcome, value => choice(value, ['Renewed', 'NotDue', 'Failed'] as const)) : null,
+        public: j.public === true, publicRequested: 'publicRequested' in j ? optional(j.publicRequested, boolean) : null,
+        publicError: 'publicError' in j ? optional(j.publicError, text) : null, zone: 'zone' in j ? optional(j.zone, text) : null,
         certificate: optional(j.certificate, value => { const c = object(value); return { notAfter: date(c.notAfter), dnsNames: strings(c.dnsNames), certificateSha256: text(c.certificateSha256) } }) }
     }),
   }
@@ -177,7 +181,7 @@ export function parseDomainState(value: unknown): DomainState {
 
 export interface DomainOperations {
   checkedAt: string; namespace: string; ingressAddress: string; gatewayError: string | null; dnsError: string | null
-  routes: { name: string; origin: string; kind: 'Proxy' | 'Redirect'; target: string | null; configuration: 'Published' | 'Missing' | 'Changed' | 'Unavailable' }[]
+  routes: { name: string; origin: string; kind: 'Proxy' | 'Redirect' | 'Public'; target: string | null; configuration: 'Published' | 'Missing' | 'Changed' | 'Unavailable' }[]
   dnsRecords: { hostname: string; expectedAddress: string; state: 'Matches' | 'Missing' | 'Disabled' | 'Conflict' | 'Unavailable'; ownership: string
     records: { domain: string; answer: string; enabled: boolean }[]; totalRecords: number }[]
 }
@@ -195,7 +199,7 @@ export function parseDomainOperations(value: unknown): DomainOperations {
     routes: x.routes.map(value => {
       const r = object(value)
       const origin = urls({ lucia: r.origin, authentik: r.origin, spark: r.origin }).lucia
-      return { name: text(r.name), origin, kind: choice(r.kind, ['Proxy', 'Redirect'] as const), target: optional(r.target, text),
+      return { name: text(r.name), origin, kind: choice(r.kind, ['Proxy', 'Redirect', 'Public'] as const), target: optional(r.target, text),
         configuration: choice(r.configuration, ['Published', 'Missing', 'Changed', 'Unavailable'] as const) }
     }),
     dnsRecords: x.dnsRecords.map(value => {
@@ -209,6 +213,31 @@ export function parseDomainOperations(value: unknown): DomainOperations {
           return { domain: text(record.domain), answer: text(record.answer), enabled: boolean(record.enabled) }
         }) }
     }) }
+}
+export interface PublicIngressStatus {
+  checkedAt: string; enabled: boolean; wanAddress: string | null; forward: string | null; forwardError: string | null
+  records: { name: string; state: 'Published' | 'Adopted' | 'Updated' | 'Conflict' | 'Removed'; detail: string | null }[]; recordsError: string | null
+}
+export function parsePublicIngress(value: unknown): PublicIngressStatus | null {
+  return optional(object(value).status ?? null, value => {
+    const x = object(value)
+    if (!Array.isArray(x.records) || x.records.length > 100) throw invalid()
+    return { checkedAt: date(x.checkedAt), enabled: boolean(x.enabled), wanAddress: optional(x.wanAddress ?? null, text),
+      forward: optional(x.forward ?? null, text), forwardError: optional(x.forwardError ?? null, text), recordsError: optional(x.recordsError ?? null, text),
+      records: x.records.map(value => { const r = object(value); return { name: text(r.name),
+        state: choice(r.state, ['Published', 'Adopted', 'Updated', 'Conflict', 'Removed'] as const), detail: optional(r.detail ?? null, text) } }) }
+  })
+}
+/** A service outside Lucia's apps, such as a NAS page, that the gateway forwards a name to. */
+export interface ExternalRoute { host: string; address: string; port: number; public: string | null }
+export function parseExternalRoutes(value: unknown): ExternalRoute[] {
+  const routes = object(value).routes
+  if (!Array.isArray(routes) || routes.length > 32) throw invalid()
+  return routes.map(value => {
+    const r = object(value)
+    if (typeof r.port !== 'number' || !Number.isSafeInteger(r.port)) throw invalid()
+    return { host: text(r.host), address: text(r.address), port: r.port, public: optional(r.public ?? null, text) }
+  })
 }
 export function parseDomainZones(value: unknown): DomainZone[] {
   if (!Array.isArray(value) || value.length > 1000) throw invalid()

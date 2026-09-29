@@ -176,6 +176,55 @@ public sealed class UniFiConnectionService : IDhcpReservations
         finally { _gate.Release(); }
     }
 
+    public const string PublicForwardName = "Lucia public ingress";
+
+    /// <summary>
+    /// Keeps the router's HTTPS port forward (TCP 443 from the internet) pointed at the gateway's public entrypoint, adopting
+    /// an existing 443 forward the first time. Off disables Lucia's forward. Returns its state, or null without UniFi.
+    /// </summary>
+    public async Task<string?> SetPublicForwardAsync(bool enabled, string address, int port, CancellationToken ct = default)
+    {
+        if (!IPAddress.TryParse(address, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork || !AdGuardTransport.IsPrivate(ip))
+            throw new UniFiException(400, "invalid_unifi_forward", "The public ingress needs a private IPv4 address.");
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (Read() is not { } record) return null;
+            return await _transport.RunAsync(record.BaseUrl, record.ApiKey, record.CertificateSha256, async (session, token) =>
+            {
+                var forwards = await session.PortForwardsAsync(record.Site, token);
+                var ours = forwards.FirstOrDefault(item => UniFiSession.Field(item, "name") == PublicForwardName);
+                var https = forwards.Where(item => UniFiSession.Field(item, "dst_port") == "443"
+                    && UniFiSession.Field(item, "proto") is "tcp" or "tcp_udp").ToArray();
+                if (!enabled)
+                {
+                    if (ours.ValueKind == JsonValueKind.Object && UniFiSession.Field(ours, "enabled") != "false")
+                        await session.SavePortForwardAsync(record.Site, UniFiSession.Field(ours, "_id"), new() { ["enabled"] = false }, token);
+                    return "Off";
+                }
+                var target = ours.ValueKind == JsonValueKind.Object ? ours : https.FirstOrDefault();
+                if (target.ValueKind == JsonValueKind.Object && UniFiSession.Field(target, "name") == PublicForwardName
+                    && UniFiSession.Field(target, "enabled") == "true" && UniFiSession.Field(target, "fwd") == address
+                    && UniFiSession.Field(target, "fwd_port") == port.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    && UniFiSession.Field(target, "dst_port") == "443" && UniFiSession.Field(target, "proto") == "tcp")
+                    return "Forwarding";
+                var body = new Dictionary<string, object>
+                {
+                    ["name"] = PublicForwardName, ["enabled"] = true, ["proto"] = "tcp", ["dst_port"] = "443", ["fwd"] = address,
+                    ["fwd_port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture), ["src"] = "any", ["log"] = false,
+                };
+                if (target.ValueKind != JsonValueKind.Object)
+                {
+                    body["pfwd_interface"] = "wan";
+                    body["destination_ip"] = "any";
+                }
+                await session.SavePortForwardAsync(record.Site, target.ValueKind == JsonValueKind.Object ? UniFiSession.Field(target, "_id") : null, body, token);
+                return target.ValueKind == JsonValueKind.Object && UniFiSession.Field(target, "name") != PublicForwardName ? "Adopted" : "Forwarding";
+            }, ct);
+        }
+        finally { _gate.Release(); }
+    }
+
     private async Task<string> VerifyAsync(string origin, string key, string site, string? pin, CancellationToken ct) =>
         await _transport.RunAsync(origin, key, pin, async (session, token) =>
         {
@@ -340,6 +389,24 @@ internal sealed class UniFiSession(HttpClient http, string baseUrl, string apiKe
         if (updated.ValueKind != JsonValueKind.Object || Text(updated, "fixed_ip") != address) throw InvalidResponse();
         return true;
     }
+
+    internal async Task<JsonElement[]> PortForwardsAsync(string site, CancellationToken ct)
+    {
+        using var document = await SendAsync(HttpMethod.Get, $"/proxy/network/api/s/{site}/rest/portforward", null, ct);
+        return [.. Data(document).Select(item => UniFiValidation.Id(Text(item, "_id")) ? item.Clone() : throw InvalidResponse())];
+    }
+
+    internal async Task SavePortForwardAsync(string site, string? id, Dictionary<string, object> body, CancellationToken ct)
+    {
+        using var document = await SendAsync(id is null ? HttpMethod.Post : HttpMethod.Put,
+            $"/proxy/network/api/s/{site}/rest/portforward" + (id is null ? "" : "/" + id), JsonSerializer.SerializeToUtf8Bytes(body), ct);
+        if (!UniFiValidation.Id(Text(Data(document).FirstOrDefault(), "_id"))) throw InvalidResponse();
+    }
+
+    internal static string? Field(JsonElement element, string name) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value)
+            ? value.ValueKind switch { JsonValueKind.String => value.GetString(), JsonValueKind.True => "true", JsonValueKind.False => "false",
+                JsonValueKind.Number => value.GetRawText(), _ => null } : null;
 
     private async Task<JsonDocument> SendAsync(HttpMethod method, string path, byte[]? body, CancellationToken ct)
     {

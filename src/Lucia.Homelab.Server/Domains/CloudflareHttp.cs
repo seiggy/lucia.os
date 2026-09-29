@@ -20,7 +20,9 @@ internal sealed class CloudflareHttp(HttpClient client)
     internal static HttpClient CreateClient() => new(CreateHandler()) { Timeout = TimeSpan.FromSeconds(15) };
 
     // Paths are constructed only from validated IDs and exact canonical DNS names, never a token.
-    internal async Task<JsonDocument> GetAsync(string path, string token, CancellationToken ct)
+    internal Task<JsonDocument> GetAsync(string path, string token, CancellationToken ct) => SendAsync(HttpMethod.Get, path, token, null, ct);
+
+    internal async Task<JsonDocument> SendAsync(HttpMethod method, string path, string token, object? body, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
@@ -31,7 +33,8 @@ internal sealed class CloudflareHttp(HttpClient client)
             if ((!path.StartsWith("/accounts/", StringComparison.Ordinal) && !path.StartsWith("/zones", StringComparison.Ordinal))
                 || uri.Scheme != "https" || uri.Host != "api.cloudflare.com" || !uri.IsDefaultPort || uri.UserInfo.Length != 0)
                 throw InvalidResponse();
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var request = new HttpRequestMessage(method, uri);
+            if (body is not null) request.Content = System.Net.Http.Json.JsonContent.Create(body);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);

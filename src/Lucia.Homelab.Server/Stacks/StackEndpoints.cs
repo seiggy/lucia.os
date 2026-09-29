@@ -43,6 +43,8 @@ public static partial class StackEndpoints
             await stacks.SaveStackBackup(name, await ReadOwnerBody<StackBackup>(context, 4 * 1024, "enabled and optionally mode", ct), Actor(context), ct));
         owner.MapPut("/{name}/address", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.SaveStackAddress(name, await ReadOwnerBody<StackAddressRequest>(context, 1024, "address", ct), Actor(context), ct));
+        owner.MapPut("/{name}/public", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveStackPublic(name, await ReadOwnerBody<StackPublicRequest>(context, 1024, "host and public", ct), Actor(context), ct));
         owner.MapPost("/{name}/restore", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.Restore(name, await ReadOwnerBody<RestoreStackRequest>(context, 4 * 1024, "snapshot", ct), Actor(context), ct));
         owner.MapPost("/{name}/{action}", (string name, string action, HttpContext context, StackStore stacks, CancellationToken ct) =>
@@ -55,6 +57,13 @@ public static partial class StackEndpoints
 
         var nas = app.MapGroup("/api/host/nas").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        var external = app.MapGroup("/api/host/routes/external").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        external.MapGet("", async (StackStore stacks, CancellationToken ct) => new { routes = await stacks.ExternalRoutes(ct) });
+        external.MapPut("", async (HttpContext context, StackStore stacks, CancellationToken ct) => new
+        {
+            routes = await stacks.SaveExternalRoutes((await ReadOwnerBody<SaveExternalRoutesRequest>(context, 32 * 1024, "routes", ct)).Routes, ct),
+        });
         nas.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.NasList(ct));
         nas.MapPut("/{id}", async (string id, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.SaveNas(id, await ReadOwnerBody<SaveNasRequest>(context, 16 * 1024, "kind, host, shares and for SMB username and password", ct),

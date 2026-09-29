@@ -24,6 +24,8 @@ public static class DomainOnboardingEndpoints
             services.GetRequiredService<DomainHttp>().Client, services.GetRequiredService<HostAuthenticationOptions>(),
             services.GetRequiredService<DomainConnectionGate>()));
         builder.Services.AddHostedService<DomainOnboardingWorker>();
+        builder.Services.AddSingleton<PublicIngress>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<PublicIngress>());
         builder.Services.AddSingleton<AdGuardCertificateWorker>();
         builder.Services.AddHostedService(services => services.GetRequiredService<AdGuardCertificateWorker>());
     }
@@ -43,7 +45,7 @@ public static class DomainOnboardingEndpoints
         try
         {
             var job = (await context.RequestServices.GetRequiredService<DomainOnboardingStore>().Read(context.RequestAborted)).Job;
-            if (job?.State is "Queued" or "Running" or "Activating" || job?.Phase == "Renewing")
+            if (job?.State is "Queued" or "Running" or "Activating" || job?.Phase is "Renewing" or "Amending")
             {
                 context.Response.StatusCode = 409;
                 context.Response.Headers.CacheControl = "no-store";
@@ -68,6 +70,12 @@ public static class DomainOnboardingEndpoints
             var actor = context.User.FindFirstValue("sub") ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
             var job = await service.Start(await Read<StartDomainSetupRequest>(context, ct), actor, ct);
             return Results.Accepted("/api/host/domains/status", new { job.Id, job.State, job.Phase, job.Message });
+        });
+        group.MapGet("/public", (PublicIngress ingress) => new { status = ingress.Status });
+        group.MapPut("/public", async (HttpContext context, DomainOnboardingService service, CancellationToken ct) =>
+        {
+            await service.SetPublic((await Read<SetPublicAccessRequest>(context, ct)).Enabled, ct);
+            return Results.Accepted("/api/host/domains/status");
         });
         group.MapPost("/jobs/{id:guid}/recover", async (Guid id, DomainOnboardingService service, CancellationToken ct) =>
         {

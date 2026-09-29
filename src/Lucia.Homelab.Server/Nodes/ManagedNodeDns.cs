@@ -53,34 +53,47 @@ public sealed class ManagedNodeDns : BackgroundService
 
     /// <summary>The records Lucia wants for managed nodes and app routes under the active domain, or null without one.</summary>
     public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct) =>
-        await ActivePlan(_domains, ct) is { } plan ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct)) : null;
+        await ActiveJob(_domains, ct) is { Plan: var plan } job
+            ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct), job.Public ? plan.Naming.Domain : null) : null;
 
-    internal static async Task<DomainSetupPlan?> ActivePlan(DomainOnboardingStore domains, CancellationToken ct)
+    internal static async Task<DomainSetupJob?> ActiveJob(DomainOnboardingStore domains, CancellationToken ct)
     {
         var job = (await domains.Read(ct)).Job;
         var profile = DomainActivationConfiguration.Read(domains.Root);
-        return profile is null || job is null || job.Id != profile.ProfileId ? null : job.Plan;
+        return profile is null || job is null || job.Id != profile.ProfileId ? null : job;
     }
+
+    internal static async Task<DomainSetupPlan?> ActivePlan(DomainOnboardingStore domains, CancellationToken ct) => (await ActiveJob(domains, ct))?.Plan;
+
+    /// <summary>The zone public names sit under while public access is on, otherwise null.</summary>
+    internal static async Task<string?> PublicZone(DomainOnboardingStore domains, CancellationToken ct) =>
+        await ActiveJob(domains, ct) is { Public: true } job ? job.Plan.Naming.Domain : null;
 
     internal static async Task<DomainNamingPlan?> ActiveNaming(DomainOnboardingStore domains, CancellationToken ct) =>
         (await ActivePlan(domains, ct))?.Naming;
 
-    /// <summary>Node names point at each node; app route names point at the gateway, which forwards to the app's server.</summary>
+    /// <summary>
+    /// Node names point at each node; app route names point at the gateway, which forwards to the app's server. With public
+    /// access, public names point at the gateway too, so the network reaches them directly rather than through Cloudflare.
+    /// </summary>
     internal static AdGuardRewrite[] Wanted(DomainNamingPlan naming, IEnumerable<ManagedNodeAddress> nodes, string? ingress = null,
-        IEnumerable<Stacks.ActiveRoute>? routes = null) =>
+        IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null) =>
         nodes.Where(node => IPAddress.TryParse(node.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
                 && AdGuardTransport.IsPrivate(ip))
             .Select(node => new AdGuardRewrite($"{node.Hostname}.{naming.Namespace}".ToLowerInvariant(), node.Address))
             .Concat(ingress is null ? [] : (routes ?? []).Select(route => new AdGuardRewrite($"{route.Route.Host}.{naming.Namespace}".ToLowerInvariant(), ingress)))
+            .Concat(ingress is null || zone is null ? [] : (routes ?? []).Where(route => route.Route.Public is not null)
+                .Select(route => new AdGuardRewrite($"{route.Route.Public}.{zone}".ToLowerInvariant(), ingress)))
             .Where(record => !naming.LocalHostnames.Contains(record.Domain, StringComparer.OrdinalIgnoreCase))
             .GroupBy(record => record.Domain, StringComparer.Ordinal).Where(group => group.Count() == 1)
             .Select(group => group.Single()).ToArray();
 
     internal async Task Sync(CancellationToken ct)
     {
-        var plan = await ActivePlan(_domains, ct);
+        var job = await ActiveJob(_domains, ct);
         if (Path.IsPathFullyQualified(_options.GatewayDirectory) && Directory.Exists(_options.GatewayDirectory))
-            Stacks.AppGateway.Publish(_options.GatewayDirectory, plan is null ? null : Stacks.AppGateway.Build(await _stacks.ActiveRoutes(ct), plan.Naming.Namespace));
+            Stacks.AppGateway.Publish(_options.GatewayDirectory, job is null ? null
+                : Stacks.AppGateway.Build(await _stacks.ActiveRoutes(ct), job.Plan.Naming.Namespace, job.Public ? job.Plan.Naming.Domain : null));
         foreach (var name in await Apply(_dns, _nodes.DnsStatePath, await Wanted(ct) ?? [], ct))
             _logger.LogInformation("Published local DNS for {Name}.", name);
     }

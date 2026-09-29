@@ -143,6 +143,8 @@
 .stack-install-settings > .stack-catalog-fields:first-of-type { row-gap: 18px; }
 .app-address-ip { font-size: 15px; font-weight: 650; }
 .app-address-form > label { display: block; max-width: 320px; }
+.stack-inline-input { display: flex; align-items: center; gap: 4px; margin-top: 6px; white-space: nowrap; font-weight: 400; }
+.network-section .stack-inline-input > input:not([type]) { width: 14ch; margin: 0; }
 .stack-gpu-picks { grid-column: 1 / -1; min-width: 0; margin: 18px 0 0; padding: 0; border: 0; }
 .stack-catalog-fields > .stack-field-wide { grid-column: 1 / -1; max-width: 544px; }
 .stack-gpu-picks legend { margin-bottom: 8px; padding: 0; font-size: 14px; font-weight: 650; }

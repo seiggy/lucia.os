@@ -371,6 +371,9 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
 
     {(stack.appAddress || !stack.template) && <AddressSection {...props} stack={stack} locked={moving} onChanged={done => { setNotice(done); live.reload(); detail.reload() }} />}
 
+    {detail.data.zone && detail.data.routes.length > 0 && <WebAddressSection {...props} stack={stack} detail={detail.data} locked={moving}
+      onChanged={done => { setNotice(done); detail.reload() }} />}
+
     <BackupSection {...props} stack={stack} onChanged={done => { setNotice(done); live.reload() }} />
 
     {stack.template?.serverBound
@@ -974,6 +977,56 @@ function AddressSection({ stack, locked, onChanged, ...props }: Session & { stac
             onClick={() => void save('', `Removed. ${stack.node} gives up ${current}, and ports bound to LUCIA_ADDRESS open on all of its addresses instead.`)}>Remove address</button>}
         </div>
       </>}
+  </section>
+}
+
+function WebAddressSection({ stack, detail, locked, onChanged, ...props }: Session & { stack: StackSummary; detail: StackDetail; locked: boolean; onChanged: (notice: string) => void }) {
+  const [editing, setEditing] = useState<string | null>(null)
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const zone = detail.zone!
+
+  async function save(host: string, name: string, done: string) {
+    setBusy(true); setError(null)
+    try {
+      await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(stack.name)}/public`, 'PUT', { host, public: name })
+      setEditing(null); onChanged(done)
+    } catch (failure) { setError(message(failure, 'The public name could not be saved.')) } finally { setBusy(false) }
+  }
+
+  return <section className="surface network-section" aria-labelledby="app-web">
+    <h2 id="app-web">Web addresses</h2>
+    <p className="section-note">Every address works on your network. Give one a public name to reach it from the internet at <code>name.{zone}</code>, through Cloudflare.{!detail.publicAccess && <> Public access is off, so public names wait until you <a href="#/settings/domains">turn it on</a>.</>}</p>
+    <table className="network-table">
+      <caption className="network-table-caption">Web addresses of {stack.name}</caption>
+      <thead><tr><th scope="col">On your network</th><th scope="col">Public</th><th scope="col"><span className="network-table-caption">Change</span></th></tr></thead>
+      <tbody>{detail.routes.map(route => <tr key={route.host}>
+        <td>{route.url ? <a className="text-link" href={route.url} target="_blank" rel="noreferrer">{route.url.replace('https://', '')}</a> : route.host}</td>
+        <td>{editing === route.host
+          ? <form className="app-address-form" onSubmit={event => { event.preventDefault()
+            void save(route.host, value.trim(), value.trim()
+              ? `Saved. ${value.trim()}.${zone} answers from the internet within a few minutes${detail.publicAccess ? '' : ', once public access is on'}.`
+              : `${route.host} is internal only now.`) }}>
+            <label>Public name<span className="stack-inline-input"><input value={value} onChange={event => setValue(event.target.value.toLowerCase())}
+              pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" maxLength={63} autoComplete="off" spellCheck={false} placeholder={route.host}
+              disabled={busy} autoFocus aria-describedby="app-web-hint" />.{zone}</span>
+              <span id="app-web-hint" className="stack-hint">Leave it empty to keep this address internal.</span></label>
+            <div className="network-actions">
+              <button className="button primary" disabled={busy || value.trim() === (route.public ?? '')}>{busy ? 'Saving…' : 'Save'}</button>
+              <button type="button" className="text-link" disabled={busy} onClick={() => { setEditing(null); setError(null) }}>Cancel</button>
+            </div>
+          </form>
+          : route.public
+            ? detail.publicAccess && route.publicUrl
+              ? <a className="text-link" href={route.publicUrl} target="_blank" rel="noreferrer">{route.public}.{zone}</a>
+              : <span>{route.public}.{zone} <span className="stack-hint">(waits for public access)</span></span>
+            : <span className="stack-hint">Internal only</span>}</td>
+        <td>{editing !== route.host && <button className="text-link" disabled={busy || locked || editing !== null}
+          onClick={() => { setEditing(route.host); setValue(route.public ?? ''); setError(null) }}>{route.public ? 'Change' : 'Make public…'}</button>}</td>
+      </tr>)}</tbody>
+    </table>
+    {error && <p className="network-error" role="alert">{error}</p>}
   </section>
 }
 

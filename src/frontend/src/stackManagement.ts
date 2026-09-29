@@ -31,7 +31,12 @@ export interface CatalogApp {
   id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
   serverBound: boolean; usesAddress: boolean; servers: CatalogServer[]
 }
-export interface StackDetail { stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null; urls: Record<string, string> }
+/** A web address: its internal URL and, while public access is on, the public one its public name answers at. */
+export interface StackWebAddress { host: string; url: string | null; public: string | null; publicUrl: string | null }
+export interface StackDetail {
+  stack: StackSummary; compose: string; env: string; placement: StackPlacement; address: string | null; urls: Record<string, string>
+  routes: StackWebAddress[]; zone: string | null; publicAccess: boolean
+}
 export interface NodeInventory { reportedAt: string; containers: NodeContainer[]; listeners: NodeListener[] }
 
 export const stackNamePattern = /^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/
@@ -230,8 +235,15 @@ export function parseStackDetail(value: unknown): StackDetail {
     if (!address.startsWith('https://')) throw invalid()
     return [host, address]
   }))
+  const publicUrls = item.publicUrls == null ? {} : object(item.publicUrls)
+  const routes = absent(object(item.manifest).routes) ? [] : list(object(item.manifest).routes, value => {
+    const route = object(value)
+    const host = text(route.host)
+    return { host, url: urls[host] ?? null, public: optional(route.public), publicUrl: optional(publicUrls[host]) }
+  }, 8)
   return { stack: parseStackSummary(item.stack), compose: text(item.compose), env: text(item.env),
-    placement: parsePlacement(object(item.manifest).placement), address: optional(item.address), urls }
+    placement: parsePlacement(object(item.manifest).placement), address: optional(item.address), urls,
+    routes, zone: optional(item.zone), publicAccess: item.publicAccess === true }
 }
 
 /** One value from a .env file, or null. */

@@ -36,6 +36,21 @@ public static class DomainNames
         return new(domain, ns, sparkName, normalized, certificateNames.Distinct(StringComparer.Ordinal).ToArray(), hosts);
     }
 
+    /// <summary>
+    /// The naming with public access on or off. Public access moves Authentik to <c>auth.&lt;zone&gt;</c>, so sign-in works
+    /// from anywhere, and adds <c>*.&lt;zone&gt;</c> to the certificate for public app names. Off puts it back under the namespace.
+    /// </summary>
+    public static DomainNamingPlan WithPublic(DomainNamingPlan naming, bool enabled)
+    {
+        var zone = naming.Domain;
+        var plan = Plan(new(zone, naming.Namespace[..^(zone.Length + 1)], naming.SparkName,
+            naming.ServiceUrls with { Authentik = enabled ? $"https://auth.{zone}" : $"https://auth.{naming.Namespace}" }), zone);
+        if (!enabled) return plan;
+        bool covered(string name) => !name.StartsWith('*') && name.EndsWith("." + zone, StringComparison.Ordinal)
+            && !name[..^(zone.Length + 1)].Contains('.');
+        return plan with { CertificateNames = [.. plan.CertificateNames.Where(name => !covered(name)), "*." + zone] };
+    }
+
     public static string ServiceHost(string url, string zone)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsWellFormedOriginalString()

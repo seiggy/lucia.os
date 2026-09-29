@@ -97,7 +97,11 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         var address = (await nodes.Addresses(ct)).FirstOrDefault(item => item.Hostname == stack.Assigned)?.Address;
         var ns = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Namespace;
         var urls = ns is null ? null : (stack.Manifest.Routes ?? []).ToDictionary(route => route.Host, route => $"https://{route.Host}.{ns}");
-        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address, urls };
+        var publicZone = await ManagedNodeDns.PublicZone(domains, ct);
+        var publicUrls = publicZone is null ? null : (stack.Manifest.Routes ?? []).Where(route => route.Public is not null)
+            .ToDictionary(route => route.Host, route => $"https://{route.Public}.{publicZone}");
+        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address, urls,
+            zone = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Domain, publicAccess = publicZone is not null, publicUrls };
     }
 
     /// <summary>Saves a server's GPU choices. Changing the CUDA line is refused while an app on (or moving to) the server requires the old one.</summary>
@@ -178,7 +182,10 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 var output = app.Render(settings!, target, StackCatalog.KeepSecrets(app, settings!, StackCatalog.ReadEnv(previous)));
                 (compose, env, require) = (output.Compose, output.Env + LuciaLines(previous), StackRequirements.Normalize(output.Require));
                 manifest = manifest with { Placement = manifest.Placement with { Require = require },
-                    Routes = await ValidRoutes(output.Routes, name, stacks, ct) };
+                    Routes = await ValidRoutes(output.Routes?.Select(route => route with
+                    {
+                        Public = (request.Manifest.Routes ?? existing?.Manifest.Routes)?.FirstOrDefault(item => item.Host == route.Host)?.Public,
+                    }).ToArray(), name, stacks, ct) };
             }
             if (existing is not null && !require.SequenceEqual(existing.Manifest.Placement.Require ?? [])
                 && facts.FirstOrDefault(item => item.Hostname == node) is var current

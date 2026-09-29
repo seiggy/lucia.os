@@ -23,6 +23,9 @@ public sealed class DomainOnboardingWorker(
         if (initial.Job is { State: "Active", Phase: "Renewing" } interruptedRenewal)
             await Update(interruptedRenewal.Id, job => job with { Phase = "Active", NextRenewalAt = DateTimeOffset.UtcNow.AddMinutes(1),
                 RenewalError = "A certificate renewal check was interrupted by a host restart." });
+        // An interrupted change of public access runs again; each of its steps can repeat.
+        if (initial.Job is { State: "Active", Phase: "Amending" } interruptedAmendment)
+            await Update(interruptedAmendment.Id, job => job with { Phase = "Active" });
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         do
         {
@@ -30,6 +33,8 @@ public sealed class DomainOnboardingWorker(
             if (document.Job is { State: "Queued", Phase: "Recovering" } cleanup)
                 await Recover(cleanup.Id, "Retrying cleanup of the previous DNS attempt.", stoppingToken);
             else if (document.Job is { State: "Queued" } job) await Execute(job, stoppingToken);
+            else if (document.Job is { State: "Active", Phase: "Active", PublicRequested: { } wanted } amend && wanted != amend.Public)
+                await Amend(amend, wanted, stoppingToken);
             else if (document.Job is { State: "Active" or "Activating", NextRenewalAt: { } next } active && next <= DateTimeOffset.UtcNow)
                 await Renew(active, stoppingToken);
             else if (document.Job is { State: "Activating" } pending
@@ -283,9 +288,9 @@ public sealed class DomainOnboardingWorker(
                     throw new InvalidDataException("The active domain ingress is missing or invalid.");
                 previousIngress = await File.ReadAllTextAsync(gatewayPath, ct);
                 publishedIngress = DomainIngressConfiguration.Build(job.Plan.Naming, Path.Combine(store.Root, "certificates"),
-                    certificate.CertificateFile, certificate.KeyFile);
+                    certificate.CertificateFile, certificate.KeyFile, job.Public);
                 DomainIngressConfiguration.Publish(options.GatewayDirectory, job.Plan.Naming, Path.Combine(store.Root, "certificates"),
-                    certificate.CertificateFile, certificate.KeyFile);
+                    certificate.CertificateFile, certificate.KeyFile, job.Public);
             }
             await WaitForGateway(job.Plan, ct, certificate.CertificateSha256);
             await Update(job.Id, current => current with { Phase = "Active", Certificate = certificate, RenewalError = null,
@@ -303,6 +308,83 @@ public sealed class DomainOnboardingWorker(
                 RenewalError = error is DomainProbeException probe ? probe.Message : error is CertbotException certbot ? certbot.Message
                     : "Certificate renewal or deployment needs attention. Check Cloudflare credentials, DNS, and certificate expiry.",
                 RenewalCheckedAt = DateTimeOffset.UtcNow, RenewalOutcome = "Failed" });
+        }
+    }
+
+    /// <summary>
+    /// Turns public access on or off for the active domain: a certificate with the new names, the gateway's routes, local
+    /// DNS for Authentik's new name, then the profile with Authentik's new address and a restart so Lucia signs in there.
+    /// A failure keeps the previous gateway configuration and addresses.
+    /// </summary>
+    private async Task Amend(DomainSetupJob job, bool enabled, CancellationToken ct)
+    {
+        await connections.Mutex.WaitAsync(ct);
+        try
+        {
+            await Update(job.Id, current => current with { Phase = "Amending", PublicError = null,
+                Message = enabled ? "Turning on public access." : "Turning off public access." });
+        }
+        finally { connections.Mutex.Release(); }
+        var naming = DomainNames.WithPublic(job.Plan.Naming, enabled);
+        var plan = job.Plan with { Naming = naming };
+        plan = plan with { ReviewHash = DomainOnboardingStore.Hash(plan) };
+        var gatewayPath = Path.Combine(options.GatewayDirectory, DomainIngressConfiguration.FileName);
+        string? before = null, published = null;
+        try
+        {
+            var access = await cloudflare.GetTokenAsync(ct);
+            if (access.AccountId != job.Plan.AccountId) throw new InvalidOperationException("The Cloudflare account differs from the reviewed zone.");
+            await cloudflare.GetZoneAsync(job.Plan.ZoneId, ct);
+            var certificate = await certificates.IssueAsync(Request(job with { Plan = plan }),
+                access.Token ?? throw new InvalidOperationException("Cloudflare is disconnected."), ct);
+            DomainOnboardingStore.RejectLinks(gatewayPath);
+            before = File.Exists(gatewayPath) ? await File.ReadAllTextAsync(gatewayPath, ct) : null;
+            var root = Path.Combine(store.Root, "certificates");
+            published = DomainIngressConfiguration.Build(naming, root, certificate.CertificateFile, certificate.KeyFile, enabled);
+            DomainIngressConfiguration.Publish(options.GatewayDirectory, naming, root, certificate.CertificateFile, certificate.KeyFile, enabled);
+            var created = job.CreatedRewrites.ToList();
+            foreach (var name in naming.LocalHostnames.Except(job.Plan.Naming.LocalHostnames))
+            {
+                var same = (await dns.ListRewritesAsync(ct)).Where(item => item.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (same.Length == 1 && same[0].Enabled && same[0].Answer == plan.IngressAddress) continue;
+                if (same.Length != 0) throw new InvalidOperationException($"AdGuard already answers {name} differently. Remove that record first.");
+                await dns.AddRewriteAsync(new(name, plan.IngressAddress), ct);
+                created.Add(name);
+            }
+            await WaitForGateway(plan, ct, certificate.CertificateSha256);
+            var active = DomainActivationConfiguration.Read(store.Root) ?? throw new InvalidOperationException("The active domain profile is missing.");
+            var profile = active with { CanonicalAuthentikOrigin = naming.ServiceUrls.Authentik };
+            profile.Validate(active.LegacyLuciaOrigin, active.LegacyAuthority);
+            await DomainOnboardingStore.WriteJson(Path.Combine(store.Root, "active.json"), profile, ct);
+            foreach (var name in job.Plan.Naming.LocalHostnames.Except(naming.LocalHostnames).Where(created.Contains).ToArray())
+            {
+                var same = (await dns.ListRewritesAsync(ct)).Where(item => item.Domain.TrimEnd('.').Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (same is [{ } only] && only.Answer == plan.IngressAddress) await dns.DeleteRewriteAsync(only, ct);
+                created.Remove(name);
+            }
+            await Update(job.Id, current => current with
+            {
+                Plan = plan, Certificate = certificate, ActivationProfile = profile, CreatedRewrites = [.. created],
+                Public = enabled, PublicRequested = null, Phase = "Active",
+                Message = enabled ? $"Public access is on. Sign-in moved to {naming.ServiceUrls.Authentik}; sign in again."
+                    : $"Public access is off. Sign-in moved to {naming.ServiceUrls.Authentik}; sign in again."
+            });
+            lifetime.StopApplication();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            logger.LogError("Changing public access failed ({ErrorType}).", error.GetType().Name);
+            if (published is not null && File.Exists(gatewayPath) && await File.ReadAllTextAsync(gatewayPath) == published)
+            {
+                if (before is null) File.Delete(gatewayPath);
+                else await WriteTextAtomically(gatewayPath, before);
+            }
+            await Update(job.Id, current => current with { Phase = "Active", PublicRequested = null,
+                PublicError = error is DomainProbeException probe ? probe.Message : error is CertbotException certbot ? certbot.Message
+                    : error is InvalidOperationException ? error.Message
+                    : "Public access could not be changed. The previous addresses were kept.",
+                Message = "Public access was not changed." });
         }
     }
 

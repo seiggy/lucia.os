@@ -672,6 +672,13 @@ class AppClientChecks(unittest.TestCase):
         self.assertEqual(app_clients._checked(self.request(), "observability", self.PROFILE), self.request())
         two = ["https://grafana.homelab.example.com/a", "https://grafana.homelab.example.com/b"]
         self.assertEqual(app_clients._checked(self.request(redirectUris=two), "observability", self.PROFILE)["redirectUris"], two)
+        public = ["https://grafana.homelab.example.com/a", "https://grafana.example.com/a"]
+        self.assertEqual(app_clients._checked(self.request(redirectUris=public, aliasUrl="https://grafana.example.com/"),
+                                              "observability", self.PROFILE)["redirectUris"], public)
+        for url in ("https://grafana.example.org/", "https://auth.homelab.example.com/", "http://grafana.example.com/",
+                    "https://grafana.example.com/x", 5):
+            with self.assertRaises(ValueError, msg=str(url)):
+                app_clients._checked(self.request(redirectUris=public, aliasUrl=url), "observability", self.PROFILE)
         for uris in (["http://grafana.homelab.example.com/login/generic_oauth"],
                      ["https://grafana.example.org/login/generic_oauth"],
                      ["https://lucia.homelab.example.com/login/generic_oauth"],

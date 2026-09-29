@@ -96,14 +96,23 @@ public sealed class AppSsoRegistrations(StackStore stacks, DomainOnboardingStore
         var (requests, responses) = (Path.Combine(domains.Root, Requests), Path.Combine(domains.Root, Responses));
         DomainOnboardingStore.EnsureDirectory(requests);
         var apps = ns is null || authority is null ? [] : await stacks.SsoApps(ct);
+        var zone = await ManagedNodeDns.PublicZone(domains, ct);
+        var routes = zone is null ? [] : await stacks.ActiveRoutes(ct);
         foreach (var (stack, sso, secret) in apps)
         {
             var url = $"https://{sso.Host}.{ns}";
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+            var publicUrl = routes.FirstOrDefault(item => item.Stack == stack && item.Route.Host == sso.Host)?.Route.Public is { } label
+                ? $"https://{label}.{zone}" : null;
+            string[] origins = publicUrl is null ? [url] : [url, publicUrl];
+            // Public apps launch at their public name (AdGuard answers it on the LAN, Cloudflare elsewhere); the internal name stays allowed.
+            var request = new Dictionary<string, object>
             {
-                schemaVersion = 1, stack, name = sso.Name, clientId = ClientPrefix + stack, clientSecret = secret,
-                redirectUris = sso.Callbacks.Select(callback => url + callback).ToArray(), launchUrl = url + "/",
-            }, DomainOnboardingStore.Json);
+                ["schemaVersion"] = 1, ["stack"] = stack, ["name"] = sso.Name, ["clientId"] = ClientPrefix + stack, ["clientSecret"] = secret,
+                ["redirectUris"] = origins.SelectMany(origin => sso.Callbacks.Select(callback => origin + callback)).ToArray(),
+                ["launchUrl"] = (publicUrl ?? url) + "/",
+            };
+            if (publicUrl is not null) request["aliasUrl"] = url + "/";
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(request, DomainOnboardingStore.Json);
             var path = Path.Combine(requests, stack + ".json");
             DomainOnboardingStore.RejectLinks(path);
             if (!File.Exists(path) || !(await File.ReadAllBytesAsync(path, ct)).AsSpan().SequenceEqual(bytes))

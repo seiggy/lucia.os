@@ -32,7 +32,8 @@ public sealed record DomainSetupJob(
     string[]? PendingRewrites = null, bool RecoveryRequired = false, string? IngressBefore = null,
     string? IngressPublished = null, bool RegistrationRequested = false, DateTimeOffset? NextActivationCheckAt = null,
     DomainDiagnosis? Diagnosis = null, DomainSupportReport? Support = null, DomainFailure? Failure = null,
-    DateTimeOffset? RenewalCheckedAt = null, string? RenewalOutcome = null);
+    DateTimeOffset? RenewalCheckedAt = null, string? RenewalOutcome = null, bool Public = false, bool? PublicRequested = null,
+    string? PublicError = null);
 public sealed record DomainSetupDocument(int Version, DomainSetupPlan? Plan, DomainSetupJob? Job);
 
 public sealed class DomainOnboardingStore : IDisposable

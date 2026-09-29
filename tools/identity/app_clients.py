@@ -2,9 +2,9 @@
 
 The web host asks for one through host/data/domains/app-sso-requests/<stack>.json; the native activation worker
 passes the parsed requests here. reconcile keeps exactly one client per request and removes owned clients whose
-request is gone. It creates only confidential authorization-code clients bound to lucia-owners, with up to four exact
-https callbacks on one app address under the active domain that isn't one of Lucia's own names, and never changes the
-Lucia host registration.
+request is gone. It creates only confidential authorization-code clients bound to lucia-owners, with up to eight exact
+https callbacks on the app's launch address, or its one declared alias (internal and public names), under the active domain that aren't Lucia's own
+names, and never changes the Lucia host registration.
 """
 
 import re
@@ -18,6 +18,7 @@ STACK = re.compile(r"[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?")
 SECRET = re.compile(r"[A-Za-z0-9_-]{43,128}")
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 FIELDS = {"schemaVersion", "stack", "name", "clientId", "clientSecret", "redirectUris", "launchUrl"}
+OPTIONAL = {"aliasUrl"}
 
 
 def _marker(stack, installation):
@@ -26,23 +27,30 @@ def _marker(stack, installation):
 
 def _checked(value, stack, profile):
     """The request, when it asks only for what this bridge may grant."""
-    if (not isinstance(value, dict) or set(value) != FIELDS or type(value["schemaVersion"]) is not int
+    if (not isinstance(value, dict) or not FIELDS <= set(value) <= FIELDS | OPTIONAL or type(value["schemaVersion"]) is not int
             or value["schemaVersion"] != 1 or value["stack"] != stack or not STACK.fullmatch(stack)
             or value["clientId"] != PREFIX + stack or not isinstance(value["name"], str)
             or not 0 < len(value["name"]) <= 64 or any(ord(c) < 32 for c in value["name"])
             or not isinstance(value["clientSecret"], str) or not SECRET.fullmatch(value["clientSecret"])
-            or not isinstance(value["redirectUris"], list) or not 0 < len(value["redirectUris"]) <= 4
+            or not isinstance(value["redirectUris"], list) or not 0 < len(value["redirectUris"]) <= 8
             or len(set(map(str, value["redirectUris"]))) != len(value["redirectUris"])
-            or not all(isinstance(uri, str) for uri in value["redirectUris"]) or not isinstance(value["launchUrl"], str)):
+            or not all(isinstance(uri, str) for uri in value["redirectUris"]) or not isinstance(value["launchUrl"], str)
+            or not isinstance(value.get("aliasUrl", ""), str)):
         raise ValueError("Invalid app sign-in request.")
     if profile is None:
         raise ApplicationDrift("App sign-in needs an active domain.")
     own = {urllib.parse.urlsplit(profile[key]).hostname
            for key in ("canonicalLuciaOrigin", "canonicalAuthentikOrigin", "sparkOrigin")}
     host = urllib.parse.urlsplit(value["launchUrl"]).hostname or ""
+    alias = urllib.parse.urlsplit(value.get("aliasUrl", "")).hostname
+    if "aliasUrl" in value and (not alias or alias in own or alias == host or value["aliasUrl"] != f"https://{alias}/"
+                                 or not alias.endswith("." + profile["verifiedZone"])
+                                 or not all(LABEL.fullmatch(label) for label in alias.split("."))):
+        raise ValueError("An app's second address must be its own https name under the active domain.")
     for uri in value["redirectUris"]:
         redirect = urllib.parse.urlsplit(uri)
-        if (redirect.scheme != "https" or redirect.hostname != host or uri != f"https://{host}{redirect.path}"
+        if (redirect.scheme != "https" or redirect.hostname not in {host, alias or host}
+                or uri != f"https://{redirect.hostname}{redirect.path}"
                 or not re.fullmatch(r"/[A-Za-z0-9/_-]{1,64}", redirect.path) or len(host) > 253
                 or not host.endswith("." + profile["verifiedZone"]) or host in own
                 or not all(LABEL.fullmatch(label) for label in host.split("."))

@@ -17,6 +17,7 @@ public sealed record CloudflareCredentialStatus(
     bool Configured, string? AccountId, DateTimeOffset? VerifiedAt, DateTimeOffset? ExpiresAt, int ZoneCount);
 public sealed record CloudflareZone(string Id, string Name, string Status, string[] NameServers);
 public sealed record CloudflareChallengeRecord(string Id, string Name, string Type, string Content);
+public sealed record CloudflareDnsRecord(string Id, string Name, string Type, string Content, bool Proxied, string? Comment);
 
 public sealed class CloudflareCredentialRequest(string? accountId, string? token)
 {
@@ -168,6 +169,56 @@ public sealed class CloudflareDomainService
                 throw CloudflareHttp.Incomplete();
             return records;
         }, cancellationToken);
+
+    /// <summary>Every DNS record in the zone, for public-access reconciliation.</summary>
+    public Task<IReadOnlyList<CloudflareDnsRecord>> ListRecordsAsync(string zoneId, CancellationToken cancellationToken = default) =>
+        LockedAsync<IReadOnlyList<CloudflareDnsRecord>>(async ct =>
+        {
+            var record = await RequireCredentialAsync(ct);
+            var zone = await GetZoneAsync(record, zoneId, ct);
+            return [.. (await _http.ListAsync($"/zones/{zone.Id}/dns_records?match=all", record.Token!, ct)).Select(ParseRecord)];
+        }, cancellationToken);
+
+    /// <summary>Creates, or with <paramref name="id"/> updates, a proxied A record.</summary>
+    public Task<CloudflareDnsRecord> SaveAddressRecordAsync(string zoneId, string? id, string name, string address, string comment,
+        CancellationToken cancellationToken = default) =>
+        LockedAsync(async ct =>
+        {
+            if (id is not null && !CloudflareValidation.Id(id)) throw CloudflareHttp.InvalidResponse();
+            var record = await RequireCredentialAsync(ct);
+            var zone = await GetZoneAsync(record, zoneId, ct);
+            if (CloudflareValidation.DnsName(name) is not { } canonical || !CloudflareValidation.InZone(canonical, zone.Name)
+                || !System.Net.IPAddress.TryParse(address, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                throw new CloudflareDomainException(400, "invalid_record", "A public record needs a name in the zone and an IPv4 address.");
+            using var document = await _http.SendAsync(id is null ? HttpMethod.Post : HttpMethod.Patch,
+                $"/zones/{zone.Id}/dns_records" + (id is null ? "" : "/" + id), record.Token!,
+                new { type = "A", name = canonical, content = address, proxied = true, ttl = 1, comment }, ct);
+            return ParseRecord(CloudflareHttp.Result(document));
+        }, cancellationToken);
+
+    public Task<bool> DeleteRecordAsync(string zoneId, string id, CancellationToken cancellationToken = default) =>
+        LockedAsync(async ct =>
+        {
+            if (!CloudflareValidation.Id(id)) throw CloudflareHttp.InvalidResponse();
+            var record = await RequireCredentialAsync(ct);
+            var zone = await GetZoneAsync(record, zoneId, ct);
+            using var _ = await _http.SendAsync(HttpMethod.Delete, $"/zones/{zone.Id}/dns_records/{id}", record.Token!, null, ct);
+            return true;
+        }, cancellationToken);
+
+    /// <summary>A zone record. Names are only compared, so wildcard and other unusual names are kept as Cloudflare lists them.</summary>
+    private static CloudflareDnsRecord ParseRecord(JsonElement entry)
+    {
+        var id = CloudflareHttp.String(entry, "id");
+        var name = CloudflareHttp.String(entry, "name")?.TrimEnd('.').ToLowerInvariant();
+        var type = CloudflareHttp.String(entry, "type");
+        var content = CloudflareHttp.String(entry, "content") ?? "";
+        if (!CloudflareValidation.Id(id) || name is not { Length: >= 1 and <= 253 } || type is not { Length: >= 1 and <= 16 } || content.Length > 4096)
+            throw CloudflareHttp.InvalidResponse();
+        var comment = CloudflareHttp.String(entry, "comment");
+        return new(id!.ToLowerInvariant(), name, type, content,
+            entry.TryGetProperty("proxied", out var proxied) && proxied.ValueKind == JsonValueKind.True, comment);
+    }
 
     private async Task<CloudflareZone> GetZoneAsync(CloudflareStoredCredential record, string zoneId, CancellationToken ct)
     {

@@ -64,7 +64,7 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -1226,7 +1226,7 @@ internal sealed partial class ImmichApp() : CatalogApp("immich", 1, "Immich",
     }
 
     [GeneratedRegex(@"\A/mnt/lucia/nas/(?<nas>[A-Za-z0-9][A-Za-z0-9._-]{0,63})/(?<share>[A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127})*\z")]
-    private static partial Regex NasFolder();
+    internal static partial Regex NasFolder();
 }
 /// <summary>
 /// LiteLLM, one OpenAI-compatible gateway in front of every model endpoint, with virtual keys, budgets and usage. Models
@@ -1339,5 +1339,76 @@ internal sealed class LiteLlmApp() : CatalogApp("litellm", 1, "LiteLLM",
             + $"LITELLM_SALT_KEY={StackCatalog.Secret(env, "LITELLM_SALT_KEY")}\n"
             + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
         return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
+    }
+}
+/// <summary>
+/// Plex Media Server over media folders on NAS shares. It uses the host's network, as Plex's discovery and remote access
+/// expect. Transcoding runs on the CPU or, with NVENC, on an NVIDIA GPU.
+/// </summary>
+internal sealed class PlexApp() : CatalogApp("plex", 1, "Plex",
+    "Stream your movies, shows and music to every screen, at home and away.",
+    "Any server with Docker ready, 4 GB of memory and port 32400 free. For GPU transcoding, an NVIDIA GPU with NVENC.",
+    [],
+    [
+        new("web-host", "Web name", "text", "plex", "Plex's web address is this name under your domain. Its apps connect on port 32400."),
+        new("media", "Media folder", "text", Optional: true,
+            Help: "A folder on a NAS share, such as /mnt/lucia/nas/unas/Media. Plex sees it as /data."),
+        new("media-2", "Second media folder", "text", Optional: true, Help: "Another NAS folder, which Plex sees as /media."),
+        new("transcoding", "Transcoding", "choice", "cpu", Options:
+        [
+            new("cpu", "CPU", "Runs on any server."),
+            new("nvidia", "NVIDIA GPU", "Needs a GPU with NVENC, and Plex Pass."),
+        ]),
+        new("plex-claim", "Claim token", "secret", Optional: true,
+            Help: "Only for a new server: a token from plex.tv/claim, used within four minutes, links it to your account."),
+    ])
+{
+    private const string Image = "lscr.io/linuxserver/plex:1.43.4.10903-e5521bd8c-ls326@sha256:3f71bd6eb6a4478ac19b11c5d0ba9746a5eacad1976f9b99ed4a2c21767e57bb";
+
+    // Plex's database is SQLite, only consistent while it's stopped.
+    public override string BackupMode => "stop";
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var host = settings["web-host"].ToLowerInvariant();
+        var folders = new[] { (settings["media"].TrimEnd('/'), "/data"), (settings["media-2"].TrimEnd('/'), "/media") }
+            .Where(folder => folder.Item1.Length > 0).ToArray();
+        var shares = folders.Select(folder => ImmichApp.NasFolder().Match(folder.Item1)).ToArray();
+        if (shares.Any(share => !share.Success))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Media folders must be folders under a NAS share, such as /mnt/lucia/nas/unas/Media.");
+        var nvidia = settings["transcoding"] == "nvidia";
+        var compose = $$"""
+            # Installed from Lucia's catalog (plex, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              plex:
+                image: {{Image}}
+                restart: unless-stopped
+                network_mode: host
+                environment:
+                  PUID: "1000"
+                  PGID: "1000"
+                  VERSION: docker
+                  PLEX_CLAIM: ${PLEX_CLAIM:-}
+            {{(nvidia ? "      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility\n" : "")}}    volumes:
+                  - config:/config
+                  - /etc/localtime:/etc/localtime:ro
+            {{string.Concat(folders.Select(folder => $"      - {folder.Item1}:{folder.Item2}\n"))}}{{(!nvidia ? "" : """
+                deploy:
+                  resources:
+                    reservations:
+                      devices:
+                        - driver: nvidia
+                          count: all
+                          capabilities: [gpu, video]
+
+            """)}}volumes:
+              config:
+
+            """;
+        string[] require = [.. shares.Select(share => $"nas={share.Groups["nas"].Value}/{share.Groups["share"].Value}").Distinct(),
+            .. nvidia ? ["gpu.vendor=nvidia"] : Array.Empty<string>()];
+        var claim = env.GetValueOrDefault("PLEX_CLAIM") is { Length: > 0 } token ? $"PLEX_CLAIM={token}\n" : "";
+        return new(compose.ReplaceLineEndings("\n"), claim, require, [new(host, 32400)]);
     }
 }

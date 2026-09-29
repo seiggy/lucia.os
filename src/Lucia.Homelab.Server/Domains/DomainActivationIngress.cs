@@ -7,7 +7,21 @@ namespace Lucia.Homelab.Server.Domains;
 public static class DomainIngressConfiguration
 {
     public const string FileName = "domain.yml";
-    public static string Build(DomainNamingPlan plan, string publishedCertificatesRoot, string certificatePath, string privateKeyPath)
+    /// <summary>The gateway's entrypoint for traffic from the internet, which only public routes join.</summary>
+    public const string PublicEntryPoint = "public";
+    /// <summary>
+    /// Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4). Public records are proxied, so the public entrypoint
+    /// takes connections only from these. The gateway's static configuration also trusts their X-Forwarded-For.
+    /// </summary>
+    public static readonly string[] CloudflareRanges =
+    [
+        "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+        "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+        "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    ];
+
+    public static string Build(DomainNamingPlan plan, string publishedCertificatesRoot, string certificatePath, string privateKeyPath,
+        bool publicAccess = false)
     {
         var zone = DomainNames.Hostname(plan.Domain);
         var lucia = DomainNames.ServiceHost(plan.ServiceUrls.Lucia, zone);
@@ -18,6 +32,15 @@ public static class DomainIngressConfiguration
         var certificate = GatewayCertificatePath(publishedCertificatesRoot, certificatePath);
         var key = GatewayCertificatePath(publishedCertificatesRoot, privateKeyPath);
         if (certificate == key) throw new ArgumentException("Certificate and private key paths must differ.");
+        var middlewares = new Dictionary<string, object>
+        {
+            ["domain-spark-redirect"] = new { redirectRegex = new
+            {
+                regex = "^https://" + Regex.Escape(spark) + "(:443)?(/.*)?$",
+                replacement = "https://" + lucia + "/", permanent = false
+            } }
+        };
+        if (publicAccess) middlewares["public-sources"] = new { ipAllowList = new { sourceRange = CloudflareRanges } };
         return JsonSerializer.Serialize(new
         {
             http = new
@@ -25,7 +48,8 @@ public static class DomainIngressConfiguration
                 routers = new Dictionary<string, object>
                 {
                     ["domain-lucia"] = new { entryPoints = new[] { "host" }, rule = $"Host(`{lucia}`)", service = "domain-lucia", tls = new { } },
-                    ["domain-authentik"] = new { entryPoints = new[] { "host" }, rule = $"Host(`{authentik}`)", service = "domain-authentik", tls = new { } },
+                    ["domain-authentik"] = new { entryPoints = publicAccess ? new[] { "host", PublicEntryPoint } : ["host"],
+                        rule = $"Host(`{authentik}`)", service = "domain-authentik", tls = new { } },
                     ["domain-spark"] = new { entryPoints = new[] { "host" }, rule = $"Host(`{spark}`)", service = "noop@internal",
                         middlewares = new[] { "domain-spark-redirect" }, tls = new { } }
                 },
@@ -34,23 +58,16 @@ public static class DomainIngressConfiguration
                     ["domain-lucia"] = new { loadBalancer = new { servers = new[] { new { url = "http://lucia-host:8080" } } } },
                     ["domain-authentik"] = new { loadBalancer = new { servers = new[] { new { url = "http://identity-server:9000" } } } }
                 },
-                middlewares = new Dictionary<string, object>
-                {
-                    ["domain-spark-redirect"] = new { redirectRegex = new
-                    {
-                        regex = "^https://" + Regex.Escape(spark) + "(:443)?(/.*)?$",
-                        replacement = "https://" + lucia + "/", permanent = false
-                    } }
-                }
+                middlewares
             },
             tls = new { certificates = new[] { new { certFile = certificate, keyFile = key } } }
         });
     }
 
     public static void Publish(string gatewayDirectory, DomainNamingPlan plan, string publishedCertificatesRoot,
-        string certificatePath, string privateKeyPath)
+        string certificatePath, string privateKeyPath, bool publicAccess = false)
     {
-        var json = Build(plan, publishedCertificatesRoot, certificatePath, privateKeyPath);
+        var json = Build(plan, publishedCertificatesRoot, certificatePath, privateKeyPath, publicAccess);
         if (!Path.IsPathFullyQualified(gatewayDirectory))
             throw new ArgumentException("The mounted domain gateway directory must be absolute.");
         DomainActivationConfiguration.RejectLinks(gatewayDirectory);

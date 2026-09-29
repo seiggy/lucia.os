@@ -391,6 +391,8 @@ class HostTests(unittest.TestCase):
         self.assertIn("lucia-homelab-host", enabled)
         self.assertIn(record["image_id"], enabled)
         self.assertIn("0.0.0.0:443:8444", enabled)
+        self.assertIn("0.0.0.0:8445:8445", enabled)
+        self.assertIn("entrypoints.public.http.middlewares=public-sources@file", enabled)
         self.assertNotIn("8080:8080", enabled)
         self.assertNotIn("runtime: nvidia", enabled)
         self.assertIn("HostAuthentication__TrustedProxyNetworks__0", enabled)
@@ -417,7 +419,9 @@ class HostTests(unittest.TestCase):
         disabled = publish("disabled")
         self.assertNotIn("lucia-homelab-host", disabled)
         self.assertNotIn("443:8444", disabled)
+        self.assertNotIn("8445:8445", disabled)
         self.assertNotIn("entrypoints.host.", disabled)
+        self.assertNotIn("entrypoints.public.", disabled)
         self.assertIn("sha256sum -c ready.sha256", disabled)
         for port in ("9443:8443", "636:8636", "9444:9000"):
             self.assertIn(port, disabled)
