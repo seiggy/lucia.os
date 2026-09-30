@@ -887,6 +887,7 @@ an explicit unavailable response, not fabricated inference.
 
 ```powershell
 dotnet run --project tests\Lucia.Homelab.Checks
+dotnet run --project tests\Lucia.Homelab.AssistantChecks
 ```
 
 The dependency-free console checks cover model/path validation, split files,
@@ -894,3 +895,6 @@ token handling, persistent download lifecycle, invalid GGUF rejection,
 memory reservations, Qwen tool-call parsing, and HTTP permission boundaries.
 They use a tiny synthetic GGUF and a fake CLI; they do not substitute for
 selected-model GPU inference and tool-quality qualification on the Spark.
+The assistant checks cover stream mapping, turn replay, request validation,
+retries, and per-owner chat storage without starting the Copilot runtime or
+using a GitHub token.
