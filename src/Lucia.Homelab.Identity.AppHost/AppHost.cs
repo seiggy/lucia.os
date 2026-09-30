@@ -119,6 +119,8 @@ var server = builder.AddContainer("identity-server", "goauthentik/server", "2026
     .WithEnvironment("AUTHENTIK_SECRET_KEY", authentikSecret)
     .WithEnvironment("AUTHENTIK_ERROR_REPORTING__ENABLED", "false")
     .WithVolume("lucia-authentik-data", "/data")
+    // /data/media is a symlink to /media; uploaded icons and backgrounds must outlive the container.
+    .WithVolume("lucia-authentik-media", "/media")
     .WithHttpEndpoint(targetPort: 9000, name: "http")
     .WaitFor(database)
     .PublishAsDockerComposeService((_, service) =>
@@ -141,6 +143,7 @@ builder.AddContainer("identity-worker", "goauthentik/server", "2026.8.3")
     .WithEnvironment("AUTHENTIK_BOOTSTRAP_TOKEN", bootstrapToken)
     .WithEnvironment("AUTHENTIK_ERROR_REPORTING__ENABLED", "false")
     .WithVolume("lucia-authentik-data", "/data")
+    .WithVolume("lucia-authentik-media", "/media")
     .WaitFor(database)
     .PublishAsDockerComposeService((_, service) =>
     {

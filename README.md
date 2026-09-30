@@ -579,8 +579,12 @@ password, supply a protected local `--password-file` instead. It deliberately
 does not bypass MFA or another newly required sign-in stage.
 
 Default state is `$HOME/.local/share/lucia/identity` (`--state` overrides it).
-Keep this directory and the Compose PostgreSQL/Authentik data volumes in
-encrypted backups, including the CA keys and all secrets. It contains private
+Keep this directory and the Compose PostgreSQL/Authentik data and media volumes in
+encrypted backups, including the CA keys and all secrets. Files uploaded in
+Authentik's admin (app icons, brand logos, flow backgrounds) live in the shared
+`lucia-authentik-media` volume. Authentik only accepts upload names made of
+letters, numbers, dots, hyphens, underscores and slashes; use the Custom Name
+field for files with spaces or parentheses. The state directory contains private
 deployment environment files and must not be published or committed.
 Direct CLI subprocess failures leave a sanitized `last-command-error.log`
 there. Desktop jobs instead expose the failed operation/exit code and bounded
