@@ -165,11 +165,30 @@ public sealed partial class DiscoveryClient
     // Moves run as long as the data takes; this only stops a connection that has silently died from holding the stack forever.
     private static readonly TimeSpan TransferLimit = TimeSpan.FromHours(24);
 
-    private async Task<string> TransferProofAsync(Guid node, string certificate, string purpose, Guid move, ECDsa key, CancellationToken token)
+    /// <summary>Downloads the agent the server ships and hands the tar and its release ID to <paramref name="consume"/>.</summary>
+    internal async Task DownloadAgentAsync(Guid node, string certificate, ECDsa key,
+        Func<Stream, string, CancellationToken, Task> consume, CancellationToken token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/nodes/{node:D}/agent");
+        request.Headers.Add("X-Lucia-Node-Proof", await ProofHeaderAsync(node, certificate, "agent-download", "agent", key, token));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(30));
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new NodeAgentException($"The server answered the agent download with HTTP {(int)response.StatusCode}.");
+        var release = response.Headers.TryGetValues("X-Lucia-Agent-Release", out var values) ? values.SingleOrDefault() : null;
+        if (release is null || !AgentRelease.IsId(release)) throw new NodeAgentException("The server didn't name the agent release it sent.");
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        await consume(stream, release, timeout.Token);
+    }
+
+    private Task<string> TransferProofAsync(Guid node, string certificate, string purpose, Guid move, ECDsa key, CancellationToken token) =>
+        ProofHeaderAsync(node, certificate, purpose, "move:" + move.ToString("D"), key, token);
+
+    private async Task<string> ProofHeaderAsync(Guid node, string certificate, string purpose, string body, ECDsa key, CancellationToken token)
     {
         ValidateHeartbeatDates(certificate);
         var challenge = await NodeChallengeAsync(node, token);
-        var body = "move:" + move.ToString("D");
         var hash = Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body)));
         var proof = SignReport(challenge, JsonSerializer.Serialize(new { nodeId = node, purpose, bodySha256 = hash }, AgentJson.Options), key);
         return Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new { certificatePem = certificate, proof, body }, AgentJson.Options));

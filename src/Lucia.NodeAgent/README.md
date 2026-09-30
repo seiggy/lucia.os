@@ -207,7 +207,13 @@ Only a successful authenticated machine heartbeat marks a node managed at the
 server. Every 30 seconds the daemon uses `/api/nodes/{id}/challenge` and
 `heartbeat` with certificate plus the existing signed-proof format, **no bearer
 token**. Metrics come from procfs, os-release and root filesystem statistics;
-unsupported values are null, never invented. The native CA's existing policy
+unsupported values are null, never invented. The heartbeat also carries CPU
+use (the `/proc/stat` delta since the last heartbeat), the CPU package
+temperature (hwmon `k10temp`/`zenpower`/`coretemp`/`cpu_thermal`, or the
+`x86_pkg_temp` thermal zone), and NVIDIA GPU load and temperature from
+`nvidia-smi`, sampled every 30 seconds off the heartbeat path. The server keeps
+each node's last hour of these in memory for the Devices page; it starts over
+when the host restarts. The native CA's existing policy
 issues 24-hour node leaves; no CA claims or defaults are expanded. Below six
 hours remaining validity the agent requests renewal with the same CSR/key. Pending or failed renewals
 back off from 30 seconds to 15 minutes while heartbeats continue with the valid
@@ -278,11 +284,42 @@ A failed apply is reported with its error and retried after two minutes. When a
 stack is deleted in Lucia, the node takes it down and deletes its compose and env
 files. Its data directories are kept.
 
-The agent also holds a long-poll open for **read-only requests**. Today the only
-one is container logs: `docker logs --tail N --timestamps`, capped at 5000
-lines. The agent merges stdout and stderr, strips terminal escapes and returns
-at most 96 KiB. Unknown request kinds, container names that aren't plain Docker
-names, and out-of-range tails are refused. The server can't send commands.
+The agent also holds a long-poll open for **requests**. Each is one fixed kind
+with fixed argument arrays; the server can't send commands or arguments beyond
+these:
+
+- **Container logs:** `docker logs --tail N --timestamps`, capped at 5000 lines.
+  The agent merges stdout and stderr, strips terminal escapes and returns at
+  most 96 KiB. Container names that aren't plain Docker names and out-of-range
+  tails are refused.
+- **Check for updates:** `apt-get update`, then `apt-get -s upgrade
+  --with-new-pkgs`. The agent also checks two minutes after it starts and every
+  six hours. The heartbeat carries the count, the security count, up to 50
+  packages (security first) and whether `/run/reboot-required` exists.
+- **Install updates:** `apt-get -y upgrade --with-new-pkgs`, keeping existing
+  config files, run in a transient `lucia-apt-upgrade` systemd unit so it
+  finishes even if the agent restarts. It never removes packages or upgrades
+  across releases.
+- **Restart:** `systemctl reboot`.
+- **Update the agent:** downloads the agent Lucia ships (`GET
+  /api/nodes/{id}/agent`, signed like a heartbeat). The tar must hold only plain
+  files with plain names, including the agent's own binaries, within 512 files
+  and 512 MiB. Its release ID (SHA-256 over each file's name and SHA-256, sorted
+  by name) must match the one Lucia sent. The agent unpacks it to
+  `/usr/lib/lucia/agent.next`, moves the running agent to `agent.prev`, moves
+  the new one into place and restarts `lucia-node-agent.service`. To roll back,
+  stop the service, replace `agent` with `agent.prev` and start it again.
+
+One update action runs at a time; the agent answers at once and the heartbeat
+reports progress (`Checking`, `Installing`, `Failed` with its message, then
+`Idle`). Unknown request kinds are refused.
+
+**Removing a node.** Removing a machine in Lucia deletes its device record,
+installation task, identity and DNS name, so its agent's heartbeats are refused.
+Lucia refuses while a stack is placed on it or an installation is still running.
+The enrollment worker then deletes the node's LDAP reader and its enrollment
+receipt, once the onboarding journal and the node queues no longer hold the
+node. Nothing on the machine itself changes; wipe or reinstall it separately.
 
 If a previously enrolled node's 24-hour leaf expires while the controller is
 offline, its cached certificate is used **only** for recovery renewal, never

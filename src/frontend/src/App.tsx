@@ -13,7 +13,7 @@ import { StorageSettings } from './StorageSettings'
 import { SshKeySettings } from './SshKeySettings'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
-import { Stacks } from './Stacks'
+import { AppUpdates, Stacks } from './Stacks'
 import { routeDestination } from './navigation'
 import { useAuthentication } from './useAuthentication'
 import { inferenceConnection } from './authentication'
@@ -94,6 +94,7 @@ function HomeOverview({ session, refreshSession }: { session: AuthenticationSess
       <a className="text-link" href="#/ai">Open playground <Icon name="arrow" /></a>
     </section>
     </div>
+    {session.isOwner && <AppUpdates session={session} refreshSession={refreshSession} />}
     {session.isOwner && <div className="future-sections">
       <section aria-labelledby="home-devices-heading"><Icon name="devices" /><h2 id="home-devices-heading">Devices</h2><p>Prepare for new hardware, review discovered servers, and see what is ready for onboarding.</p><a className="text-link" href="#/devices">View devices <Icon name="chevron" /></a></section>
       <section aria-labelledby="home-tasks-heading"><Icon name="tasks" /><h2 id="home-tasks-heading">Tasks</h2><p>Follow real hardware approvals and installation observations. Nothing runs without the required authorization.</p><a className="text-link" href="#/tasks">View tasks <Icon name="chevron" /></a></section>

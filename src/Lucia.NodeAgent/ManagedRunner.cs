@@ -68,6 +68,8 @@ internal static class ManagedRunner
         // The closures read the current configuration, so renewed certificates carry over.
         _ = Task.Run(() => StackRunner.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
         _ = Task.Run(() => NodeRequests.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
+        _ = Task.Run(() => NodeUpdates.RunAsync(token), token);
+        _ = Task.Run(() => NodeUsage.RunAsync(token), token);
         var nextRenewal = DateTimeOffset.MinValue;
         var renewalFailures = 0;
         var directoryConfigured = false;
@@ -200,7 +202,8 @@ internal static class ManagedRunner
             return (root.TotalSize, root.AvailableFreeSpace);
         });
 
-    internal static NodeMetrics ReadMetrics(InstallPlan plan, string proc, string osRelease, Func<(long Total, long Available)> storage)
+    internal static NodeMetrics ReadMetrics(InstallPlan plan, string proc, string osRelease, Func<(long Total, long Available)> storage,
+        string sysClass = "/sys/class")
     {
         string? Optional(string file)
         {
@@ -236,7 +239,9 @@ internal static class ManagedRunner
         var memoryTotal = Memory("MemTotal");
         var memoryAvailable = Memory("MemAvailable");
         if (memoryAvailable > memoryTotal) memoryAvailable = null;
+        var (gpuPercent, gpuTemperature) = NodeUsage.Gpu;
         return new(plan.DeviceId, plan.Hostname, version, FirstNumber("uptime"), FirstNumber("loadavg"),
-            memoryTotal, memoryAvailable, total, available, NodeRuntime.Current);
+            memoryTotal, memoryAvailable, total, available, NodeRuntime.Current, NodeUpdates.Current, AgentRelease.Current,
+            NodeUsage.Cpu(Optional(Path.Combine(proc, "stat"))), NodeUsage.CpuTemperature(sysClass), gpuPercent, gpuTemperature);
     }
 }

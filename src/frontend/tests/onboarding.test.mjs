@@ -121,16 +121,40 @@ assert.equal(onboardingRequest(owner, { kind: 'managed' }).url, '/api/host/nodes
 const managedNode = { nodeId: deviceId, hostname: 'dev-server', state: 'Online', certificateExpiresAt: expiry, lastSeenAt: device.lastSeenAt,
   address: '192.168.0.241', dnsName: 'dev-server.homelab.example.com',
   status: { osVersion: 'Debian GNU/Linux 13', uptimeSeconds: 60, loadAverage: 0.3, memoryTotalBytes: 8192, memoryAvailableBytes: 4096,
-    storageTotalBytes: 102400, storageAvailableBytes: 51200, runtime: null },
-  gpu: { cudaLine: null }, gpuWarning: null }
+    storageTotalBytes: 102400, storageAvailableBytes: 51200, runtime: null, updates: null, agentRelease: null,
+    cpuPercent: null, cpuTemperatureCelsius: null, gpuPercent: null, gpuTemperatureCelsius: null },
+  history: [], gpu: { cudaLine: null }, gpuWarning: null, agentUpdateAvailable: null }
 assert.deepEqual(parseManagedNodes([managedNode]), [managedNode])
-const { gpu: _gpu, gpuWarning: _warning, address: _address, dnsName: _dnsName, ...olderServer } = managedNode
+const { gpu: _gpu, gpuWarning: _warning, address: _address, dnsName: _dnsName, agentUpdateAvailable: _agent, history: _history, ...olderServer } = managedNode
 assert.deepEqual(parseManagedNodes([olderServer]), [{ ...managedNode, address: null, dnsName: null }])
 const pinned = { ...managedNode, gpu: { cudaLine: 13 }, gpuWarning: 'Update the driver.' }
 assert.deepEqual(parseManagedNodes([pinned]), [pinned])
 assert.throws(() => parseManagedNodes([{ ...pinned, gpu: { ...pinned.gpu, cudaLine: 11 } }]))
-const { runtime: _omitted, ...olderStatus } = managedNode.status
+const { runtime: _omitted, updates: _updates, agentRelease: _release, cpuPercent: _cpu, cpuTemperatureCelsius: _cpuTemperature,
+  gpuPercent: _gpuPercent, gpuTemperatureCelsius: _gpuTemperature, ...olderStatus } = managedNode.status
 assert.deepEqual(parseManagedNodes([{ ...managedNode, status: olderStatus }]), [managedNode])
+const updates = { state: 'Idle', checkedAt: expiry, count: 3, securityCount: 1, restartRequired: true, message: '3 updates available.',
+  packages: [{ name: 'libc6', current: '2.41-12', candidate: '2.41-12+deb13u1', security: true }, { name: 'linux-image-6.12', current: null, candidate: '6.12.48-1', security: false }] }
+const updatingNode = { ...managedNode, agentUpdateAvailable: true, status: { ...managedNode.status, updates, agentRelease: 'a'.repeat(64) } }
+assert.deepEqual(parseManagedNodes([updatingNode]), [updatingNode])
+const upToDate = { ...updatingNode, status: { ...updatingNode.status, updates: { ...updates, checkedAt: null, count: 0, securityCount: 0, packages: [], message: null } } }
+assert.deepEqual(parseManagedNodes([upToDate]), [upToDate])
+for (const bad of [{ ...updates, state: 'Rebooting' }, { ...updates, securityCount: 4 }, { ...updates, count: -1 }, { ...updates, count: 1.5 },
+  { ...updates, packages: [{ ...updates.packages[0], candidate: '' }] }])
+  assert.throws(() => parseManagedNodes([{ ...updatingNode, status: { ...updatingNode.status, updates: bad } }]))
+assert.throws(() => parseManagedNodes([{ ...updatingNode, agentUpdateAvailable: 'yes' }]))
+for (const [action, path] of [['check-updates', 'updates/check'], ['install-updates', 'updates/install'], ['restart', 'restart'], ['update-agent', 'agent/update']]) {
+  const request = onboardingRequest(owner, { kind: 'node', nodeId: deviceId, action })
+  assert.equal(request.url, `/api/host/nodes/${deviceId}/${path}`)
+  assert.equal(request.init.method, 'POST')
+  assert.equal(request.init.headers['X-CSRF-TOKEN'], 'test-csrf')
+}
+assert.throws(() => onboardingRequest(owner, { kind: 'node', nodeId: deviceId, action: 'shell' }))
+assert.throws(() => onboardingRequest(owner, { kind: 'node', nodeId: '../x', action: 'restart' }))
+const remove = onboardingRequest(owner, { kind: 'remove', deviceId })
+assert.equal(remove.url, `/api/host/devices/${deviceId}`)
+assert.equal(remove.init.method, 'DELETE')
+assert.equal(remove.init.body, undefined)
 const runtime = { state: 'Ready', dockerVersion: '26.1.5', composeVersion: '2.26.1', gpuContainers: true, message: null,
   driverVersion: '610.43.03', cudaVersion: '13.3',
   gpus: [{ vendor: 'nvidia', model: 'NVIDIA CMP 170HX', memoryBytes: 68719476736, computeCapability: '8.0', uuid: 'GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981' }] }
@@ -142,6 +166,13 @@ assert.deepEqual(parseManagedNodes([{ ...gpuNode, status: { ...gpuNode.status, r
   { ...runtime, driverVersion: null, cudaVersion: null, gpus: [{ ...olderGpu, uuid: null }] })
 assert.throws(() => parseManagedNodes([{ ...gpuNode, status: { ...gpuNode.status, runtime: { ...runtime, state: 'Healthy' } } }]))
 assert.throws(() => parseManagedNodes([{ ...managedNode, state: 'InventedHealthy' }]))
+const sample = { at: expiry, cpu: 12.5, memory: 50, gpu: null, cpuTemperature: 54.4, gpuTemperature: null }
+const measured = { ...managedNode, status: { ...managedNode.status, cpuPercent: 12.5, cpuTemperatureCelsius: 54.4, gpuPercent: 3, gpuTemperatureCelsius: 38 },
+  history: [sample, { ...sample, cpu: null, cpuTemperature: null }] }
+assert.deepEqual(parseManagedNodes([measured]), [measured])
+for (const bad of [{ ...sample, cpu: 101 }, { ...sample, memory: null }, { ...sample, cpuTemperature: 400 }, { ...sample, at: 'yesterday' }])
+  assert.throws(() => parseManagedNodes([{ ...measured, history: [bad] }]))
+assert.throws(() => parseManagedNodes([{ ...measured, status: { ...measured.status, gpuPercent: -1 } }]))
 const cudaRuntime = { ...runtime, cudaVersion: '13.3', gpus: [{ ...runtime.gpus[0], computeCapability: '12.1' }] }
 assert.equal(cudaLineUnsupported(13, cudaRuntime), null)
 assert.match(cudaLineUnsupported(13, { ...cudaRuntime, cudaVersion: '12.8' }), /supports up to CUDA 12\.8/)

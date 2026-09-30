@@ -9,15 +9,16 @@ import { bytes } from './sparkTelemetry'
 import {
   ago, appAddressProblem, appAddressState, backupFolderProblem, backupOrder, formatBytes, backupState, parseBackupRecovery, parseBackups,
   catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory, secretKey,
+  parseSparkRunner, sparkIdleProblem, sparkRunnerState,
   parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
   validateStackDraft,
 } from './stackManagement'
-import type { BackupApp, BackupRecovery, CatalogApp, CatalogServer, NodeContainer, NodeInventory, RequirementForm, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
+import type { BackupApp, BackupRecovery, CatalogApp, CatalogServer, ImageUpdate, NodeContainer, NodeInventory, RequirementForm, SparkRunner, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
 import './NetworkSettings.css'
 import './Stacks.css'
 
 type Session = { session: AuthenticationSession; refreshSession: () => Promise<void> }
-type View = 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups'
+type View = 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups' | 'spark'
 
 const toneIcon: Record<StackTone, IconName> = { green: 'check', amber: 'attention', failed: 'attention', muted: 'stop', accent: 'clock' }
 const message = (failure: unknown, fallback: string) => failure instanceof Error ? failure.message : fallback
@@ -43,7 +44,7 @@ export function Stacks({ session, refreshSession, view, name, node }: Session & 
   if (!session.isOwner) return <div className="page-intro"><h1>Owner access is needed.</h1><p>Only lab owners can run apps on managed servers.</p></div>
   const props = { session, refreshSession }
   return <>
-    {view !== 'app' && view !== 'install' && <>
+    {view !== 'app' && view !== 'install' && view !== 'spark' && <>
       {view === 'new' && <a className="text-link stack-back" href="#/apps/catalog"><Icon name="back" />Catalog</a>}
       <div className="page-intro"><h1>{view === 'new' ? 'Your own app' : view === 'containers' ? 'Containers' : view === 'catalog' ? 'Add an app' : view === 'backups' ? 'Backups' : 'Apps'}</h1><p>{view === 'new'
         ? 'Paste a Docker Compose file and say where it can run. Lucia keeps it running there and reports what happens.'
@@ -65,6 +66,7 @@ export function Stacks({ session, refreshSession, view, name, node }: Session & 
     {view === 'install' && name && <InstallApp {...props} id={name} node={node} />}
     {view === 'new' && <AppEditor {...props} />}
     {view === 'app' && name && <AppDetail {...props} name={name} />}
+    {view === 'spark' && <SparkRunnerPage {...props} />}
   </>
 }
 
@@ -73,30 +75,121 @@ export function StateLabel({ label, tone }: { label: string; tone: StackTone }) 
 }
 
 function AppList(props: Session) {
-  const { data: stacks, error } = useJson(props, '/api/host/stacks', parseStackList, 10000)
+  const { data: stacks, error, reload } = useJson(props, '/api/host/stacks', parseStackList, 10000)
+  const spark = useJson(props, '/api/host/spark-runner', parseSparkRunner, 10000)
+  const runner = spark.data?.configured ? spark.data : null
+  const [notice, setNotice] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+  const waiting = stacks?.filter(stack => stack.updates.length > 0).length ?? 0
   return <section className="surface network-section">
     <div className="network-overview-header"><h2>Your apps</h2><a className="button primary" href="#/apps/catalog">Add an app<Icon name="arrow" /></a></div>
     {error && <p className="network-error" role="alert">{error}</p>}
     {!stacks && !error && <p className="section-note" role="status">Reading your apps…</p>}
-    {stacks?.length === 0 && <div className="stack-empty">
+    {waiting > 0 && <p className="stack-update-note stack-updates-summary"><Icon name="upgrade" />
+      <span><strong>{waiting === 1 ? '1 app has an update' : `${waiting} apps have updates`}</strong> waiting. Newer versions of their images are out.</span></p>}
+    {problem && <p className="network-error" role="alert">{problem}</p>}
+    <p className="network-notice stack-quiet-notice" role="status">{notice}</p>
+    {stacks?.length === 0 && !runner && <div className="stack-empty">
       <p>No apps yet. <a href="#/apps/catalog">Pick one from the catalog</a>, or paste the Docker Compose file of any self-hosted app.</p>
       <p className="section-note">Lucia stores named volumes under <code>/srv/lucia/stacks/&lt;app&gt;/volumes</code> on the server, so your data is easy to find and back up.</p>
     </div>}
-    {stacks && stacks.length > 0 && <table className="network-table stack-table">
+    {stacks && (stacks.length > 0 || runner) && <table className={`network-table stack-table ${waiting > 0 ? 'stack-table-updates' : ''}`}>
       <caption className="network-table-caption">Apps and their state</caption>
-      <thead><tr><th scope="col">App</th><th scope="col">State</th><th scope="col">Server</th><th scope="col"><span className="network-table-caption">Open</span></th></tr></thead>
+      <thead><tr><th scope="col">App</th><th scope="col">State</th><th scope="col">Server</th><th scope="col"><span className="network-table-caption">Actions</span></th></tr></thead>
       <tbody>{stacks.map(stack => {
         const state = stackState(stack)
+        const offer = preferredUpdate(stack)
+        const others = new Set(stack.updates.map(update => update.image)).size - 1
         return <tr key={stack.name}>
           <th scope="row"><a className="stack-name" href={`#/apps/${stack.name}`}>{stack.name}</a>{stack.template?.name && stack.template.name !== stack.name
-            && <span className="network-cell-note">{stack.template.name}</span>}</th>
+            && <span className="network-cell-note">{stack.template.name}</span>}
+            {offer && <span className="stack-update-flag"><Icon name="upgrade" /><strong>{offer.major ? 'Major update' : 'Update available'}</strong>
+              <span className="stack-versions">{offer.current}<Icon name="arrow" />{offer.tag}</span>
+              {others > 0 && <span className="stack-update-more">and {others} more</span>}</span>}</th>
           <td data-label="State"><StateLabel {...state} /><span className="network-cell-note">{state.detail}</span></td>
           <td data-label="Server">{stack.move ? <span className="stack-route">{stack.move.from}<Icon name="arrow" />{stack.move.to}</span> : stack.node}</td>
-          <td className="stack-open"><a className="text-link" href={`#/apps/${stack.name}`} aria-label={`Open ${stack.name}`}>Open<Icon name="chevron" /></a></td>
+          <td className="stack-open"><div className="stack-row-actions">
+            {offer && (offer.major
+              ? <a className="text-link" href={`#/apps/${stack.name}`} aria-label={`Review ${stack.name}'s major update`}>Review</a>
+              : <UpdateButton {...props} stack={stack} onDone={done => { setProblem(null); setNotice(done); reload() }} onError={setProblem} />)}
+            <a className="text-link" href={`#/apps/${stack.name}`} aria-label={`Open ${stack.name}`}>Open<Icon name="chevron" /></a></div></td>
         </tr>
-      })}</tbody>
+      })}
+      {runner && <SparkRunnerRow {...props} runner={runner} onDone={done => { setProblem(null); setNotice(done); spark.reload() }} onError={setProblem} />}
+      </tbody>
     </table>}
   </section>
+}
+
+/** The update an app's list row offers: one within the current versions if there is one, since those install without review. */
+function preferredUpdate(stack: StackSummary): ImageUpdate | null {
+  return stack.updates.find(update => !update.major) ?? stack.updates[0] ?? null
+}
+
+async function upgradeImages({ session, refreshSession }: Session, name: string, major: boolean) {
+  await ownerRequest(session, refreshSession, `/api/host/stacks/${encodeURIComponent(name)}/upgrade-images`, 'POST', { major })
+}
+
+const updatingNotice = (name: string) => `Updating ${name}. The server pulls the new images and recreates its containers within about a minute.`
+const shortImage = (image: string) => image.slice(image.lastIndexOf('/') + 1)
+
+/** Installs an app's updates within its current versions; new major versions wait for review on the app's page. */
+function UpdateButton({ stack, onDone, onError, ...props }: Session & { stack: StackSummary; onDone: (done: string) => void; onError: (problem: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  return <button className="button primary stack-row-button" disabled={busy || stack.move !== null} aria-label={`Update ${stack.name}`}
+    onClick={() => {
+      setBusy(true)
+      void upgradeImages(props, stack.name, false).then(() => onDone(updatingNotice(stack.name)), failure => onError(message(failure, `${stack.name} couldn't be updated.`)))
+        .finally(() => setBusy(false))
+    }}><Icon name="upgrade" />{busy ? 'Updating…' : 'Update'}</button>
+}
+
+/** Home's list of apps with newer images, what each runs now and what's available. Shows nothing while every app is current. */
+export function AppUpdates(props: Session) {
+  const { data: stacks, reload } = useJson(props, '/api/host/stacks', parseStackList, 60000)
+  const [notice, setNotice] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+  const waiting = stacks?.filter(stack => stack.updates.length > 0) ?? []
+  if (waiting.length === 0 && !notice) return null
+  const done = (text: string) => { setProblem(null); setNotice(text); reload() }
+  return <section className="surface home-updates" aria-labelledby="home-updates-heading">
+    <div className="overview-heading"><span className="icon-tile tone-accent"><Icon name="upgrade" /></span><div>
+      <h2 id="home-updates-heading">App updates</h2>
+      <span className={`status status-${waiting.length ? 'accent' : 'green'}`}><Icon name={waiting.length ? 'upgrade' : 'check'} />
+        {waiting.length === 0 ? 'Every app is current' : waiting.length === 1 ? '1 app has an update waiting' : `${waiting.length} apps have updates waiting`}</span>
+    </div></div>
+    {problem && <p className="network-error" role="alert">{problem}</p>}
+    <p className="network-notice stack-quiet-notice" role="status">{notice}</p>
+    {waiting.length > 0 && <table className="network-table stack-update-table">
+      <caption className="network-table-caption">Apps with newer images</caption>
+      <thead><tr><th scope="col">App</th><th scope="col">Image</th><th scope="col">Running</th><th scope="col">Available</th><th scope="col"><span className="network-table-caption">Actions</span></th></tr></thead>
+      {waiting.map(stack => {
+        const images = [...new Set(stack.updates.map(update => update.image))]
+        const offer = preferredUpdate(stack)!
+        return <tbody key={stack.name}>{images.map((image, index) => {
+          const updates = stack.updates.filter(update => update.image === image)
+          return <tr key={image} className={index > 0 ? 'stack-update-more-row' : undefined}>
+            <th scope="row">{index === 0 && <a className="stack-name" href={`#/apps/${stack.name}`}>{stack.name}</a>}</th>
+            <td data-label="Image" title={image}>{shortImage(image)}</td>
+            <td data-label="Running" className="stack-number">{updates[0].current}</td>
+            <td data-label="Available"><VersionList updates={updates} /></td>
+            <td className="stack-open">{index === 0 && <div className="stack-row-actions">{offer.major
+              ? <a className="text-link" href={`#/apps/${stack.name}`} aria-label={`Review ${stack.name}'s major update`}>Review<Icon name="chevron" /></a>
+              : <UpdateButton {...props} stack={stack} onDone={done} onError={setProblem} />}</div>}</td>
+          </tr>
+        })}</tbody>
+      })}
+    </table>}
+    {waiting.length > 0 && <p className="section-note">Update installs releases within each app's current versions. New major versions can change settings or data, so review those on the app's page.</p>}
+  </section>
+}
+
+function VersionList({ updates }: { updates: ImageUpdate[] }) {
+  return <ul className="stack-version-list">{updates.map(update => <li key={update.tag}>
+    <span className="stack-number">{update.tag}</span>
+    {update.major && <span className="stack-major">Major</span>}
+    {update.notes && <a className="text-link" href={update.notes} target="_blank" rel="noreferrer" aria-label={`Release notes for ${shortImage(update.image)} ${update.tag} (opens in a new tab)`}>Release notes<Icon name="arrow" /></a>}
+  </li>)}</ul>
 }
 
 function useNodes(props: Session) {
@@ -348,6 +441,9 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
     {error && <p className="network-error" role="alert">{error}</p>}
     <p className="network-notice" role="status">{notice}</p>
 
+    {stack.updates.length > 0 && <ImageUpdatesSection {...props} stack={stack} locked={moving}
+      onChanged={done => { setNotice(done); live.reload(); detail.reload() }} />}
+
     <section className="surface network-section">
       <h2>Containers</h2>
       {containers.length === 0 && <p className="section-note">{stack.desired === 'Stopped' ? 'Stopped apps have no containers.' : 'No containers yet.'}</p>}
@@ -391,6 +487,182 @@ function AppDetail({ name, ...props }: Session & { name: string }) {
       <p className="section-note">Last changed by {stack.updatedBy} on {new Date(stack.updatedAt).toLocaleString()}.</p>
     </section>
   </>
+}
+
+const sparkRunnerPath = '/api/host/spark-runner'
+/** The install page's server choice for the Spark; no hostname contains a colon. */
+const sparkPick = 'spark:on-demand'
+
+async function sparkRequest(props: Session, method: 'PUT' | 'POST' | 'DELETE', path = '', body?: unknown): Promise<SparkRunner> {
+  const response = await ownerRequest(props.session, props.refreshSession, sparkRunnerPath + path, method, body)
+  return parseSparkRunner(await response.json())
+}
+
+const sparkOn = (runner: SparkRunner) => runner.state === 'running' || runner.state === 'starting'
+const sparkStarting = 'Starting. The Spark downloads the runner the first time, then it registers with GitHub within about a minute.'
+
+/** The Spark runner's row in Your apps, with Start or Stop right there. */
+function SparkRunnerRow({ runner, onDone, onError, ...props }: Session & { runner: SparkRunner; onDone: (done: string) => void; onError: (problem: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const state = sparkRunnerState(runner)
+  const on = sparkOn(runner)
+  return <tr>
+    <th scope="row"><a className="stack-name" href="#/apps/spark-runner">spark-runner</a><span className="network-cell-note">GitHub Actions runner, on demand</span></th>
+    <td data-label="State"><StateLabel {...state} /><span className="network-cell-note">{state.detail}</span></td>
+    <td data-label="Server">Spark</td>
+    <td className="stack-open"><div className="stack-row-actions">
+      <button className={`button ${on ? 'secondary' : 'primary'} stack-row-button`} disabled={busy || runner.state === 'stopping'}
+        aria-label={`${on ? 'Stop' : 'Start'} the Spark runner`} onClick={() => {
+          setBusy(true)
+          void sparkRequest(props, 'POST', on ? '/stop' : '/start').then(() => onDone(on ? 'Stopping the Spark runner.' : sparkStarting),
+            failure => onError(message(failure, 'The Spark runner didn’t respond.'))).finally(() => setBusy(false))
+        }}><Icon name={on ? 'stop' : 'arrow'} />{on ? 'Stop' : 'Start'}</button>
+      <a className="text-link" href="#/apps/spark-runner" aria-label="Open the Spark runner">Open<Icon name="chevron" /></a></div></td>
+  </tr>
+}
+
+function IdleField({ value, onChange, disabled }: { value: string; onChange: (value: string) => void; disabled: boolean }) {
+  const problem = value ? sparkIdleProblem(value) : null
+  return <div className="stack-catalog-fields"><label>Stop after idle<input value={value} disabled={disabled} required inputMode="numeric" maxLength={4}
+    className="stack-number" autoComplete="off" aria-invalid={!!problem} aria-describedby="spark-idle-hint"
+    onChange={event => onChange(event.target.value.replace(/\D/g, ''))} />
+    <span id="spark-idle-hint" className="stack-hint">{problem ?? 'Minutes without a job before the Spark stops the runner and frees its memory.'}</span></label></div>
+}
+
+function SparkRunnerSettings({ app, runner, onSaved, ...props }: Session & { app: CatalogApp; runner: SparkRunner; onSaved: (runner: SparkRunner) => void }) {
+  const initial = { repositories: runner.repositories.join(', '), 'access-token': '', labels: runner.labels.join(', ') }
+  const [values, setValues] = useState(initial)
+  const [idle, setIdle] = useState(String(runner.idleMinutes))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const dirty = JSON.stringify(values) !== JSON.stringify(initial) || idle !== String(runner.idleMinutes)
+  const problem = settingsProblem(app, values) ?? sparkIdleProblem(idle)
+  async function save(event: React.FormEvent) {
+    event.preventDefault()
+    if (problem) { setError(problem); return }
+    setBusy(true); setError(null)
+    try {
+      onSaved(await sparkRequest(props, 'PUT', '', { repositories: values.repositories, labels: values.labels, idleMinutes: Number(idle), token: values['access-token'] || null }))
+    } catch (failure) { setError(message(failure, 'The settings could not be saved.')); setBusy(false) }
+  }
+  return <section className="surface network-section">
+    <h2>Settings</h2>
+    <p className="section-note">Saving restarts a running runner with the new settings. A stopped one stays stopped.</p>
+    <form onSubmit={event => void save(event)}>
+      <SettingsFields app={app} server={undefined} values={values} env="ACCESS_TOKEN=saved" disabled={busy}
+        onChange={(field, value) => setValues(current => ({ ...current, [field]: value }))} />
+      <IdleField value={idle} onChange={setIdle} disabled={busy} />
+      {error && <p className="network-error" role="alert">{error}</p>}
+      <div className="network-actions">
+        <button className="button primary" disabled={busy || !dirty || !!problem}>{busy ? 'Saving…' : 'Save'}</button>
+        {dirty && <button type="button" className="text-link" disabled={busy} onClick={() => { setValues(initial); setIdle(String(runner.idleMinutes)); setError(null) }}>Undo changes</button>}
+      </div>
+    </form>
+  </section>
+}
+
+/** The Spark's on-demand runner: its state, Start and Stop, settings and removal. */
+function SparkRunnerPage(props: Session) {
+  const live = useJson(props, sparkRunnerPath, parseSparkRunner, 5000)
+  const { data: catalog } = useJson(props, '/api/host/catalog', parseCatalog)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const runner = live.data
+  const app = catalog?.find(item => item.onSpark)
+  const back = <a className="text-link stack-back" href="#/apps"><Icon name="back" />All apps</a>
+
+  async function act(method: 'POST' | 'DELETE', path: string, done: string) {
+    setBusy(true); setError(null); setNotice('')
+    try {
+      live.setData(await sparkRequest(props, method, path))
+      setNotice(done)
+    } catch (failure) { setError(message(failure, 'The Spark runner didn’t respond.')) } finally { setBusy(false) }
+  }
+
+  if (live.error && !runner) return <>{back}<p className="network-error" role="alert">{live.error}</p></>
+  if (!runner) return <>{back}<p className="section-note" role="status">Reading the Spark runner…</p></>
+  if (!runner.configured) return <>{back}<div className="page-intro"><h1>Spark runner</h1>
+    <p>The Spark doesn’t have a GitHub Actions runner yet.</p></div>
+    {app && <a className="button primary" href={`#/apps/install/${app.id}/spark`}>Set one up</a>}
+    <p className="network-notice" role="status">{notice}</p></>
+  const state = sparkRunnerState(runner)
+  const on = sparkOn(runner)
+  return <>
+    {back}
+    <div className="page-intro stack-heading"><h1>Spark runner</h1>
+      <p><StateLabel {...state} /> <span>{state.detail}</span></p></div>
+    <div className="stack-actions" role="group" aria-label="Runner actions">
+      {on ? <button className="button secondary" disabled={busy} onClick={() => void act('POST', '/stop', 'Stopping. Its build cache is kept for next time.')}><Icon name="stop" />Stop</button>
+        : <button className="button primary" disabled={busy || runner.state === 'stopping'} onClick={() => void act('POST', '/start', sparkStarting)}><Icon name="arrow" />Start</button>}
+    </div>
+    {error && <p className="network-error" role="alert">{error}</p>}
+    <p className="network-notice" role="status">{notice}</p>
+
+    <section className="surface network-section">
+      <h2>Using it</h2>
+      <p className="section-note">It takes jobs from {runner.repositories.join(', ')}. Ask for it in a workflow with:</p>
+      <pre className="stack-log-text" tabIndex={0}>{`runs-on: [self-hosted, ARM64, ${runner.label}]`}</pre>
+      <p className="section-note">While it’s stopped, those jobs wait in GitHub’s queue, for up to a day, and start when you start it. Each job gets a fresh runner
+        and the runners’ own Docker, which keeps images and build cache between jobs.{runner.lastJobAt && ` The last job ran ${ago(runner.lastJobAt)}.`}</p>
+    </section>
+
+    {app && <SparkRunnerSettings key={`${runner.repositories.join()}|${runner.labels.join()}|${runner.idleMinutes}`} {...props} app={app} runner={runner}
+      onSaved={saved => { live.setData(saved); setNotice(sparkOn(saved) ? 'Saved. The runner restarts with the new settings.' : 'Saved.') }} />}
+
+    <section className="surface network-section">
+      <h2>What a job can reach</h2>
+      <p className="section-note">Jobs run with a Docker of their own, not the Spark’s, but that Docker is privileged: a workflow can take over the Spark, which also
+        runs Lucia and your sign-in. Only point it at repositories you trust, and never at a public repository that runs workflows for pull requests from forks.</p>
+    </section>
+
+    <section className="surface network-section">
+      <h2>Remove the runner</h2>
+      <p className="section-note">The Spark stops the runner and deletes its Docker images and build cache. GitHub drops the runner once it’s stopped.</p>
+      <div className="network-actions">{confirmRemove
+        ? <><button className="button secondary stack-danger" disabled={busy} onClick={() => void act('DELETE', '', 'Removed. The Spark deletes the runner’s data within a minute.')}>Remove the runner</button>
+          <button className="text-link" disabled={busy} onClick={() => setConfirmRemove(false)}>Keep it</button></>
+        : <button className="button secondary" disabled={busy} onClick={() => setConfirmRemove(true)}>Remove…</button>}</div>
+    </section>
+  </>
+}
+
+function ImageUpdatesSection({ stack, locked, onChanged, ...props }: Session & { stack: StackSummary; locked: boolean; onChanged: (done: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const minor = stack.updates.some(update => !update.major)
+  const major = stack.updates.some(update => update.major)
+  async function upgrade(includeMajor: boolean) {
+    setBusy(true); setError(null)
+    try {
+      await upgradeImages(props, stack.name, includeMajor)
+      onChanged(updatingNotice(stack.name))
+    } catch (failure) { setError(message(failure, 'The update failed.')) } finally { setBusy(false) }
+  }
+  const images = [...new Set(stack.updates.map(update => update.image))]
+  return <section className="surface network-section stack-updates-section">
+    <h2><Icon name="upgrade" />Updates available</h2>
+    <table className="network-table stack-update-table">
+      <caption className="network-table-caption">Newer images for {stack.name}</caption>
+      <thead><tr><th scope="col">Image</th><th scope="col">Running</th><th scope="col">Available</th></tr></thead>
+      <tbody>{images.map(image => {
+        const updates = stack.updates.filter(update => update.image === image)
+        return <tr key={image}>
+          <th scope="row"><code>{image}</code></th>
+          <td data-label="Running" className="stack-number">{updates[0].current}</td>
+          <td data-label="Available"><VersionList updates={updates} /></td>
+        </tr>
+      })}</tbody>
+    </table>
+    {major && <p className="section-note">A major version can change settings or data. Read its release notes first, and back up if you rely on this app.</p>}
+    <p className="section-note">Lucia checks for newer images every few hours. Databases only get patch releases, since other versions can need their data migrated.</p>
+    {error && <p className="network-error" role="alert">{error}</p>}
+    <div className="network-actions">
+      {minor && <button className="button primary" disabled={busy || locked} onClick={() => void upgrade(false)}><Icon name="upgrade" />{busy ? 'Updating…' : major ? 'Update within current versions' : 'Update'}</button>}
+      {major && <button className="button secondary" disabled={busy || locked} onClick={() => void upgrade(true)}>{busy ? 'Updating…' : 'Update including major versions'}</button>}
+    </div>
+  </section>
 }
 
 function ContainerRow({ container, open, onLogs, children, showProject = false }: { container: NodeContainer; open: boolean; onLogs: () => void; children?: React.ReactNode; showProject?: boolean }) {
@@ -497,18 +769,19 @@ function CatalogView(props: Session) {
       {apps.map(app => {
         const ready = app.servers.filter(server => !catalogReason(server))
         const blocked = app.servers.find(server => catalogReason(server))
+        const places = [...ready.map(server => server.hostname), ...(app.onSpark ? ['the Spark, on demand'] : [])]
         return <li key={app.id}>
           <div>
             <h3>{app.name}</h3>
             <p>{app.summary}</p>
             <p className="stack-catalog-needs"><span>Needs</span> {app.needs}</p>
-            <p className={ready.length ? 'stack-catalog-fit' : 'stack-catalog-fit stack-tone-muted'}>
-              <Icon name={ready.length ? 'check' : 'attention'} />
-              {ready.length ? <span>Can run on {ready.map(server => server.hostname).join(', ')}</span>
+            <p className={places.length ? 'stack-catalog-fit' : 'stack-catalog-fit stack-tone-muted'}>
+              <Icon name={places.length ? 'check' : 'attention'} />
+              {places.length ? <span>Can run on {places.join(', ')}</span>
                 : <span>No server can run it yet.{blocked ? ` ${blocked.hostname}: ${catalogReason(blocked)}` : ' Add a managed server from Devices.'}</span>}
             </p>
           </div>
-          <a className={ready.length ? 'button primary' : 'button secondary'} href={`#/apps/install/${app.id}`}>Install<Icon name="arrow" /></a>
+          <a className={places.length ? 'button primary' : 'button secondary'} href={`#/apps/install/${app.id}`}>Install<Icon name="arrow" /></a>
         </li>
       })}
       <li className="stack-catalog-custom">
@@ -594,9 +867,11 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   const [picked, setPicked] = useState<string | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [address, setAddress] = useState('')
+  const [idle, setIdle] = useState('30')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const app = catalog.data?.find(item => item.id === id)
+  const spark = useJson(props, app?.onSpark ? sparkRunnerPath : null, parseSparkRunner)
   const back = <a className="text-link stack-back" href="#/apps/catalog"><Icon name="back" />Catalog</a>
   if (catalog.error) return <>{back}<p className="network-error" role="alert">{catalog.error}</p></>
   if (!catalog.data || !stacks) return <>{back}<p className="section-note" role="status">Reading the catalog…</p></>
@@ -607,20 +882,32 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   const blocked = (server: CatalogServer) => catalogReason(server)
     ?? (installed(server.hostname) ? `It already runs ${app.name} as ${installed(server.hostname)!.name}.` : null)
   const open = app.servers.filter(server => !blocked(server))
-  const serverName = picked ?? (open.find(server => server.hostname === wanted) ?? open[0])?.hostname ?? ''
+  const sparkReason = !app.onSpark ? null : spark.error ?? (!spark.data ? 'Checking the Spark…'
+    : spark.data.configured ? 'The Spark already runs it. Open it from Your apps.' : null)
+  const sparkOpen = app.onSpark && !!spark.data && !sparkReason
+  const onSpark = sparkOpen && (picked === sparkPick || (picked === null && (wanted === 'spark' || open.length === 0)))
+  const serverName = onSpark ? '' : (picked !== null && picked !== sparkPick ? picked : (open.find(server => server.hostname === wanted) ?? open[0])?.hostname ?? '')
   const server = app.servers.find(item => item.hostname === serverName)
   const settings = { ...catalogDefaults(app, server), ...edits }
   const nameValue = name ?? freeName(app.id, taken)
   const nameProblem = !stackNamePattern.test(nameValue) ? 'Use lowercase letters, digits and hyphens, starting with a letter.'
     : taken.includes(nameValue) ? `You already have an app called ${nameValue}.` : null
   const addressProblem = app.usesAddress ? appAddressProblem(address) : null
-  const problem = !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings) ?? addressProblem
+  const problem = onSpark ? settingsProblem(app, settings) ?? sparkIdleProblem(idle)
+    : !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings) ?? addressProblem
 
   async function install(event: React.FormEvent) {
     event.preventDefault()
     if (problem) { setError(problem); return }
     setBusy(true); setError(null)
     try {
+      if (onSpark) {
+        await sparkRequest(props, 'PUT', '', { repositories: settings.repositories, labels: settings.labels, idleMinutes: Number(idle), token: settings['access-token'] || null })
+        // The page offers Start again if this fails.
+        await sparkRequest(props, 'POST', '/start').catch(() => undefined)
+        window.location.hash = '#/apps/spark-runner'
+        return
+      }
       const response = await ownerRequest(props.session, props.refreshSession, `/api/host/stacks/${encodeURIComponent(nameValue)}`, 'PUT', {
         compose: null, env: null, expectedRevision: 0,
         manifest: { schemaVersion: 1, placement: { node: serverName, require: [] }, template: { id: app!.id, version: app!.version, settings },
@@ -637,8 +924,14 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
       <form onSubmit={event => void install(event)}>
         <fieldset className="stack-install-servers" disabled={busy}>
           <legend>Server</legend>
-          {app.servers.length === 0 && <p className="section-note">No managed servers yet. <a href="#/devices">Add one from Devices</a> first.</p>}
-          <ul className="stack-eligibility-list">{app.servers.map(item => {
+          {app.servers.length === 0 && !app.onSpark && <p className="section-note">No managed servers yet. <a href="#/devices">Add one from Devices</a> first.</p>}
+          <ul className="stack-eligibility-list">
+            {app.onSpark && <li className={sparkReason ? 'stack-ineligible' : ''}>
+              <input type="radio" name="install-server" id="install-spark" checked={onSpark} disabled={!!sparkReason} onChange={() => setPicked(sparkPick)} />
+              <label htmlFor="install-spark">Spark, on demand</label>
+              <span className="stack-eligibility-reason">{sparkReason ?? 'Native ARM64. Runs only after you start it, and stops itself when it’s idle.'}</span>
+            </li>}
+            {app.servers.map(item => {
             const reason = blocked(item)
             return <li key={item.nodeId} className={reason ? 'stack-ineligible' : ''}>
               <input type="radio" name="install-server" id={`install-${item.nodeId}`} checked={item.hostname === serverName} disabled={!!reason}
@@ -649,12 +942,12 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
                 ? item.gpus.filter(gpu => !gpu.unsupported).map(gpu => gpu.model).join(', ') : 'Ready')}</span>
             </li>
           })}</ul>
-          {app.servers.length > 0 && open.length === 0 && <p className="section-note">No server can run {app.name} right now. The reasons are next to each server. {app.needs}</p>}
+          {app.servers.length > 0 && open.length === 0 && !sparkOpen && <p className="section-note">No server can run {app.name} right now. The reasons are next to each server. {app.needs}</p>}
         </fieldset>
 
-        <fieldset className="stack-install-settings" disabled={busy || !server}>
+        <fieldset className="stack-install-settings" disabled={busy || (!server && !onSpark)}>
           <legend>Settings</legend>
-          <div className="stack-catalog-fields">
+          {!onSpark && <div className="stack-catalog-fields">
             <label>Name<input value={nameValue} onChange={event => setName(event.target.value.toLowerCase())} maxLength={40} required autoComplete="off"
               spellCheck={false} aria-invalid={!!nameProblem} aria-describedby="install-name-hint" />
               <span id="install-name-hint" className="stack-hint">{nameProblem ?? <>How it appears in Lucia. Containers are named <code>lucia-{nameValue}-…</code></>}</span></label>
@@ -663,15 +956,16 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
               aria-invalid={address.length > 0 && !!addressProblem} aria-describedby="install-address-hint" />
               <span id="install-address-hint" className="stack-hint">{address && addressProblem ? addressProblem
                 : <>{app.name}’s own address. {serverName || 'Its server'} takes it while the app runs. Pick one outside your router’s DHCP range.</>}</span></label>}
-          </div>
+          </div>}
           <SettingsFields app={app} server={server} values={settings} disabled={busy} onChange={(field, value) => setEdits(current => ({ ...current, [field]: value }))} />
+          {onSpark && <IdleField value={idle} onChange={setIdle} disabled={busy} />}
         </fieldset>
 
         {server && !settingsProblem(app, settings) && <ComposePreview {...props} id={app.id} server={serverName} settings={settings} />}
 
         {error && <p className="network-error" role="alert">{error}</p>}
         <div className="network-actions">
-          <button className="button primary" disabled={busy || !!problem}>{busy ? 'Installing…' : server ? `Install on ${serverName}` : 'Install'}</button>
+          <button className="button primary" disabled={busy || !!problem}>{busy ? 'Installing…' : onSpark ? 'Set up and start on the Spark' : server ? `Install on ${serverName}` : 'Install'}</button>
           <a className="text-link" href="#/apps/catalog">Cancel</a>
         </div>
         <p className="section-note">The server downloads the app's images before it starts. Large images, like Local AI's, can take several minutes.</p>

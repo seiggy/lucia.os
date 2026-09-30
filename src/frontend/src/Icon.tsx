@@ -26,6 +26,7 @@ const paths = {
   stop: <><circle cx="12" cy="12" r="9" /><rect x="9" y="9" width="6" height="6" rx="1" /></>,
   eject: <path d="M12 5 5 13h14Zm-7 13h14" />,
   down: <path d="m6 9 6 6 6-6" />,
+  upgrade: <><circle cx="12" cy="12" r="9" /><path d="M12 16.5v-9m-4 4 4-4 4 4" /></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,
 } as const
 

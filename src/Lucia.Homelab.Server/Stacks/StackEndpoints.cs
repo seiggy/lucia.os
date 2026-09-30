@@ -18,12 +18,23 @@ public static partial class StackEndpoints
     public static void AddStacks(this WebApplicationBuilder builder)
     {
         builder.Services.AddSingleton<StackStore>();
+        builder.Services.AddSingleton<ImageRegistry>();
+        builder.Services.AddHostedService<ImageUpdateChecks>();
         builder.Services.AddSingleton<StackTransfers>();
         builder.Services.AddSingleton<NodeRequests>();
+        builder.Services.AddSingleton<SparkRunner>();
     }
 
     public static void MapStacks(this WebApplication app)
     {
+        var spark = app.MapGroup("/api/host/spark-runner").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        spark.MapGet("", (SparkRunner runner, CancellationToken ct) => runner.Get(ct));
+        spark.MapPut("", async (HttpContext context, SparkRunner runner, CancellationToken ct) =>
+            await runner.Save(await ReadOwnerBody<SparkRunnerRequest>(context, 4 * 1024, "repositories, labels, idleMinutes and token", ct), ct));
+        spark.MapPost("/start", (SparkRunner runner, CancellationToken ct) => runner.Set("running", ct));
+        spark.MapPost("/stop", (SparkRunner runner, CancellationToken ct) => runner.Set("stopped", ct));
+        spark.MapDelete("", (SparkRunner runner, CancellationToken ct) => runner.Set("removed", ct));
         var owner = app.MapGroup("/api/host/stacks").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
         var catalog = app.MapGroup("/api/host/catalog").WithTags("Stacks")
@@ -47,6 +58,8 @@ public static partial class StackEndpoints
             await stacks.SaveStackPublic(name, await ReadOwnerBody<StackPublicRequest>(context, 1024, "host and public", ct), Actor(context), ct));
         owner.MapPost("/{name}/restore", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.Restore(name, await ReadOwnerBody<RestoreStackRequest>(context, 4 * 1024, "snapshot", ct), Actor(context), ct));
+        owner.MapPost("/{name}/upgrade-images", async (string name, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.UpgradeImages(name, await ReadOwnerBody<UpgradeImagesRequest>(context, 1024, "major", ct), Actor(context), ct));
         owner.MapPost("/{name}/{action}", (string name, string action, HttpContext context, StackStore stacks, CancellationToken ct) =>
             stacks.Act(name, action, Actor(context), ct));
         owner.MapDelete("/{name}", async (string name, StackStore stacks, CancellationToken ct) =>
@@ -105,6 +118,15 @@ public static partial class StackEndpoints
                 ? Results.Json(new { container, logs = result.Output ?? "" }, HardwareOnboardingJson.Options)
                 : throw new HardwareOnboardingException(404, "logs_unavailable", result.Message ?? "The node couldn't read that container's logs.");
         });
+        inventory.MapPost("/updates/check", (Guid id, NodeRequests requests, CancellationToken ct) => requests.Act(id, "check-updates", ct));
+        inventory.MapPost("/updates/install", (Guid id, NodeRequests requests, CancellationToken ct) => requests.Act(id, "install-updates", ct));
+        inventory.MapPost("/restart", (Guid id, NodeRequests requests, CancellationToken ct) => requests.Act(id, "restart", ct));
+        inventory.MapPost("/agent/update", (Guid id, NodeRequests requests, CancellationToken ct) => requests.Act(id, "update-agent", ct));
+        app.MapDelete("/api/host/devices/{id:guid}", async (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+        {
+            await stacks.RemoveDevice(id, Actor(context), ct);
+            return Results.NoContent();
+        }).WithTags("Stacks").RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
 
         var nodes = app.MapGroup("/api/nodes/{id:guid}").AllowAnonymous().AddEndpointFilter<BootProtocolErrorFilter>();
         nodes.MapPost("/stacks", async (Guid id, HttpContext context, BootOptions options, DiscoveryChallenges challenges,
@@ -154,6 +176,16 @@ public static partial class StackEndpoints
             try { return Results.Ok(new { bytes = await transfers.Send(move, context.Request.Body, total, ct) }); }
             catch (TimeoutException ex) { throw new DiscoveryProtocolException(409, ex.Message); }
         });
+        nodes.MapGet("/agent", async (Guid id, HttpContext context, BootOptions options, DiscoveryChallenges challenges,
+            ManagedNodeEnrollment enrollment, CancellationToken ct) =>
+        {
+            await VerifyProofHeader(id, "agent-download", "agent", context, options, challenges, enrollment, ct);
+            var release = NodeAgentRelease.Latest ?? throw new DiscoveryProtocolException(404, "This controller has no node agent to hand out.");
+            if (context.Features.Get<IHttpMinResponseDataRateFeature>() is { } response) response.MinDataRate = null;
+            context.Response.ContentType = "application/x-tar";
+            context.Response.Headers["X-Lucia-Agent-Release"] = release;
+            await NodeAgentRelease.WriteTar(context.Response.Body, ct);
+        });
     }
 
     private static async Task<(string Hostname, string Body)> ReadNodeBody(Guid id, string purpose, HttpContext context,
@@ -168,6 +200,17 @@ public static partial class StackEndpoints
     private static async Task<string> VerifyTransfer(Guid id, Guid move, string purpose, HttpContext context, BootOptions options,
         DiscoveryChallenges challenges, ManagedNodeEnrollment enrollment, StackStore stacks, CancellationToken ct)
     {
+        var hostname = await VerifyProofHeader(id, purpose, "move:" + move.ToString("D"), context, options, challenges, enrollment, ct);
+        try { await stacks.RequireTransfer(move, hostname, purpose == "transfer-send", ct); }
+        catch (HardwareOnboardingException) { throw new DiscoveryProtocolException(404, "No move is waiting for this node."); }
+        if (context.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } request) request.MinDataRate = null;
+        if (context.Features.Get<IHttpMinResponseDataRateFeature>() is { } response) response.MinDataRate = null;
+        return hostname;
+    }
+
+    private static async Task<string> VerifyProofHeader(Guid id, string purpose, string body, HttpContext context, BootOptions options,
+        DiscoveryChallenges challenges, ManagedNodeEnrollment enrollment, CancellationToken ct)
+    {
         var address = HardwareBootExtensions.RequireNetwork(context, options);
         var header = context.Request.Headers["X-Lucia-Node-Proof"];
         NodeBoundSubmission? input;
@@ -177,14 +220,9 @@ public static partial class StackEndpoints
                 ? JsonSerializer.Deserialize<NodeBoundSubmission>(Convert.FromBase64String(text), HardwareOnboardingJson.Options) : null;
         }
         catch (Exception ex) when (ex is FormatException or JsonException) { input = null; }
-        if (input is null || input.Body != "move:" + move.ToString("D"))
-            throw new DiscoveryProtocolException(400, "A signed transfer proof for this move is required.");
-        var hostname = await VerifyNode(id, purpose, input, address, challenges, enrollment, ct);
-        try { await stacks.RequireTransfer(move, hostname, purpose == "transfer-send", ct); }
-        catch (HardwareOnboardingException) { throw new DiscoveryProtocolException(404, "No move is waiting for this node."); }
-        if (context.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } request) request.MinDataRate = null;
-        if (context.Features.Get<IHttpMinResponseDataRateFeature>() is { } response) response.MinDataRate = null;
-        return hostname;
+        if (input is null || input.Body != body)
+            throw new DiscoveryProtocolException(400, "A signed proof for this request is required.");
+        return await VerifyNode(id, purpose, input, address, challenges, enrollment, ct);
     }
 
     private static async Task<string> VerifyNode(Guid id, string purpose, NodeBoundSubmission input, System.Net.IPAddress address,

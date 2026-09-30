@@ -73,7 +73,8 @@ internal sealed record StackFile(int SchemaVersion, StoredStack[] Stacks);
 /// node reports stay in memory only and reappear within one sync after a restart.
 /// </summary>
 public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> options, IDataProtectionProvider protection,
-    ManagedNodeEnrollment nodes, StackTransfers transfers, DomainOnboardingStore domains, TimeProvider time)
+    ManagedNodeEnrollment nodes, StackTransfers transfers, DomainOnboardingStore domains, ImageRegistry images, TimeProvider time,
+    HardwareOnboardingStore onboarding)
 {
     public const int MaxStacks = 64, MaxStacksPerNode = 32, MaxComposeBytes = 128 * 1024, MaxEnvBytes = 32 * 1024;
     private const int MaxNodePayloadBytes = 1536 * 1024;
@@ -180,8 +181,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                     throw new HardwareOnboardingException(409, "already_installed", $"{node} already runs {app.Name} as {other.Name}.");
                 var previous = existing is null ? "" : _protector.Unprotect(existing.ProtectedEnv);
                 var output = app.Render(settings!, target, StackCatalog.KeepSecrets(app, settings!, StackCatalog.ReadEnv(previous)));
-                (compose, env, require) = (output.Compose, output.Env + LuciaLines(previous), StackRequirements.Normalize(output.Require));
-                manifest = manifest with { Placement = manifest.Placement with { Require = require },
+                var pinned = StackImages.Keep(output.Compose, request.Manifest.Template!.Images ?? existing?.Manifest.Template?.Images);
+                (compose, env, require) = (StackImages.Apply(output.Compose, pinned), output.Env + LuciaLines(previous), StackRequirements.Normalize(output.Require));
+                manifest = manifest with { Placement = manifest.Placement with { Require = require }, Template = manifest.Template! with { Images = pinned },
                     Routes = await ValidRoutes(output.Routes?.Select(route => route with
                     {
                         Public = (request.Manifest.Routes ?? existing?.Manifest.Routes)?.FirstOrDefault(item => item.Host == route.Host)?.Public,
@@ -265,6 +267,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 "cancel-restore" => throw new HardwareOnboardingException(409, "not_restoring", "This app isn't being restored."),
                 _ => throw new HardwareOnboardingException(404, "unknown_action", "Use start, stop, restart, update, cancel-move or cancel-restore."),
             } with { UpdatedAt = time.GetUtcNow(), UpdatedBy = actor };
+            if (action == "update") images.Forget(stack.Compose);
             stacks[stacks.IndexOf(stack)] = changed;
             await Write(stacks, ct);
             return Summary(changed, names);
@@ -343,6 +346,27 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             RequireSettled(stack);
             stacks.Remove(stack);
             await Write(stacks, ct);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Forgets a machine: its onboarding record and, once it's a managed server, its identity. Refused while apps run on
+    /// it or are moving to or from it. The machine itself isn't touched.
+    /// </summary>
+    public async Task RemoveDevice(Guid id, string actor, CancellationToken ct)
+    {
+        var hostname = (await nodes.Facts(ct)).FirstOrDefault(item => item.NodeId == id)?.Hostname;
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (hostname is not null && ReadUnlocked().FirstOrDefault(stack => stack.Assigned == hostname
+                || stack.Move is { } move && (move.From == hostname || move.To == hostname)) is { } used)
+                throw new HardwareOnboardingException(409, "node_in_use", $"{used.Name} runs on {hostname}. Move or delete its apps first.");
+            var forgotten = await onboarding.RemoveDeviceAsync(id, actor, ct);
+            if (await nodes.Remove(id, ct) is null && !forgotten)
+                throw new HardwareOnboardingException(404, "unknown_device", "Lucia doesn't know that machine.");
+            _reports.TryRemove(id, out _);
         }
         finally { _gate.Release(); }
     }
@@ -440,6 +464,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             template = stack.Manifest.Template is { } template && StackCatalog.Apps.FirstOrDefault(app => app.Id == template.Id) is var app
                 ? new { template.Id, template.Version, latest = app?.Version, name = app?.Name, template.Settings, serverBound = app?.ServerBound ?? false }
                 : null,
+            updates = Updates(stack),
         };
     }
 
@@ -451,7 +476,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         {
             apps = StackCatalog.Apps.Select(app => new
             {
-                app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound, app.UsesAddress,
+                app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound, app.UsesAddress, app.RunsOnSpark,
                 servers = facts.Select(node => StackCatalog.Server(app, node)).ToArray(),
             }).ToArray(),
         };
@@ -585,7 +610,7 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             throw new HardwareOnboardingException(400, "invalid_stack_name",
                 "Use up to 40 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen.");
         // The portal uses these as page addresses under #/apps/.
-        if (name is "new" or "containers" or "catalog" or "install" or "backups" or RelayName)
+        if (name is "new" or "containers" or "catalog" or "install" or "backups" or "spark-runner" or RelayName)
             throw new HardwareOnboardingException(400, "invalid_stack_name", $"\"{name}\" is reserved. Choose another name.");
     }
 

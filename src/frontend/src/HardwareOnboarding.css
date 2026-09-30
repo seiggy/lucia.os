@@ -4,14 +4,19 @@
 .hardware-intro .page-intro { flex: 1; }
 .hardware-intro > .button { margin-top: 5px; flex-shrink: 0; }
 .hardware-onboarding .button:disabled { cursor: not-allowed; }
-.hardware-window { padding: 28px; }
-.hardware-window-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
-.hardware-window-row h2 { margin-bottom: 10px; }
-.hardware-window-row .status { font-size: 15px; font-variant-numeric: tabular-nums; }
-.hardware-window > p + p { margin-top: 8px; }
+.hardware-window { padding: 12px 22px; }
+.hardware-window-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; min-height: 48px; }
+.hardware-window-row > .status { font-size: 15px; font-variant-numeric: tabular-nums; padding-right: 18px; border-right: 1px solid var(--line); }
+.hardware-window-note { flex: 1 1 280px; color: var(--muted); font-size: 14px; }
+.hardware-help-toggle { flex-shrink: 0; }
+.hardware-help { border-top: 1px solid var(--line); margin: 10px 0 12px; padding-top: 16px; }
+.hardware-help p { font-size: 14px; color: var(--muted); }
+.hardware-help p + p { margin-top: 8px; }
+.hardware-help h3 { font-size: 16px; margin: 18px 0 8px; }
 .hardware-meta { color: var(--muted); font-size: 14px; margin-top: 6px; }
 .hardware-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .hardware-readiness, .hardware-blockers { margin-top: 24px; padding: 20px; border-radius: 16px; background: var(--amber-bg); color: var(--amber-ink); }
+.hardware-window .hardware-readiness { margin: 10px 0 12px; }
 .hardware-readiness h3 { font-size: 19px; }
 .hardware-readiness p, .hardware-readiness ul, .hardware-blockers ul { font-size: 14px; }
 .hardware-readiness ul, .hardware-blockers ul { padding-left: 20px; margin: 10px 0; }
@@ -85,12 +90,82 @@
 .hardware-reject { display: flex; align-items: center; justify-content: space-between; gap: 24px; border-top: 1px solid var(--line); margin-top: 26px; padding-top: 24px; }
 .hardware-reject p { color: var(--muted); font-size: 14px; max-width: 52ch; }
 .hardware-reject .button { flex-shrink: 0; }
+.hardware-reject .hardware-actions { flex-shrink: 0; align-items: center; justify-content: flex-end; width: auto; }
+.hardware-onboarding .button.hardware-danger { color: var(--failed-ink); border-color: color-mix(in srgb, var(--failed-ink) 45%, var(--line)); }
+.hardware-onboarding .button.hardware-danger:hover:not(:disabled) { background: var(--failed-bg); }
+.hardware-updates > .status { margin-top: 2px; font-size: 15px; }
+.hardware-updates .hardware-detail-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.hardware-updates .hardware-detail-list .hardware-version { flex-basis: 100%; margin-top: 0; font-variant-numeric: tabular-nums; }
+.hardware-updates .hardware-detail-list span.hardware-security { display: inline-flex; margin-top: 0; font-size: 12px; font-weight: 650; color: var(--amber-ink); }
 .hardware-timeline { list-style: none; padding: 0; margin: 24px 0 0; }
 .hardware-timeline li { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; border-top: 1px solid var(--line); padding: 14px 0; font-size: 14px; }
 .hardware-timeline strong { font-weight: 550; }
 .hardware-timeline time { color: var(--muted); text-align: right; }
+
+/* Your servers: a card per machine, with its last hour of readings. */
+.server-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+.server-card { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding: 22px 22px 14px; box-shadow: var(--shadow); overflow-wrap: anywhere; transition: border-color 160ms ease-out, box-shadow 160ms ease-out; }
+.server-card.is-selected { border-color: color-mix(in srgb, var(--accent-ink) 55%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-ink) 55%, transparent), var(--shadow); }
+.server-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.server-card-head .hardware-meta { margin-top: 3px; font-size: 13px; }
+.server-card-head .status { flex-shrink: 0; padding-top: 2px; }
+.server-hardware { font-size: 13px; line-height: 1.5; color: var(--muted); }
+.server-hardware strong { color: var(--text); font-weight: 600; }
+.server-hardware span { white-space: nowrap; }
+.server-note { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.server-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); }
+.server-card-foot .status { min-width: 0; }
+.server-card-foot .text-link { flex-shrink: 0; min-height: 44px; }
+
+.server-gauges { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.server-gauge { display: grid; justify-items: center; gap: 2px; min-width: 0; margin: 0; }
+.server-gauge svg { display: block; width: 100%; max-width: 68px; height: auto; overflow: visible; }
+.server-gauge path { fill: none; stroke-width: 6; stroke-linecap: round; }
+.server-gauge-track { stroke: var(--surface-subtle); }
+.server-gauge-track.is-empty { stroke: var(--muted); stroke-dasharray: 1 6; opacity: .45; }
+.server-gauge-value { transition: stroke-dashoffset 220ms cubic-bezier(.16, 1, .3, 1); }
+.server-gauge text { fill: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; text-anchor: middle; }
+.server-gauge text.is-empty { fill: var(--muted); font-weight: 600; }
+.server-gauge-unit { fill: var(--muted); font-size: 8.5px; font-weight: 550; }
+.server-gauge figcaption { color: var(--muted); font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; }
+.server-gauge .tone-cpu, .server-chart .tone-cpu { stroke: var(--accent-ink); }
+.server-gauge .tone-memory, .server-chart .tone-memory { stroke: var(--plum-ink); }
+.server-gauge .tone-gpu, .server-chart .tone-gpu { stroke: var(--green-ink); }
+.server-gauge .tone-warm { stroke: var(--amber-ink); }
+.server-gauge .tone-hot { stroke: var(--failed-ink); }
+
+.server-charts { display: grid; gap: 14px; padding-top: 16px; border-top: 1px solid var(--line); }
+.server-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.server-chart-head strong { color: var(--text); font-size: 13px; font-weight: 650; }
+.server-moment { font-variant-numeric: tabular-nums; }
+.server-legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
+.server-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.server-legend i { width: 10px; height: 3px; border-radius: 2px; background: currentColor; }
+.server-legend .tone-cpu { color: var(--accent-ink); }
+.server-legend .tone-memory { color: var(--plum-ink); }
+.server-legend .tone-gpu { color: var(--green-ink); }
+.server-chart { display: block; width: 100%; overflow: visible; touch-action: pan-y; cursor: crosshair; }
+.server-chart path, .server-chart line { fill: none; vector-effect: non-scaling-stroke; }
+.server-chart-grid { stroke: var(--line); stroke-width: 1; }
+.server-chart-line { stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.server-chart-cursor { stroke: var(--text); stroke-width: 1; opacity: .4; }
+.server-chart-empty { display: grid; place-items: center; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12px; text-align: center; }
+
+.server-detail { margin-top: 20px; padding: 28px; box-shadow: var(--shadow); overflow-wrap: anywhere; }
+.server-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.server-detail-head h2:focus { outline: none; }
+.server-detail-head .text-link { flex-shrink: 0; min-height: 44px; }
+.server-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; gap: 24px 40px; margin-top: 22px; }
+.server-detail-grid h4, .server-detail .hardware-details h4 { font-size: 16px; margin: 0 0 6px; }
+.server-detail-grid .fact-list { margin-top: 4px; }
+.server-detail-grid .hardware-gpus { border-top: 0; margin-top: 0; }
+.server-detail-grid .hardware-gpu-actions { margin-top: 18px; }
+.server-detail .hardware-details { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 8px; }
+.server-detail .hardware-details h4 { margin-top: 22px; }
 @media (max-width: 800px) {
-  .hardware-window-row { align-items: flex-start; flex-direction: column; }
+  .hardware-window-row { align-items: flex-start; flex-direction: column; padding: 8px 0; }
+  .hardware-window-row > .status { padding-right: 0; border-right: 0; }
+  .hardware-window-note { flex-basis: auto; }
   .hardware-fields { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
@@ -107,9 +182,16 @@
   .hardware-actions .button { flex: 1 1 150px; }
   .hardware-readiness, .hardware-blockers { padding: 16px; }
   .hardware-reject { align-items: stretch; flex-direction: column; gap: 16px; }
+  .hardware-reject .hardware-actions { justify-content: flex-start; width: 100%; }
   .hardware-approval fieldset > .button { width: 100%; }
   .hardware-timeline li { flex-direction: column; gap: 6px; }
   .hardware-timeline time { text-align: left; }
   .hardware-entry .fact-list > div { flex-direction: column; gap: 4px; }
   .hardware-entry .fact-list dd { text-align: left; }
+  .server-grid { grid-template-columns: minmax(0, 1fr); }
+  .server-card { padding: 18px 16px 12px; }
+  .server-detail { padding: 22px 18px; }
+  .server-detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .server-detail .fact-list > div { flex-direction: column; gap: 4px; }
+  .server-detail .fact-list dd { text-align: left; }
 }

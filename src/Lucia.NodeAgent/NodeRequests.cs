@@ -7,8 +7,8 @@ internal sealed record NodeRequest(Guid RequestId, string Kind, string Container
 internal sealed record NodeRequestResult(Guid RequestId, bool Success, string? Output, string? Message);
 
 /// <summary>
-/// Answers read-only questions from Lucia over a long-poll. Only allowlisted kinds with validated arguments run, as
-/// fixed argument arrays; the server can't send commands.
+/// Answers Lucia's requests over a long-poll. Only allowlisted kinds with validated arguments run, as fixed argument
+/// arrays: container logs, and the owner's machine actions in <see cref="NodeUpdates"/>. The server can't send commands.
 /// </summary>
 internal static partial class NodeRequests
 {
@@ -20,17 +20,17 @@ internal static partial class NodeRequests
         string? lastError = null;
         while (!token.IsCancellationRequested)
         {
-            if (NodeRuntime.Current.State != "Ready")
-            {
-                await Task.Delay(TimeSpan.FromSeconds(15), token);
-                continue;
-            }
             try
             {
                 foreach (var request in await client.RequestsAsync(node, certificate(), key, token))
                     _ = Task.Run(async () =>
                     {
-                        try { await client.AnswerAsync(node, certificate(), await AnswerAsync(request, token), key, token); }
+                        try
+                        {
+                            var answer = request.Kind == "logs" ? await AnswerAsync(request, token)
+                                : NodeUpdates.Start(request, ct => AgentRelease.UpdateAsync(client, node, certificate(), key, ct), token);
+                            await client.AnswerAsync(node, certificate(), answer, key, token);
+                        }
                         catch (Exception ex) when (ex is NodeAgentException or OperationCanceledException)
                         { Console.Error.WriteLine("A node request could not be answered. " + ex.Message); }
                     }, token);

@@ -16,7 +16,21 @@ public sealed record NodeEnrollmentSubmission(Guid TaskId, SignedDiscovery Proof
 public sealed record NodeSignedSubmission(string CertificatePem, SignedDiscovery Proof);
 public sealed record NodeHeartbeat(Guid NodeId, string Hostname, string OsVersion, double UptimeSeconds,
     double? LoadAverage, long MemoryTotalBytes, long MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
-    NodeRuntime? Runtime = null);
+    NodeRuntime? Runtime = null, NodeUpdateStatus? Updates = null, string? AgentRelease = null,
+    double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null);
+/// <summary>One heartbeat's utilization, kept for the node's last hour. Percents are 0–100; temperatures are °C.</summary>
+public sealed record NodeUsageSample(DateTimeOffset At, double? Cpu, double Memory, double? Gpu, double? CpuTemperature, double? GpuTemperature);
+/// <summary>A pending Debian package upgrade, from <c>apt-get -s upgrade</c>.</summary>
+public sealed record NodePackageUpdate(string Name, string? Current, string Candidate, bool Security);
+/// <summary>The node's own view of its Debian updates. <c>State</c> is Idle, Checking, Installing or Failed; the package list
+/// is the last successful check, capped, with <c>Count</c> the full number.</summary>
+public sealed record NodeUpdateStatus(string State, DateTimeOffset? CheckedAt, int Count, int SecurityCount, NodePackageUpdate[] Packages,
+    bool RestartRequired, string? Message = null);
+public static class NodeUpdateLimits
+{
+    /// <summary>Keeps a heartbeat within its 32 KiB signed-report limit.</summary>
+    public const int Packages = 50, Text = 100;
+}
 public sealed record NodeGpu(string Vendor, string Model, long? MemoryBytes, string? ComputeCapability, string? Uuid = null);
 /// <summary>The node's container host: Docker, Compose and whether containers can use its GPUs. <c>CudaVersion</c> is the
 /// newest CUDA runtime the NVIDIA driver supports.</summary>
@@ -41,6 +55,8 @@ public sealed class ManagedNodeEnrollment(
     HardwareOnboardingStore onboarding, IOptions<HardwareOnboardingOptions> options, HostAuthenticationOptions authentication)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    // The last hour of heartbeats per node, in memory only: it starts over when the host restarts.
+    private readonly Dictionary<Guid, Queue<NodeUsageSample>> _usage = [];
     private string Root => Path.Combine(Path.GetDirectoryName(options.Value.StateDirectory)!, "nodes");
     private string NodePath(Guid id) => Path.Combine(Root, "identities", id.ToString("D") + ".json");
     internal string DnsStatePath => Path.Combine(Root, "dns-records.json");
@@ -52,6 +68,8 @@ public sealed class ManagedNodeEnrollment(
     public async Task<object> Snapshot(DomainNamingPlan? naming, CancellationToken ct)
     {
         var records = await Records(ct);
+        Dictionary<Guid, NodeUsageSample[]> usage;
+        lock (_usage) usage = _usage.ToDictionary(entry => entry.Key, entry => entry.Value.ToArray());
         var names = naming is null ? [] : ManagedNodeDns.Wanted(naming, records.Where(node => node.Address is not null)
             .Select(node => new ManagedNodeAddress(node.Hostname, node.Address!, node.NodeId))).Select(record => record.Domain).ToHashSet();
         string? DnsName(string hostname) =>
@@ -61,7 +79,25 @@ public sealed class ManagedNodeEnrollment(
             node.Address, dnsName = DnsName(node.Hostname),
             node.Status, gpu = node.Gpu ?? NodeGpuSettings.None,
             // A driver change can drop support for the pinned line; the owner decides what to do about it.
-            gpuWarning = node.Gpu?.CudaLine is { } line && node.Status?.Runtime is { } runtime ? CudaLines.Unsupported(line, runtime) : null }).ToArray();
+            gpuWarning = node.Gpu?.CudaLine is { } line && node.Status?.Runtime is { } runtime ? CudaLines.Unsupported(line, runtime) : null,
+            // Null when the node's agent predates reporting its release, and so can't update itself.
+            agentUpdateAvailable = node.Status?.AgentRelease is { } release && NodeAgentRelease.Latest is { } latest ? release != latest : (bool?)null,
+            history = usage.GetValueOrDefault(node.NodeId, []) }).ToArray();
+    }
+
+    /// <summary>Adds a heartbeat's utilization to the node's hour, dropping anything older.</summary>
+    internal void RecordUsage(Guid id, NodeHeartbeat report, DateTimeOffset at)
+    {
+        var sample = new NodeUsageSample(at, Round(report.CpuPercent),
+            Math.Round(100.0 * (report.MemoryTotalBytes - report.MemoryAvailableBytes) / report.MemoryTotalBytes, 1),
+            Round(report.GpuPercent), report.CpuTemperatureCelsius, report.GpuTemperatureCelsius);
+        lock (_usage)
+        {
+            if (!_usage.TryGetValue(id, out var samples)) _usage[id] = samples = new();
+            samples.Enqueue(sample);
+            while (samples.Count > 180 || samples.Peek().At < at.AddHours(-1)) samples.Dequeue();
+        }
+        static double? Round(double? value) => value is { } number ? Math.Round(number, 1) : null;
     }
 
     public async Task<ManagedNodeAddress[]> Addresses(CancellationToken ct) =>
@@ -127,7 +163,11 @@ public sealed class ManagedNodeEnrollment(
     public async Task RequireKnown(Guid id, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
-        try { _ = Read<ManagedNodeRecord>(NodePath(id)); }
+        try
+        {
+            if (!File.Exists(NodePath(id))) throw Denied();
+            _ = Read<ManagedNodeRecord>(NodePath(id));
+        }
         finally { _gate.Release(); }
     }
 
@@ -157,8 +197,10 @@ public sealed class ManagedNodeEnrollment(
             await onboarding.CompleteEnrollmentAsync(id, identity.TaskId, fingerprint, ct);
             await onboarding.ManagedHeartbeatAsync(id, fingerprint, ct);
             changed = identity.Address != text;
+            var now = DateTimeOffset.UtcNow;
             await DomainOnboardingStore.WriteJson(NodePath(id),
-                identity with { LastSeenAt = DateTimeOffset.UtcNow, Status = report, Address = text }, ct);
+                identity with { LastSeenAt = now, Status = report, Address = text }, ct);
+            RecordUsage(id, report, now);
         }
         finally { _gate.Release(); }
         if (changed) AddressChanged?.Invoke();
@@ -275,6 +317,8 @@ public sealed class ManagedNodeEnrollment(
 
     private ManagedNodeRecord Verify(Guid id, string certificatePem, string fingerprint, bool renewal = false)
     {
+        // A removed node keeps calling until someone turns it off; it gets the same answer as any unknown identity.
+        if (!File.Exists(NodePath(id))) throw Denied();
         var identity = Read<ManagedNodeRecord>(NodePath(id));
         if (identity.NodeId != id || !identity.PublicKeyFingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase)) throw Denied();
         _ = ValidateCertificate(id, identity.Hostname, identity.PublicKeyFingerprint, certificatePem, renewal);
@@ -317,7 +361,7 @@ public sealed class ManagedNodeEnrollment(
         finally { foreach (var certificate in certificates) certificate.Dispose(); }
     }
 
-    private static T Read<T>(string path) => JsonSerializer.Deserialize<T>(CertbotFiles.ReadBounded(path, 32768),
+    private static T Read<T>(string path) => JsonSerializer.Deserialize<T>(CertbotFiles.ReadBounded(path, 65536),
         DomainOnboardingStore.Json) ?? throw new InvalidDataException("Managed node state is empty.");
 
     internal static void ValidateHeartbeat(Guid id, NodeHeartbeat report)
@@ -349,6 +393,55 @@ public sealed class ManagedNodeEnrollment(
                 HardwareInventoryValidation.Text(gpu.ComputeCapability, 16);
             }
         }
+        if (report.Updates is { } updates)
+        {
+            HardwareInventoryValidation.Require(updates.State is "Idle" or "Checking" or "Installing" or "Failed"
+                && updates.Packages is { Length: <= NodeUpdateLimits.Packages } && updates.Count >= updates.Packages.Length
+                && updates.Count <= 100_000 && updates.SecurityCount >= 0 && updates.SecurityCount <= updates.Count
+                && (updates.CheckedAt is null || updates.CheckedAt.Value.Offset == TimeSpan.Zero),
+                "Managed-node updates are invalid.");
+            HardwareInventoryValidation.Text(updates.Message, 512);
+            foreach (var package in updates.Packages)
+            {
+                HardwareInventoryValidation.Text(package.Name, NodeUpdateLimits.Text, true);
+                HardwareInventoryValidation.Text(package.Current, NodeUpdateLimits.Text);
+                HardwareInventoryValidation.Text(package.Candidate, NodeUpdateLimits.Text, true);
+            }
+        }
+        HardwareInventoryValidation.Require(report.AgentRelease is null || NodeAgentRelease.IsId(report.AgentRelease),
+            "Managed-node agent release is invalid.");
+        static bool Percent(double? value) => value is null || double.IsFinite(value.Value) && value >= 0 && value <= 100;
+        static bool Celsius(double? value) => value is null || double.IsFinite(value.Value) && value > -40 && value < 150;
+        HardwareInventoryValidation.Require(Percent(report.CpuPercent) && Percent(report.GpuPercent)
+            && Celsius(report.CpuTemperatureCelsius) && Celsius(report.GpuTemperatureCelsius), "Managed-node utilization is invalid.");
+    }
+
+    /// <summary>
+    /// Forgets a node: its identity, enrollment files and address. Its DNS and DHCP entries go on the next sync, and the
+    /// enrollment worker deletes its directory reader. Returns the hostname it had ("" if it never enrolled), or null when
+    /// Lucia had no files for it.
+    /// </summary>
+    public async Task<string?> Remove(Guid id, CancellationToken ct)
+    {
+        string? hostname = null;
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var files = new[] { NodePath(id), Path.Combine(Root, "enrollment-requests", id.ToString("D") + ".json"),
+                Path.Combine(Root, "enrollment-responses", id.ToString("D") + ".json") };
+            foreach (var file in files) DomainOnboardingStore.RejectLinks(file);
+            if (!files.Any(File.Exists)) return null;
+            if (File.Exists(files[0])) hostname = Read<ManagedNodeRecord>(files[0]).Hostname;
+            var removals = Path.Combine(Root, "removals");
+            DomainOnboardingStore.EnsureDirectory(removals);
+            // Written first, so the worker still learns of the node if a delete below fails.
+            await DomainOnboardingStore.WriteJson(Path.Combine(removals, id.ToString("D") + ".json"), new { schemaVersion = 1, nodeId = id }, ct);
+            foreach (var file in files) File.Delete(file);
+        }
+        finally { _gate.Release(); }
+        lock (_usage) _usage.Remove(id);
+        AddressChanged?.Invoke();
+        return hostname ?? "";
     }
 
     private static HardwareOnboardingException Denied() => new(403, "node_identity_invalid",

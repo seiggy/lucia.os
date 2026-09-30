@@ -61,6 +61,52 @@ HardwareInspector AddressInspector(string[] addresses) => new(roots, Architectur
 try
 {
     checks += await InstallationChecks.RunAsync(fixture);
+
+    var plan = NodeUpdates.ParsePlan("Reading package lists...\nInst libc6 [2.41-12] (2.41-12+deb13u1 Debian:13.1/stable, Debian-Security:13/stable-security [amd64]) []\r\n"
+        + "Inst zlib1g [1:1.3] (1:1.3.1 Debian:13.1/stable [amd64])\nInst linux-image-6.12.48 (6.12.48-1 Debian:13.1/stable [amd64])\nConf libc6 (2.41-12+deb13u1)\n");
+    Check(plan.Length == 3 && plan[0] is { Name: "libc6", Current: "2.41-12", Candidate: "2.41-12+deb13u1", Security: true }
+        && plan[1] is { Name: "linux-image-6.12.48", Current: null, Security: false } && plan[2].Name == "zlib1g", "apt plan should parse, security first.");
+    Check(NodeUpdates.ParsePlan("0 upgraded, 0 newly installed.\n").Length == 0, "An empty apt plan should have no updates.");
+    var release = Path.Combine(fixture, "release");
+    Write(release, "a", "1");
+    Write(release, "B", "2");
+    Check(AgentRelease.Compute(release) == "72a3aae02a41db9bf5c8a41a53348020cdeba3d09ff4d7a89a87f27d86705f9e"
+        && AgentRelease.IsId(AgentRelease.Compute(release)) && !AgentRelease.IsId("ABC"), "Agent release IDs should match Lucia's.");
+    async Task<MemoryStream> Tar(params (string Name, System.Formats.Tar.TarEntryType Type)[] entries)
+    {
+        var stream = new MemoryStream();
+        await using (var writer = new System.Formats.Tar.TarWriter(stream, leaveOpen: true))
+            foreach (var (name, type) in entries)
+            {
+                var entry = new System.Formats.Tar.PaxTarEntry(type, name);
+                if (type == System.Formats.Tar.TarEntryType.RegularFile) entry.DataStream = new MemoryStream("x"u8.ToArray());
+                if (type == System.Formats.Tar.TarEntryType.SymbolicLink) entry.LinkName = "/etc/shadow";
+                await writer.WriteEntryAsync(entry);
+            }
+        stream.Position = 0;
+        return stream;
+    }
+    var agentFiles = new[] { "lucia-node-agent", "lucia-node-agent.dll", "lucia-node-agent.deps.json", "lucia-node-agent.runtimeconfig.json",
+        "libcoreclr.so", "libhostfxr.so" }.Select(name => (name, System.Formats.Tar.TarEntryType.RegularFile)).ToArray();
+    var extracted = Path.Combine(fixture, "agent-next");
+    Directory.CreateDirectory(extracted);
+    await AgentRelease.ExtractAsync(await Tar(agentFiles), extracted, CancellationToken.None);
+    Check(Directory.GetFiles(extracted).Length == agentFiles.Length, "A complete agent download should extract.");
+    foreach (var (bad, label) in new[]
+    {
+        (agentFiles.Append(("../escape", System.Formats.Tar.TarEntryType.RegularFile)).ToArray(), "path traversal"),
+        (agentFiles.Append(("sub/file", System.Formats.Tar.TarEntryType.RegularFile)).ToArray(), "a nested path"),
+        (agentFiles.Append(("link", System.Formats.Tar.TarEntryType.SymbolicLink)).ToArray(), "a symlink"),
+        (agentFiles.Append(("lucia-node-agent", System.Formats.Tar.TarEntryType.RegularFile)).ToArray(), "a duplicate"),
+        (agentFiles.Skip(1).ToArray(), "a missing executable"),
+    })
+    {
+        var target = Path.Combine(fixture, "agent-bad-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(target);
+        await RejectsAsync(async () => await AgentRelease.ExtractAsync(await Tar(bad), target, CancellationToken.None),
+            "An agent download with " + label + " should be refused.");
+    }
+
     if (args is ["installation-only"]) return;
     Write(roots.Proc, "cpuinfo", "processor : 0\nmodel name : Fixture CPU\n\nprocessor : 1\nmodel name : Fixture CPU\n");
     Write(roots.Proc, "meminfo", "MemTotal:       8388608 kB\nMemFree: 12 kB\n");

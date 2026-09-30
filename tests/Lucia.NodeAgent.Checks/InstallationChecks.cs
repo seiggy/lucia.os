@@ -485,6 +485,22 @@ internal static class InstallationChecks
         var unavailable = ManagedRunner.ReadMetrics(plan, metricsProc, os + "-missing", () => throw new IOException());
         Check(unavailable.LoadAverage is null && unavailable.MemoryTotalBytes is null && unavailable.StorageTotalBytes is null && unavailable.OsVersion is null,
             "Unavailable metrics were invented.");
+        Check(NodeUsage.Cpu(null) is null && NodeUsage.Cpu("cpu  100 0 100 700 100 0 0 0 0 0\n") is null
+            && NodeUsage.Cpu("cpu  150 0 150 750 150 0 0 0 0 0\ncpu0 1 1 1 1\n") == 50 && NodeUsage.Cpu("cpu  garbage") is null,
+            "CPU utilization must come from the /proc/stat delta between heartbeats.");
+        var sysClass = Path.Combine(fixture, "sys-class");
+        var k10 = Path.Combine(sysClass, "hwmon", "hwmon2");
+        Directory.CreateDirectory(k10);
+        Directory.CreateDirectory(Path.Combine(sysClass, "hwmon", "hwmon1"));
+        File.WriteAllText(Path.Combine(sysClass, "hwmon", "hwmon1", "name"), "nvme\n");
+        File.WriteAllText(Path.Combine(sysClass, "hwmon", "hwmon1", "temp1_input"), "99000\n");
+        File.WriteAllText(Path.Combine(k10, "name"), "k10temp\n");
+        File.WriteAllText(Path.Combine(k10, "temp1_label"), "Tctl\n");
+        File.WriteAllText(Path.Combine(k10, "temp1_input"), "54375\n");
+        Check(NodeUsage.CpuTemperature(sysClass) == 54.4 && NodeUsage.CpuTemperature(Path.Combine(fixture, "missing")) is null,
+            "CPU temperature must come from the CPU sensor, not other hwmon devices.");
+        Check(NodeUsage.ParseNvidia("40, 61\n20, 72\n[N/A], [N/A]\n") == (30, 72) && NodeUsage.ParseNvidia("") == (null, null),
+            "GPU utilization must average load and report the hottest GPU.");
         var gpus = NodeRuntime.ParseNvidiaGpus("NVIDIA CMP 170HX, 65536, 8.0, GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981\n"
             + "NVIDIA GeForce RTX 4090, [N/A], [N/A], [N/A]\nbroken line\n");
         Check(gpus.Length == 2 && gpus[0] == new GpuReport("nvidia", "NVIDIA CMP 170HX", 65536L * 1024 * 1024, "8.0", "GPU-cbeac6c4-3134-d34a-9fb5-fc0a0daf1981")

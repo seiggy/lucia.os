@@ -216,6 +216,11 @@ Owner-controlled discovery window, reported inventory, explicit disk approval,
 and recorded installation observations. Unconfigured discovery and unqualified
 installation remain visibly disabled. There are no invented devices, incidents,
 activity rows, or repair timers, and this is not a general-purpose task runner.
+Tasks shows installations that are running or need attention; finished ones sit
+behind Show finished. A managed server's device entry shows its Debian updates,
+with Check now, Install updates, a confirmed Restart and Update agent; Remove
+from Lucia forgets a retired machine without touching it (see
+`src/Lucia.NodeAgent/README.md`).
 Retired demo detail routes no longer display fixtures. Settings retains
 light/dark/system appearance, three themes, and a custom accent. Existing browser
 appearance choices are preserved.
@@ -341,6 +346,16 @@ app's address) and deletes clients no longer requested. After a matching success
 response the controller adds `LUCIA_SSO_*` to the app's env and redeploys it. Grafana
 signs owners in as Admin; its local admin form stays at `/login?disableAutoLogin=true`.
 
+**Image updates.** Catalog images are pinned by tag and digest, so "Update images" only
+re-pulls what's pinned. Every few hours the controller also lists each app image's tags
+on its registry (anonymously, with a pull token when asked) and offers the newest tag
+of the same shape, e.g. `v8.9.0-ls104` → `v9.1.0-ls108` but never a `-dev` or beta tag.
+A change in the first number is offered separately as a major version. Databases
+only get patch releases. Apps built for one server's hardware (Local AI) aren't
+checked. `POST /api/host/stacks/{name}/upgrade-images` (`{"major": bool}`) rewrites a
+custom app's compose; for a catalog app it records the new pins in the app's template
+(`Images`), and the next catalog release that catches up drops them.
+
 **MusicBrainz mirror.** The catalog's MusicBrainz app runs the website and `/ws/2`
 API over its own copy of the database, with Solr search. A new install imports the
 latest data dump once (a few hours, about 100 GB); the website waits for it. With a
@@ -376,6 +391,41 @@ NAS folders mounted at `/data` and `/media`. Transcoding is `cpu` or `nvidia` (N
 which needs an NVIDIA node). A claim token from plex.tv/claim is only needed for a fresh
 server; a restored config keeps its identity. Backups stop Plex, since its database is
 SQLite.
+
+**Media automation.** Sonarr, Radarr, Lidarr, Seerr, Jackett, NZBHydra 2 and
+FlareSolverr are separate catalog apps, each a single container with a
+`config` volume, a port and a web name. The apps that have folders mount a media folder
+at `/data` and a downloads folder at `/downloads`. "Other media paths" mounts the media
+folder again at the paths a moved app's library already uses, such as `/tv`, so its
+database needs no path rewrites. Images that take PUID/PGID run as 1000:1000. The others
+run as that user directly, and a one-off `init` container gives them their config folder.
+The **Download client** app runs qBittorrent, Transmission, NZBGet or Soulseek behind
+gluetun, with the client in gluetun's network namespace. It needs an OpenVPN username and
+password, which are kept in the app's env, and can turn on port forwarding (PIA and
+ProtonVPN). "Local networks" lists the LAN ranges the client may reach outside the
+tunnel. Install one copy per client.
+
+**Home Assistant.** Home Assistant runs on the host network (port 8123) with a `config`
+volume. Backups stop it, since its history database is SQLite. A fresh install gets Home
+Assistant's default configuration, set to trust `X-Forwarded-For` from private networks so
+its web name works through Lucia's gateway. An existing configuration is left alone.
+Companion apps: **Mosquitto** (MQTT with one login, rewritten on every start; the password
+is kept in the app's env), **Voice** (Wyoming Whisper on 10300, Piper on 10200 and
+openWakeWord on 10400, with models skipped by backups), **ESPHome** (6052), **Matter
+Server** (5580, no web page) and **Music Assistant** (8095), all on the host network so
+they can find devices, and **Node-RED** (1880), which needs
+`node-red-contrib-home-assistant-websocket` from its palette and a Home Assistant token.
+
+**GitHub Actions runner.** The runner app registers one ephemeral runner per repository or
+organization, labelled `self-hosted`, `linux`, the architecture and the server's name, each
+with its own Docker-in-Docker daemon, reached over a socket volume. It needs a fine-grained
+token with Administration: read and write on the repositories (Self-hosted runners for an
+organization). It can also run on the Spark on demand (`runs-on: [self-hosted, ARM64, spark]`):
+the owner starts it from Apps, and `lucia-spark-runner.service` stops it after the idle
+minutes pass with no job. Jobs queue on GitHub while it is stopped. The Docker daemon is
+privileged, so a job can take over its host (on the Spark, that includes Lucia and the
+identity stack): don't point it at public repositories that run fork pull requests. The token
+is stored in plain text, readable only by its owner.
 
 Managed OpenAI endpoints require `Owner` or `Inference` authorization.
 Authentik access tokens are checked for issuer, audience, signature, expiry,

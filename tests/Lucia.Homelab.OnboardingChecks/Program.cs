@@ -590,6 +590,7 @@ try
         await Fails(() => store.RequestInstallationGrantAsync(session, Guid.NewGuid(), diskB, 1), 409, "approval_mismatch");
         nodeClock.Advance(TimeSpan.FromMinutes(20));
         await store.ReportStatusAsync(session, HardwareDevicePhase.AwaitingEnrollment, "Synthetic installed node waiting for enrollment");
+        await Fails(() => store.RemoveDeviceAsync(discovered.DeviceId, actor, default), 409, "installation_in_progress");
         Check((await store.RequireEnrollmentAsync(session, approvedNode.Id, default)).Id == approvedNode.Id,
             "Completed installation was stranded by the shorter discovery lifetime.");
         await Fails(() => store.CompleteEnrollmentAsync(discovered.DeviceId, approvedNode.Id, fingerprintB, default), 409, "enrollment_mismatch");
@@ -603,6 +604,16 @@ try
         nodeClock.Advance(TimeSpan.FromMinutes(3));
         Check((await store.ManagedHeartbeatAsync(discovered.DeviceId, fingerprintA, default)).HeartbeatFreshness == HeartbeatFreshness.Fresh,
             "Certificate-authenticated managed heartbeat did not refresh reported state.");
+        Check(await store.RemoveDeviceAsync(discovered.DeviceId, actor, default)
+            && (await store.GetSnapshotAsync()) is { Devices.Length: 0, Tasks.Length: 0 }
+            && !await store.RemoveDeviceAsync(discovered.DeviceId, actor, default),
+            "Removing a retired machine did not drop its device and installation task.");
+    }
+    using (var reopened = new HardwareOnboardingStore(Options.Create(Settings("managed-enrollment", true)), nodeClock,
+        NullLogger<HardwareOnboardingStore>.Instance))
+    {
+        await reopened.StartAsync(default);
+        Check((await reopened.GetSnapshotAsync()).Devices.Length == 0, "State after a machine removal did not reload.");
     }
 
     Console.WriteLine("Checking strict persisted-state validation and no corruption fallback...");

@@ -34,7 +34,8 @@ internal sealed record ManagedConfiguration(string Hostname, string CertificateP
 internal sealed record ManagedOrigin(string Server);
 internal sealed record NodeMetrics(Guid NodeId, string Hostname, string? OsVersion, double? UptimeSeconds,
     double? LoadAverage, long? MemoryTotalBytes, long? MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
-    RuntimeReport? Runtime = null);
+    RuntimeReport? Runtime = null, UpdatesReport? Updates = null, string? AgentRelease = null,
+    double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null);
 
 public sealed class NodeAgentException(string message) : Exception(message);
 

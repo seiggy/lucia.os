@@ -8,7 +8,8 @@ using Lucia.Homelab.Server.Telemetry;
 namespace Lucia.Homelab.Server.Stacks;
 
 /// <summary>A catalog app's identity in the manifest. Lucia renders the compose and environment from it on every save.</summary>
-public sealed record StackTemplate(string Id, int Version, Dictionary<string, string>? Settings = null);
+/// <param name="Images">Newer image tags the owner took before the catalog shipped them: repository to <c>tag@digest</c>.</param>
+public sealed record StackTemplate(string Id, int Version, Dictionary<string, string>? Settings = null, Dictionary<string, string>? Images = null);
 /// <param name="Kind">
 /// <c>port</c>, <c>text</c>, <c>gpus</c> (comma-separated GPU UUIDs from the server's report), <c>choice</c> (one of
 /// <paramref name="Options"/>), <c>secret</c> (kept in the app's environment as the id in upper snake case, never in its
@@ -58,13 +59,16 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     /// <c>Authorization</c> header in the app's environment as <c>LUCIA_OTLP_ENDPOINT</c> and <c>LUCIA_OTLP_AUTHORIZATION</c>.
     /// </summary>
     public virtual bool Telemetry => false;
+    /// <summary>True when the owner can also run the app on the Spark, started by hand and stopped when idle.</summary>
+    public virtual bool RunsOnSpark => false;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
     internal abstract CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env);
 }
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp()];
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp(),
+        .. MediaApp.All, new DownloadClientApp(), new HomeAssistantApp(), new MosquittoApp(), new VoiceApp(), .. HomeCompanionApp.All, new GitHubRunnerApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -459,7 +463,7 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 5, "Obser
     private const string Loki = "grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193";
     private const string Tempo = "grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a";
     private const string Grafana = "grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
-    private const string Alpine = "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
+    internal const string Alpine = "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
     public const string User = "lucia";
 
     public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
@@ -1411,4 +1415,612 @@ internal sealed class PlexApp() : CatalogApp("plex", 1, "Plex",
         var claim = env.GetValueOrDefault("PLEX_CLAIM") is { Length: > 0 } token ? $"PLEX_CLAIM={token}\n" : "";
         return new(compose.ReplaceLineEndings("\n"), claim, require, [new(host, 32400)]);
     }
+}
+/// <summary>
+/// One of the media automation apps (the *arr family, their indexers and helpers): a single container that keeps its
+/// settings in a config volume, over folders on NAS shares. An app moved from another setup keeps its library paths,
+/// because the media folder can also appear at the paths it used before.
+/// </summary>
+/// <param name="puid">
+/// True for images that start as root and take PUID/PGID. The rest run as that user from the start, so a one-off
+/// container gives them their config folder first.
+/// </param>
+/// <param name="config">Where the image keeps its settings, or null when it keeps none.</param>
+/// <param name="environment">Extra environment lines, each indented for the service's <c>environment:</c>.</param>
+internal sealed partial class MediaApp(string id, string name, string summary, string image, int port, bool puid,
+    string? config = "/config", string environment = "", string? command = null, bool folders = true, bool web = true)
+    : CatalogApp(id, 1, name, summary, "Any server with Docker ready and 1 GB of memory.", [], FieldsFor(id, port, folders, web))
+{
+    public const string Owner = "1000:1000";
+
+    // Its fields are made before All, which reads them.
+    internal static readonly CatalogField DownloadsField = new("downloads", "Downloads folder", "text", Optional: true,
+        Help: "A folder on a NAS share where downloads land, such as /mnt/lucia/nas/unas/Media/downloads. The app sees it as /downloads.");
+
+    public static readonly MediaApp[] All =
+    [
+        new("sonarr", "Sonarr", "Finds, downloads and organizes TV shows as new episodes air.",
+            "ghcr.io/home-operations/sonarr:4.0.20.3012@sha256:1f19eb5e0f421418c1a956bbe01310a0141423afe28bd9a4b1dcb8629ff2bce2", 8989, false,
+            environment: "      SONARR__SERVER__PORT: \"8989\"\n"),
+        new("radarr", "Radarr", "Finds, downloads and organizes movies.",
+            "ghcr.io/home-operations/radarr:6.4.4.10685@sha256:be53998a2d39cfa3c3315b70c7509a6a1f2a10c3aee9337653efc9f4c970430e", 7878, false,
+            environment: "      RADARR__SERVER__PORT: \"7878\"\n"),
+        new("lidarr", "Lidarr", "Finds, downloads and organizes music by artist.",
+            "lscr.io/linuxserver/lidarr:3.1.0.4875-ls41@sha256:8ab0fd370b604ae034d9a9c261a9d8d873bece33d9736852e7ce4f3566e4a35d", 8686, true,
+            environment: "      LIDARR__SERVER__PORT: \"8686\"\n"),
+        new("seerr", "Seerr", "Lets your household request movies and shows, and sends the requests to Sonarr and Radarr.",
+            "ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1", 5055, false,
+            "/app/config", "      PORT: \"5055\"\n", folders: false),
+        new("jackett", "Jackett", "Turns torrent sites into indexers the *arr apps can search.",
+            "ghcr.io/home-operations/jackett:0.24.2668@sha256:ce6c935f05e3052ac006f54479aa7236e00e24a0a48daf59e371df85c76af2e2", 9117, false,
+            command: "[\"--Port\", \"9117\"]"),
+        new("nzbhydra2", "NZBHydra 2", "Searches all your Usenet indexers at once for the *arr apps.",
+            "lscr.io/linuxserver/nzbhydra2:v8.9.0-ls104@sha256:3cdcea6fc97861bb30ef2551884f1c371e08a884c2f75230c7a3a2e14c5f0516", 5076, true),
+        new("flaresolverr", "FlareSolverr", "Gets indexers past Cloudflare's browser checks, for Jackett and Prowlarr.",
+            "flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767", 8191, false,
+            null, folders: false, web: false),
+    ];
+
+    // Their databases are SQLite, only consistent while they're stopped.
+    public override string BackupMode => config is null ? "live" : "stop";
+
+    private static CatalogField[] FieldsFor(string id, int port, bool folders, bool web) =>
+    [
+        .. web ? [new CatalogField("web-host", "Web name", "text", id, "The app's web address is this name under your domain.")] : Array.Empty<CatalogField>(),
+        new("port", "Port", "port", port.ToString(CultureInfo.InvariantCulture), "The app also answers on http://<server>:<port>, which other apps can use."),
+        .. folders ? [
+            new CatalogField("media", "Media folder", "text", Optional: true,
+                Help: "A folder on a NAS share, such as /mnt/lucia/nas/unas/Media. The app sees it as /data."),
+            new CatalogField("also-at", "Other media paths", "text", Optional: true,
+                Help: "For an app moved from another setup: the paths its library used for the media folder, such as /tv,/media, comma-separated. The media folder appears at each."),
+            DownloadsField] : Array.Empty<CatalogField>(),
+    ];
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var host = web ? settings["web-host"].ToLowerInvariant() : null;
+        var hostPort = settings["port"];
+        var (lines, require) = !folders ? ("", Array.Empty<string>()) : Mounts(
+        [
+            (settings["media"], "/data"),
+            .. AlsoAt(settings["also-at"], settings["media"]).Select(path => (settings["media"], path)),
+            (settings["downloads"], "/downloads"),
+        ]);
+        var owner = !puid && config is not null;
+        var environmentLines = (puid ? "      PUID: \"1000\"\n      PGID: \"1000\"\n" : "") + environment;
+        var compose = "# Installed from Lucia's catalog (" + Id + ", version " + Version + "). Lucia rewrites this file when you change the\n"
+            + "# app's settings. Convert the app to a custom app to edit it by hand.\nservices:\n"
+            + (!owner ? "" : OwnerInit("config", "/config", Owner))
+            + $"  {Id}:\n    image: {image}\n    restart: unless-stopped\n"
+            + (owner ? $"    user: \"{Owner}\"\n" : "")
+            + (environmentLines.Length > 0 ? "    environment:\n" + environmentLines : "")
+            + (command is null ? "" : $"    command: {command}\n")
+            + "    volumes:\n" + (config is null ? "" : $"      - config:{config}\n") + "      - /etc/localtime:/etc/localtime:ro\n" + lines
+            + $"    ports:\n      - \"{hostPort}:{port}\"\n"
+            + (owner ? "    depends_on:\n      init:\n        condition: service_completed_successfully\n" : "")
+            + (config is null ? "" : "volumes:\n  config:\n");
+        return new(compose, "", require, host is null ? [] : [new(host, int.Parse(hostPort, CultureInfo.InvariantCulture))]);
+    }
+
+    /// <summary>A one-off service that gives a volume to the user an image runs as, for services that wait on <c>init</c>.</summary>
+    internal static string OwnerInit(string volume, string path, string owner) => $"""
+          # The app runs as {owner}; give it its {volume} folder once.
+          init:
+            image: {ObservabilityApp.Alpine}
+            restart: "no"
+            user: "0:0"
+            command: ["sh", "-c", "[ \"$$(stat -c %u:%g {path})\" = {owner} ] || chown -R {owner} {path}"]
+            volumes:
+              - {volume}:{path}
+
+        """.ReplaceLineEndings("\n");
+
+    /// <summary>Volume lines for NAS folders, each given as (folder, path in the container), and the shares they need.</summary>
+    internal static (string Lines, string[] Require) Mounts((string Folder, string Path)[] folders)
+    {
+        var given = folders.Select(folder => (Folder: folder.Folder.Trim().TrimEnd('/'), folder.Path)).Where(folder => folder.Folder.Length > 0).ToArray();
+        var shares = given.Select(folder => ImmichApp.NasFolder().Match(folder.Folder)).ToArray();
+        if (shares.Any(share => !share.Success))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Folders must be folders under a NAS share, such as /mnt/lucia/nas/unas/Media.");
+        return (string.Concat(given.Select(folder => $"      - \"{folder.Folder}:{folder.Path}\"\n")),
+            [.. shares.Select(share => $"nas={share.Groups["nas"].Value}/{share.Groups["share"].Value}").Distinct()]);
+    }
+
+    private static readonly string[] Reserved = ["bin", "boot", "config", "data", "dev", "downloads", "etc", "lib", "lib64", "opt", "proc",
+        "root", "run", "sbin", "sys", "tmp", "usr", "var", "app"];
+
+    internal static string[] AlsoAt(string value, string media)
+    {
+        var paths = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(path => path.TrimEnd('/')).Distinct().ToArray();
+        if (paths.Length > 0 && media.Trim().Length == 0)
+            throw new HardwareOnboardingException(400, "invalid_setting", "Other media paths need a media folder.");
+        if (paths.Length > 8 || paths.Any(path => !ContainerPath().IsMatch(path) || Reserved.Contains(path.Split('/')[1], StringComparer.OrdinalIgnoreCase)))
+            throw new HardwareOnboardingException(400, "invalid_setting",
+                "Other media paths must be up to 8 absolute paths, such as /tv or /media/tv, separated by commas, and not system folders or /data.");
+        return paths;
+    }
+
+    [GeneratedRegex(@"\A(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){1,4}\z")]
+    private static partial Regex ContainerPath();
+}
+/// <summary>
+/// A download client whose traffic all goes through a VPN: gluetun holds the tunnel, and the client shares its network, so
+/// nothing leaks if the tunnel drops. The client's web page is published through gluetun.
+/// </summary>
+internal sealed partial class DownloadClientApp() : CatalogApp("download-client", 1, "Download client",
+    "qBittorrent, Transmission, NZBGet or Soulseek, with all its traffic through your VPN.",
+    "Any server with Docker ready and 1 GB of memory, and an OpenVPN account with a provider gluetun supports.",
+    [],
+    [
+        new("client", "Client", "choice", "qbittorrent", Options:
+        [
+            new("qbittorrent", "qBittorrent", "Torrents."),
+            new("transmission", "Transmission", "Torrents, in a lighter client."),
+            new("nzbget", "NZBGet", "Usenet downloads."),
+            new("soulseek", "Soulseek", "Peer-to-peer music sharing, its desktop app shown in the browser."),
+        ]),
+        new("web-host", "Web name", "text", "downloads", "The client's web address is this name under your domain."),
+        new("port", "Web port", "port", "8080", "The client also answers on http://<server>:<port>, which the *arr apps can use."),
+        MediaApp.DownloadsField with { Help = "A folder on a NAS share where downloads land. The client sees it as /downloads (Soulseek: its downloads folder)." },
+        new("media", "Media folder", "text", Optional: true,
+            Help: "A NAS folder the client also sees, as /data (Soulseek: its shared folder)."),
+        new("vpn-provider", "VPN provider", "text", "private internet access",
+            "The provider as gluetun names it, such as mullvad, nordvpn, protonvpn or private internet access."),
+        new("vpn-user", "VPN username", "secret", Help: "Your OpenVPN username. Leave it blank to keep the saved one."),
+        new("vpn-password", "VPN password", "secret", Help: "Your OpenVPN password. Leave it blank to keep the saved one."),
+        new("vpn-regions", "VPN regions", "text", Optional: true,
+            Help: "Server regions to use, such as US East,Netherlands, comma-separated. Leave it blank to let gluetun choose."),
+        new("port-forwarding", "Port forwarding", "choice", "off", Options:
+        [
+            new("off", "Off", "Works with every provider."),
+            new("on", "On", "Asks the provider for an open port and uses only servers that give one. Private Internet Access and ProtonVPN."),
+        ]),
+        new("local-networks", "Local networks", "text", Optional: true,
+            Help: "Networks the client may reach outside the VPN, such as 192.168.0.0/23, comma-separated."),
+    ])
+{
+    private const string Gluetun = "qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027";
+
+    private static readonly Dictionary<string, (string Image, int Port, string Config, string Downloads, string Media, string Environment)> Clients = new()
+    {
+        ["qbittorrent"] = ("lscr.io/linuxserver/qbittorrent:5.2.3_v2.0.14-ls476@sha256:2be038f3421f60f62e8e4bf201f66f385b68e4fbc9ed3ab79051069ea22e2650",
+            8080, "/config", "/downloads", "/data", "      WEBUI_PORT: \"8080\"\n"),
+        ["transmission"] = ("lscr.io/linuxserver/transmission:4.1.3-r0-ls361@sha256:fc3b07f2f571c0392edd4dd386067138a0fe157d2158a976769409a292e43936",
+            9091, "/config", "/downloads", "/data", ""),
+        ["nzbget"] = ("nzbgetcom/nzbget:v25.2@sha256:65f259092f0445a6db4e4e03b70a6fa385cdcbd415bc523996674aa1478ec200",
+            6789, "/config", "/downloads", "/data", ""),
+        // Soulseek keeps its settings and chat logs in its home folder.
+        ["soulseek"] = ("realies/soulseek:latest@sha256:751df4d7aff42cbedc49becb4828109c079944bc51acb4d21dfa49d4ef6f4175",
+            6080, "/data", "/data/Soulseek Downloads", "/data/Soulseek Shared Folder", ""),
+    };
+
+    // Resume data and settings are only consistent while the client is stopped.
+    public override string BackupMode => "stop";
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var client = Clients[settings["client"]];
+        var (host, port) = (settings["web-host"].ToLowerInvariant(), settings["port"]);
+        var (provider, regions, networks) = (settings["vpn-provider"].ToLowerInvariant(), settings["vpn-regions"], settings["local-networks"].Replace(" ", ""));
+        if (!Provider().IsMatch(provider))
+            throw new HardwareOnboardingException(400, "invalid_setting", "VPN provider must be gluetun's name for it, such as mullvad or private internet access.");
+        if (regions.Length > 0 && !Regions().IsMatch(regions))
+            throw new HardwareOnboardingException(400, "invalid_setting", "VPN regions must be names such as US East, separated by commas.");
+        if (networks.Length > 0 && !Networks().IsMatch(networks))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Local networks must be written like 192.168.0.0/23, separated by commas.");
+        if (env.GetValueOrDefault("VPN_USER") is not { Length: > 0 } || env.GetValueOrDefault("VPN_PASSWORD") is not { Length: > 0 })
+            throw new HardwareOnboardingException(400, "invalid_setting", "Enter your VPN username and password.");
+        var (lines, require) = MediaApp.Mounts([(settings["downloads"], client.Downloads), (settings["media"], client.Media)]);
+        var forwarding = settings["port-forwarding"] == "on";
+        var compose = $$"""
+            # Installed from Lucia's catalog (download-client, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              # Holds the VPN tunnel. The client shares its network, so its traffic has no other way out.
+              vpn:
+                image: {{Gluetun}}
+                restart: unless-stopped
+                cap_add:
+                  - NET_ADMIN
+                devices:
+                  - /dev/net/tun:/dev/net/tun
+                environment:
+                  VPN_SERVICE_PROVIDER: "{{provider}}"
+                  VPN_TYPE: openvpn
+                  OPENVPN_USER: ${VPN_USER}
+                  OPENVPN_PASSWORD: ${VPN_PASSWORD}
+                  VPN_PORT_FORWARDING: "{{(forwarding ? "on" : "off")}}"
+            {{(forwarding ? "      PORT_FORWARD_ONLY: \"true\"\n" : "")}}{{(regions.Length > 0 ? $"      SERVER_REGIONS: \"{regions}\"\n" : "")}}{{(networks.Length > 0 ? $"      FIREWALL_OUTBOUND_SUBNETS: \"{networks}\"\n" : "")}}    volumes:
+                  - vpn:/gluetun
+                ports:
+                  - "{{port}}:{{client.Port}}"
+              {{settings["client"]}}:
+                image: {{client.Image}}
+                restart: unless-stopped
+                network_mode: service:vpn
+                environment:
+                  PUID: "1000"
+                  PGID: "1000"
+            {{client.Environment}}    volumes:
+                  - config:{{client.Config}}
+                  - /etc/localtime:/etc/localtime:ro
+            {{lines}}    depends_on:
+                  vpn:
+                    condition: service_healthy
+                    restart: true
+            volumes:
+              vpn:
+              config:
+
+            """;
+        return new(compose.ReplaceLineEndings("\n"), $"VPN_USER={env["VPN_USER"]}\nVPN_PASSWORD={env["VPN_PASSWORD"]}\n", require,
+            [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
+    }
+
+    [GeneratedRegex(@"\A[a-z0-9][a-z0-9 ._-]{0,63}\z")]
+    private static partial Regex Provider();
+    [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9 .'-]{0,63}(?:,\s*[A-Za-z0-9][A-Za-z0-9 .'-]{0,63}){0,15}\z")]
+    private static partial Regex Regions();
+    [GeneratedRegex(@"\A\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}(?:,\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}){0,7}\z")]
+    private static partial Regex Networks();
+}
+/// <summary>
+/// Home Assistant. It uses the host's network, as finding devices on the LAN expects. A new install starts from Home
+/// Assistant's default configuration, set to trust the visitor addresses Lucia's gateway passes on, so its web name works.
+/// </summary>
+internal sealed class HomeAssistantApp() : CatalogApp("home-assistant", 1, "Home Assistant",
+    "Automate your home's lights, sensors, locks and media, with a dashboard on every screen.",
+    "Any server with Docker ready, 2 GB of memory and port 8123 free.",
+    [],
+    [new("web-host", "Web name", "text", "homeassistant", "Home Assistant's web address is this name under your domain. Its apps can also use http://<server>:8123.")])
+{
+    private const string Image = "ghcr.io/home-assistant/home-assistant:2026.9.2@sha256:a1bc133af84ee6505fe2c266d9805b7c75b780dfdc188edfee3b11e8f3cd8efe";
+
+    // Its history database is SQLite, only consistent while it's stopped.
+    public override string BackupMode => "stop";
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var compose = $$"""
+            # Installed from Lucia's catalog (home-assistant, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              # Gives a new install Home Assistant's default configuration, and leaves an existing one alone.
+              init:
+                image: {{ObservabilityApp.Alpine}}
+                restart: "no"
+                command: ["sh", "-c", "[ -e /config/configuration.yaml ] || { cp /seed.yaml /config/configuration.yaml && echo '[]' > /config/automations.yaml && touch /config/scripts.yaml /config/scenes.yaml; }"]
+                configs:
+                  - source: seed
+                    target: /seed.yaml
+                volumes:
+                  - config:/config
+              home-assistant:
+                image: {{Image}}
+                restart: unless-stopped
+                network_mode: host
+                volumes:
+                  - config:/config
+                  - /etc/localtime:/etc/localtime:ro
+                  - /run/dbus:/run/dbus:ro
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+            configs:
+              seed:
+                content: |
+                  default_config:
+                  frontend:
+                    themes: !include_dir_merge_named themes
+                  automation: !include automations.yaml
+                  script: !include scripts.yaml
+                  scene: !include scenes.yaml
+                  # Lucia's gateway, on your network, passes each visitor's address on.
+                  http:
+                    use_x_forwarded_for: true
+                    trusted_proxies:
+                      - 10.0.0.0/8
+                      - 172.16.0.0/12
+                      - 192.168.0.0/16
+            volumes:
+              config:
+
+            """;
+        return new(compose.ReplaceLineEndings("\n"), "", [], [new(settings["web-host"].ToLowerInvariant(), 8123)]);
+    }
+}
+/// <summary>An MQTT broker with one login, which Home Assistant and your devices share. It's written on every start.</summary>
+internal sealed partial class MosquittoApp() : CatalogApp("mosquitto", 1, "Mosquitto",
+    "An MQTT broker, where Home Assistant and smart devices trade messages.",
+    "Any server with Docker ready.",
+    [],
+    [
+        new("port", "Port", "port", "1883", "Devices and apps connect to mqtt://<server>:<port>."),
+        new("mqtt-user", "Username", "text", "homeassistant", "The broker's one login, which Home Assistant and your devices share."),
+        new("mqtt-password", "Password", "secret", Help: "The login's password. Leave it blank to keep the saved one."),
+    ])
+{
+    private const string Image = "eclipse-mosquitto:2.0.22@sha256:199ea8ef2e35ec2b1b37e59cfd1dbae538ed4dfa4a2251a121a52215a6248a21";
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var user = settings["mqtt-user"];
+        if (!Login().IsMatch(user))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Username must be up to 64 letters, digits and . _ -");
+        if (env.GetValueOrDefault("MQTT_PASSWORD") is not { Length: > 0 } password)
+            throw new HardwareOnboardingException(400, "invalid_setting", "Enter a password for the broker's login.");
+        var compose = $$"""
+            # Installed from Lucia's catalog (mosquitto, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              mosquitto:
+                image: {{Image}}
+                restart: unless-stopped
+                environment:
+                  MQTT_USER: "{{user}}"
+                  MQTT_PASSWORD: ${MQTT_PASSWORD}
+                entrypoint:
+                  - /bin/sh
+                  - -c
+                  - 'mosquitto_passwd -c -b /mosquitto/passwd "$$MQTT_USER" "$$MQTT_PASSWORD" && chmod 0700 /mosquitto/passwd && exec /docker-entrypoint.sh /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf'
+                configs:
+                  - source: config
+                    target: /mosquitto/config/mosquitto.conf
+                volumes:
+                  - data:/mosquitto/data
+                ports:
+                  - "{{settings["port"]}}:1883"
+            configs:
+              config:
+                content: |
+                  listener 1883
+                  allow_anonymous false
+                  password_file /mosquitto/passwd
+                  persistence true
+                  persistence_location /mosquitto/data/
+                  log_dest stdout
+            volumes:
+              data:
+
+            """;
+        return new(compose.ReplaceLineEndings("\n"), $"MQTT_PASSWORD={password}\n", []);
+    }
+
+    [GeneratedRegex(@"\A[A-Za-z0-9._-]{1,64}\z")]
+    private static partial Regex Login();
+}
+/// <summary>
+/// Local speech for Home Assistant's voice assistants, over the Wyoming protocol: Whisper turns speech into text on port
+/// 10300, Piper speaks on 10200 and openWakeWord listens for wake words on 10400. Models download on first use.
+/// </summary>
+internal sealed partial class VoiceApp() : CatalogApp("voice", 1, "Voice",
+    "Private voice control for Home Assistant: speech recognition, a speaking voice and wake words, all on your server.",
+    "Any server with Docker ready, 4 GB of memory and ports 10200, 10300 and 10400 free.",
+    [],
+    [
+        new("whisper-model", "Speech model", "text", "auto", "The Whisper model that hears you, such as base-int8 or small-int8. auto picks one for the language."),
+        new("language", "Language", "text", "en", "The language you speak, such as en or de."),
+        new("piper-voice", "Voice", "text", "en_US-lessac-medium", "The Piper voice that answers, such as en_US-lessac-medium or en_GB-alba-medium."),
+    ])
+{
+    private const string Whisper = "rhasspy/wyoming-whisper:3.8.1@sha256:ba6fcb6056ebe237d15a325381763a80af2fc8fcedaa04f6a714a7375eb20d80";
+    private const string Piper = "rhasspy/wyoming-piper:2.5.2@sha256:7d39aafac409c2b6b09d999ed04d84c311d632e558b35baa60fad6aac722af7a";
+    private const string OpenWakeWord = "rhasspy/wyoming-openwakeword:2.1.0@sha256:52cb1168731a1849fc28cf339c935fde58746bbabc94226668a40ef6ddf5d42b";
+
+    // The models download again when they're missing.
+    public override string[] BackupExclude => ["volumes/whisper", "volumes/piper"];
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (model, language, voice) = (settings["whisper-model"], settings["language"], settings["piper-voice"]);
+        if (!Model().IsMatch(model) || !Model().IsMatch(voice))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Speech model and voice must be names such as small-int8 or en_US-lessac-medium.");
+        if (!Language().IsMatch(language))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Language must be a code such as en or pt-BR.");
+        var compose = $$"""
+            # Installed from Lucia's catalog (voice, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              whisper:
+                image: {{Whisper}}
+                restart: unless-stopped
+                command: ["--model", "{{model}}", "--language", "{{language}}"]
+                volumes:
+                  - whisper:/data
+                ports:
+                  - "10300:10300"
+              piper:
+                image: {{Piper}}
+                restart: unless-stopped
+                command: ["--voice", "{{voice}}"]
+                volumes:
+                  - piper:/data
+                ports:
+                  - "10200:10200"
+              openwakeword:
+                image: {{OpenWakeWord}}
+                restart: unless-stopped
+                ports:
+                  - "10400:10400"
+            volumes:
+              whisper:
+              piper:
+
+            """;
+        return new(compose.ReplaceLineEndings("\n"), "", []);
+    }
+
+    [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,63}\z")]
+    private static partial Regex Model();
+    [GeneratedRegex(@"\A(?:auto|[a-z]{2,3}(?:-[A-Za-z]{2,4})?)\z")]
+    private static partial Regex Language();
+}
+/// <summary>
+/// One of Home Assistant's companions: a single container that keeps its data in one volume. Those that find devices on
+/// the LAN use the host's network, so their port is fixed.
+/// </summary>
+/// <param name="host">The default web name, or null for an app without a web page.</param>
+/// <param name="owner">The user the image runs as from the start, which a one-off container gives the data folder first.</param>
+/// <param name="exclude">Paths under the app's directory that backups skip because they're rebuildable.</param>
+internal sealed class HomeCompanionApp(string id, string name, string summary, string image, int port, string data, bool hostNetwork,
+    string? host, string? owner = null, string[]? exclude = null)
+    : CatalogApp(id, 1, name, summary, hostNetwork ? $"Any server with Docker ready and port {port} free." : "Any server with Docker ready.", [],
+    [
+        .. host is null ? Array.Empty<CatalogField>() : [new CatalogField("web-host", "Web name", "text", host, "The app's web address is this name under your domain.")],
+        .. hostNetwork ? Array.Empty<CatalogField>()
+            : [new CatalogField("port", "Port", "port", port.ToString(CultureInfo.InvariantCulture), "The app also answers on http://<server>:<port>.")],
+    ])
+{
+    public static readonly HomeCompanionApp[] All =
+    [
+        new("esphome", "ESPHome", "Build and update the firmware of ESP32 and ESP8266 devices, which then join Home Assistant.",
+            "ghcr.io/esphome/esphome:2026.8.0@sha256:5ca1a7e39926cdf3cd48239ec5c9f5b429c9ac84390bd940c26c296d3cecc72e", 6052, "/config", true, "esphome",
+            exclude: ["volumes/data/.esphome"]),
+        new("matter-server", "Matter Server", "Lets Home Assistant pair and control Matter devices.",
+            "ghcr.io/matter-js/matterjs-server:1.4.0@sha256:54232d0d3e7dff5a54759469d2753399270412b4c30c55b31750a4595e4cb236", 5580, "/data", true, null, "1000:1000"),
+        new("music-assistant", "Music Assistant", "Plays your music library and streaming services on the speakers around your home.",
+            "ghcr.io/music-assistant/server:2.10.4@sha256:37a9a2776e838a754c9f5b38c432567389952304e7cb8f6b44b6cd28043de6de", 8095, "/data", true, "music"),
+        new("node-red", "Node-RED", "Wire automations together as flows in the browser, with nodes for Home Assistant.",
+            "nodered/node-red:5.0.4@sha256:10f40d0a83e7e5852b13d4d472b2006b05b1cca6d55e2f29a55a12c25a630cb6", 1880, "/data", false, "node-red", "1000:1000"),
+    ];
+
+    public override string[] BackupExclude => exclude ?? [];
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var hostPort = hostNetwork ? port.ToString(CultureInfo.InvariantCulture) : settings["port"];
+        var compose = "# Installed from Lucia's catalog (" + Id + ", version " + Version + "). Lucia rewrites this file when you change the\n"
+            + "# app's settings. Convert the app to a custom app to edit it by hand.\nservices:\n"
+            + (owner is null ? "" : MediaApp.OwnerInit("data", data, owner))
+            + $"  {Id}:\n    image: {image}\n    restart: unless-stopped\n"
+            + (hostNetwork ? "    network_mode: host\n" : "")
+            + (owner is null ? "" : $"    user: \"{owner}\"\n")
+            + $"    volumes:\n      - data:{data}\n      - /etc/localtime:/etc/localtime:ro\n"
+            + (hostNetwork ? "" : $"    ports:\n      - \"{hostPort}:{port}\"\n")
+            + (owner is null ? "" : "    depends_on:\n      init:\n        condition: service_completed_successfully\n")
+            + "volumes:\n  data:\n";
+        return new(compose, "", [], host is null ? [] : [new(settings["web-host"].ToLowerInvariant(), int.Parse(hostPort, CultureInfo.InvariantCulture))]);
+    }
+}
+
+/// <summary>
+/// GitHub Actions self-hosted runners, one for each repository or organization, sharing a Docker daemon of their own: jobs
+/// can build and run images without reaching the server's Docker or its other apps. Each runner takes one job, then
+/// registers again, so a job starts from a clean runner. The Spark runs the same runners on demand (<see cref="SparkRunner"/>).
+/// </summary>
+internal sealed partial class GitHubRunnerApp() : CatalogApp("github-runner", 1, "GitHub Actions runner",
+    "Runs your repositories' GitHub Actions jobs on your own hardware, with Docker for building images.",
+    "Any server with Docker ready and 4 GB of memory, and a GitHub token that can add runners to your repositories.",
+    [],
+    [
+        new("repositories", "Repositories", "text", Help: "Where the runner takes jobs from: owner/repo, or an organization's name, comma-separated. "
+            + "Each gets a runner of its own."),
+        new("access-token", "GitHub token", "secret", Help: "A fine-grained personal access token with Administration: read and write on "
+            + "these repositories (Self-hosted runners: read and write for an organization). Leave it blank to keep the saved one."),
+        new("labels", "Extra labels", "text", Optional: true, Help: "Labels your workflows can ask for in runs-on, comma-separated. "
+            + "Every runner also has self-hosted, linux, its architecture and its server's name."),
+    ])
+{
+    internal const string Runner = "myoung34/github-runner:2.337.0-ubuntu-noble@sha256:1b947d2475cc6f4c3edf0e91dd879b091857e41a311be917016243479bb34101";
+    internal const string Docker = "docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0";
+    internal const string TokenKey = "ACCESS_TOKEN";
+
+    public override bool RunsOnSpark => true;
+    // Build caches, checkouts and the daemon's socket; nothing to restore.
+    public override string[] BackupExclude => ["volumes/docker", "volumes/socket", "volumes/work"];
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        if (env.GetValueOrDefault(TokenKey) is not { } token || !Token().IsMatch(token))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Enter a GitHub personal access token.");
+        var machine = node.Hostname.ToLowerInvariant();
+        var compose = $"# Installed from Lucia's catalog ({Id}, version {Version}). Lucia rewrites this file when you change the\n"
+            + "# app's settings. Convert the app to a custom app to edit it by hand.\n"
+            + Compose(Repositories(settings["repositories"]), Labels(settings["labels"], machine), machine);
+        return new(compose, $"{TokenKey}={token}\n", []);
+    }
+
+    /// <summary>
+    /// The runners and their Docker daemon. The daemon has to run privileged, so a job can still take over the machine:
+    /// it keeps jobs away from the machine's own Docker, not from the machine.
+    /// </summary>
+    internal static string Compose(string[] repositories, string[] labels, string prefix)
+    {
+        var services = new System.Text.StringBuilder($$"""
+            services:
+              # The runners' own Docker, on a socket only the runners share. Jobs build and run containers here; the images
+              # and build cache stay between jobs. 500 is the runner image's docker group.
+              docker:
+                image: {{Docker}}
+                restart: unless-stopped
+                privileged: true
+                command: ["dockerd", "--host=unix:///run/dind/docker.sock", "--group=500"]
+                volumes:
+                  - docker:/var/lib/docker
+                  - socket:/run/dind
+                  - work:/tmp/runner
+
+            """);
+        var taken = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var repository in repositories)
+        {
+            var (owner, repo) = repository.IndexOf('/') is > 0 and var slash ? (repository[..slash], repository[(slash + 1)..]) : (repository, null);
+            var stem = ServiceName().Replace((repo ?? owner).ToLowerInvariant(), "-").Trim('-');
+            var name = stem.Length == 0 ? "runner" : stem;
+            for (var n = 2; !taken.Add(name); n++) name = $"{stem}-{n}";
+            var scope = repo is null ? $"      RUNNER_SCOPE: org\n      ORG_NAME: \"{owner}\"\n"
+                : $"      RUNNER_SCOPE: repo\n      REPO_URL: \"https://github.com/{repository}\"\n";
+            services.Append($$"""
+                  runner-{{name}}:
+                    image: {{Runner}}
+                    restart: unless-stopped
+                    environment:
+                {{scope}}      ACCESS_TOKEN: ${{{TokenKey}}}
+                      RUNNER_NAME_PREFIX: "{{prefix}}"
+                      LABELS: "{{string.Join(',', labels)}}"
+                      EPHEMERAL: "true"
+                      RUN_AS_ROOT: "false"
+                      UNSET_CONFIG_VARS: "true"
+                      DOCKER_HOST: unix:///run/dind/docker.sock
+                      # Container jobs mount the checkout from the daemon, so it sees the same path.
+                      RUNNER_WORKDIR: /tmp/runner/{{name}}
+                    volumes:
+                      - socket:/run/dind
+                      - work:/tmp/runner
+                    depends_on:
+                      - docker
+
+                """);
+        }
+        return (services + "volumes:\n  docker:\n  socket:\n  work:\n").ReplaceLineEndings("\n");
+    }
+
+    /// <summary>owner/repo entries and organization names, as given or as github.com addresses.</summary>
+    internal static string[] Repositories(string text)
+    {
+        var items = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => item.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase) ? item[19..].TrimEnd('/') : item)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (items.Length is 0 or > 8 || items.Any(item => !Repository().IsMatch(item) || item.EndsWith(".git", StringComparison.OrdinalIgnoreCase)))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Repositories must be up to 8 entries like owner/repo, or an organization's name, separated by commas.");
+        return items;
+    }
+
+    /// <summary>The machine's label, then the owner's extra labels.</summary>
+    internal static string[] Labels(string text, string machine)
+    {
+        var items = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (items.Length > 8 || items.Any(item => !Label().IsMatch(item)))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Extra labels must be up to 8 names of letters, digits and . _ -, separated by commas.");
+        return [.. items.Prepend(machine).Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+
+    [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:/[A-Za-z0-9._-]{1,100})?\z")]
+    private static partial Regex Repository();
+    [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z")]
+    private static partial Regex Label();
+    [GeneratedRegex(@"\A[A-Za-z0-9_]{20,128}\z")]
+    internal static partial Regex Token();
+    [GeneratedRegex(@"[^a-z0-9-]+")]
+    private static partial Regex ServiceName();
 }

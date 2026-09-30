@@ -67,7 +67,7 @@ class Fake(w.Native):
         self.settings = {"ldap_base_dn": w.BASE_DN, "public_host": "original.example", "ports": {"ldaps": 636}}
         self.root_pem, self.chain = root_pem, chain
         self.entry = None
-        self.adds, self.signs = 0, 0
+        self.adds, self.signs, self.deletes = 0, 0, 0
         self.calls = []
         self.membership = False
         self.leaks_password = False
@@ -94,6 +94,11 @@ class Fake(w.Native):
                 raise w.Unsupported(w.UNSUPPORTED)
             return executed
         assert command[:3] == ["docker", "exec", "-i"]
+        if "ldapdelete" in command:
+            assert self.entry is not None and command[-1] == self.entry["dn"][0]
+            self.entry = None
+            self.deletes += 1
+            return result()
         if "ldapadd" in command:
             assert self.entry is None
             self.entry = w.ldif_entries(input_text)[0]
@@ -537,6 +542,36 @@ def checks(folder):
         w.handle(p, directory, path)
     assert json.loads(response.read_text())["success"] is False
 
+    # A removed machine's reader and receipt go only once Lucia's journal and queues no longer hold it.
+    (directory / "removals").mkdir(mode=0o700)
+    (directory / "identities").mkdir(mode=0o700)
+    removal = directory / "removals" / (NODE + ".json")
+    receipt = state / "node-enrollment" / (NODE + ".json")
+    node_certificates = state / "certificates" / "node-enrollment" / NODE
+    assert p.entry is not None and receipt.exists() and node_certificates.exists()
+    with patch.object(w, "lease", side_effect=lambda _: contextlib.nullcontext()):
+        put(removal, json.dumps({"schemaVersion": 1, "nodeId": NODE}))
+        rejected(lambda: w.remove(p, directory, removal))  # still in the journal, and its request is queued
+        path.unlink()
+        rejected(lambda: w.remove(p, directory, removal))
+        put(journal_path, json.dumps({**journal, "devices": [], "tasks": []}))
+        put(directory / "identities" / removal.name, "{}")
+        rejected(lambda: w.remove(p, directory, removal))
+        (directory / "identities" / removal.name).unlink()
+        for bad in ({"schemaVersion": 1, "nodeId": TASK}, {"schemaVersion": 1, "nodeId": NODE, "dn": "uid=admin"}):
+            put(removal, json.dumps(bad))
+            rejected(lambda: w.remove(p, directory, removal))
+        p.entry["description"] = ["Not owned"]
+        put(removal, json.dumps({"schemaVersion": 1, "nodeId": NODE}))
+        rejected(lambda: w.remove(p, directory, removal))
+        assert p.deletes == 0 and receipt.exists() and node_certificates.exists()
+        p.entry["description"] = ["Lucia managed node " + NODE]
+        w.remove(p, directory, removal)
+        assert p.entry is None and p.deletes == 1 and not receipt.exists() and not node_certificates.exists() and not removal.exists()
+        put(removal, json.dumps({"schemaVersion": 1, "nodeId": NODE}))
+        w.remove(p, directory, removal)  # already gone: just acknowledged
+        assert p.deletes == 1 and not removal.exists()
+    put(journal_path, journal_bytes)
     if sys.platform == "linux":
         filesystem_checks(folder, directory, p, value)
     else:

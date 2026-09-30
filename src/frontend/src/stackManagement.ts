@@ -14,8 +14,10 @@ export interface StackSummary {
   name: string; node: string; nodeId: string | null; desired: 'Running' | 'Stopped'; revision: number
   createdAt: string; updatedAt: string; updatedBy: string; reportedAt: string | null
   status: StackStatus | null; containers: NodeContainer[]; placement: StackPlacement; move: StackMove | null
-  template: StackTemplateInfo | null; restore: StackRestore | null; appAddress: AppAddress | null
+  template: StackTemplateInfo | null; restore: StackRestore | null; appAddress: AppAddress | null; updates: ImageUpdate[]
 }
+/** A newer tag Lucia found for one of the app's images. `major` means its first version number changed, which usually means breaking changes. `notes` is its project's release notes page. */
+export interface ImageUpdate { image: string; current: string; tag: string; major: boolean; notes: string | null }
 /** The app's own address on the network. `status` is the server's last report, missing until it tries to take it. */
 export interface AppAddress { ip: string; status: { state: 'Held' | 'InUse' | 'NoSubnet'; message: string | null } | null }
 export interface StackRestore { id: string; snapshot: string; startedAt: string; startedBy: string }
@@ -29,7 +31,13 @@ export interface CatalogGpu { uuid: string; model: string; memoryBytes: number |
 export interface CatalogServer { nodeId: string; hostname: string; unmet: string | null; reason: string | null; gpus: CatalogGpu[] | null }
 export interface CatalogApp {
   id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
-  serverBound: boolean; usesAddress: boolean; servers: CatalogServer[]
+  serverBound: boolean; usesAddress: boolean; onSpark: boolean; servers: CatalogServer[]
+}
+/** The Spark's on-demand GitHub Actions runner. `stopsAt` is when it stops itself if no job starts. */
+export interface SparkRunner {
+  configured: boolean; workerReady: boolean; label: string; repositories: string[]; labels: string[]; idleMinutes: number
+  state: 'starting' | 'running' | 'stopping' | 'stopped' | 'failed' | 'removed' | null; reason: string | null; since: string | null
+  lastJobAt: string | null; busy: boolean; message: string | null; stopsAt: string | null
 }
 /** A web address: its internal URL and, while public access is on, the public one its public name answers at. */
 export interface StackWebAddress { host: string; url: string | null; public: string | null; publicUrl: string | null }
@@ -100,7 +108,13 @@ export function parseStackSummary(value: unknown): StackSummary {
     status: absent(item.status) ? null : parseStatus(item.status),
     containers: absent(item.containers) ? [] : list(item.containers, parseContainer, 256),
     placement: parsePlacement(item.placement), move: parseMove(item.move), template: parseTemplate(item.template),
-    restore: parseRestore(item.restore), appAddress: parseAppAddress(item.appAddress) }
+    restore: parseRestore(item.restore), appAddress: parseAppAddress(item.appAddress),
+    updates: absent(item.updates) ? [] : list(item.updates, update => {
+      const row = object(update)
+      const notes = optional(row.notes)
+      return { image: text(row.image), current: text(row.current), tag: text(row.tag), major: row.major === true,
+        notes: notes?.startsWith('https://github.com/') ? notes : null }
+    }, 64) }
 }
 
 function parseAppAddress(value: unknown): AppAddress | null {
@@ -152,11 +166,49 @@ function parseTemplate(value: unknown): StackTemplateInfo | null {
     name: optional(item.name), settings: settingsOf(item.settings), serverBound: item.serverBound === true }
 }
 
+const clock = (at: string) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+/** How the Spark runner's row and page describe it. */
+export function sparkRunnerState(runner: SparkRunner): { label: string; tone: StackTone; detail: string } {
+  const quiet = runner.workerReady ? '' : ' The Spark’s runner service isn’t reporting, so changes wait until it’s back.'
+  switch (runner.state) {
+    case 'starting': return { label: 'Starting', tone: 'accent', detail: `Downloading images and registering with GitHub.${quiet}` }
+    case 'stopping': return { label: 'Stopping', tone: 'accent', detail: `Jobs in progress end when it stops.${quiet}` }
+    case 'running': return runner.message
+      ? { label: 'Restarting', tone: 'amber', detail: `${runner.message}${quiet}` }
+      : runner.busy
+      ? { label: 'Running a job', tone: 'green', detail: `It stops ${runner.idleMinutes} minutes after the last job ends.${quiet}` }
+      : { label: 'Waiting for jobs', tone: 'green', detail: `${runner.stopsAt ? `Stops at ${clock(runner.stopsAt)} unless a job starts.` : ''}${quiet}` }
+    case 'failed': return { label: 'Didn’t start', tone: 'failed', detail: `${runner.message ?? 'The Spark couldn’t start the runner.'}${quiet}` }
+    default: return runner.reason === 'idle' && runner.since
+      ? { label: 'Stopped', tone: 'muted', detail: `Stopped itself at ${clock(runner.since)} after ${runner.idleMinutes} minutes without a job.${quiet}` }
+      : { label: 'Stopped', tone: 'muted', detail: `Start it when you need an ARM64 runner.${quiet}` }
+  }
+}
+
+export function sparkIdleProblem(value: string): string | null {
+  return /^\d{1,4}$/.test(value) && Number(value) >= 5 && Number(value) <= 1440 ? null : 'Stop after idle must be from 5 to 1440 minutes.'
+}
+
+export function parseSparkRunner(value: unknown): SparkRunner {
+  const item = object(value)
+  const state = absent(item.state) ? null : text(item.state)
+  if (state !== null && !['starting', 'running', 'stopping', 'stopped', 'failed', 'removed'].includes(state)) throw invalid()
+  const when = (entry: unknown) => absent(entry) ? null : timestamp(entry)
+  return {
+    configured: item.configured === true, workerReady: item.workerReady === true, label: text(item.label),
+    repositories: absent(item.repositories) ? [] : list(item.repositories, text, 8), labels: absent(item.labels) ? [] : list(item.labels, text, 8),
+    idleMinutes: absent(item.idleMinutes) ? 30 : integer(item.idleMinutes), state: state as SparkRunner['state'], reason: optional(item.reason),
+    since: when(item.since), lastJobAt: when(item.lastJobAt), busy: item.busy === true, message: optional(item.message), stopsAt: when(item.stopsAt),
+  }
+}
+
 export function parseCatalog(value: unknown): CatalogApp[] {
   return list(object(value).apps, entry => {
     const app = object(entry)
     return { id: text(app.id), version: integer(app.version), name: text(app.name), summary: text(app.summary), needs: text(app.needs),
       require: list(app.require, text, 16), serverBound: app.serverBound === true, usesAddress: app.usesAddress === true,
+      onSpark: app.runsOnSpark === true,
       fields: list(app.fields, field => {
         const row = object(field)
         if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'secret' && row.kind !== 'hidden') throw invalid()

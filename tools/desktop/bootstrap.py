@@ -55,7 +55,7 @@ FILES = frozenset((
     "tools/identity/application.py", "tools/identity/app_clients.py", "tools/host/provision_host.py", "tools/host/package.py",
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
-    "tools/packages/package_worker.py",
+    "tools/packages/package_worker.py", "tools/runners/spark_runner_worker.py",
     "deployment/boot/Dockerfile", "deployment/boot/serve.py", "deployment/boot/discover-and-wait",
     "deployment/boot/partitioner-guard", "deployment/boot/grub.cfg.in", "deployment/boot/finish-install",
     "deployment/boot/screen.sh", "deployment/boot/grub-theme.txt",
@@ -1287,6 +1287,10 @@ def provision_locked(root, state, directory, request, password, verify_only, eve
                         node_directory.prepare(native, node_enrollment)
                         event("node-worker", "Installing the scoped node CA and directory enrollment service; administrator credentials remain outside the web host.")
                         p.run([sys.executable, str(enrollment_worker), "install"])
+                    runner_worker = source / "tools/runners/spark_runner_worker.py"
+                    if runner_worker.is_file():
+                        event("runner-worker", "Installing the Spark's on-demand GitHub Actions runner service; it stays stopped until you start it.")
+                        p.run([sys.executable, str(runner_worker), "install"])
                 else:
                     event("domain-worker", "DNS activation service is deferred until persistent user services are explicitly approved; identity and host setup are otherwise unchanged.")
         pem = read_bytes(state / "trust/lucia-root-ca.crt", 32768).decode("ascii")

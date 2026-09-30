@@ -45,6 +45,37 @@ internal static class NodeEnrollmentChecks
             try { ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { Runtime = bad }); throw new InvalidOperationException("Bad runtime accepted"); }
             catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Invalid runtime rejected."); }
         }
+        var updates = new NodeUpdateStatus("Idle", DateTimeOffset.UtcNow, 1, 1, [new("libc6", "2.41-12", "2.41-12+deb13u1", true)], false, "1 update available.");
+        ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { Updates = updates, AgentRelease = new string('a', 64) });
+        check(true, "Valid update status was rejected.");
+        foreach (var bad in new[]
+        {
+            metrics with { Updates = updates with { State = "Maybe" } },
+            metrics with { Updates = updates with { Packages = [.. Enumerable.Repeat(updates.Packages[0], 51)] } },
+            metrics with { Updates = updates with { Count = -1 } },
+            metrics with { Updates = updates with { Message = "line\nbreak" } },
+            metrics with { AgentRelease = "not-a-release" },
+            metrics with { CpuPercent = 101 },
+            metrics with { GpuPercent = double.NaN },
+            metrics with { CpuTemperatureCelsius = 400 },
+        })
+        {
+            try { ManagedNodeEnrollment.ValidateHeartbeat(id, bad); throw new InvalidOperationException("Bad update status accepted"); }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Invalid update status rejected."); }
+        }
+        ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { CpuPercent = 12.5, CpuTemperatureCelsius = 54, GpuPercent = 0, GpuTemperatureCelsius = 38 });
+        check(true, "Valid utilization was rejected.");
+        var releaseFolder = Path.Combine(Path.GetTempPath(), "lucia-release-check-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(releaseFolder);
+        try
+        {
+            File.WriteAllText(Path.Combine(releaseFolder, "a"), "1");
+            File.WriteAllText(Path.Combine(releaseFolder, "B"), "2");
+            // The agent computes the same ID over its installed files; see Lucia.NodeAgent.Checks.
+            check(NodeAgentRelease.Compute(releaseFolder) == "72a3aae02a41db9bf5c8a41a53348020cdeba3d09ff4d7a89a87f27d86705f9e",
+                "Agent release ID changed.");
+        }
+        finally { Directory.Delete(releaseFolder, recursive: true); }
         var folder = Path.Combine(Path.GetTempPath(), "lucia-node-cert-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try

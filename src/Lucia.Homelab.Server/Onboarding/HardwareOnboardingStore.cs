@@ -438,6 +438,28 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
             return (state, PublicDevice(stored, now));
         }, ct);
 
+    /// <summary>
+    /// Forgets a device and its installation tasks, for retired or failed machines. Refused while an installation still
+    /// holds live authority. Earlier journal events stay, detached from the device. Returns false when it isn't known.
+    /// </summary>
+    public Task<bool> RemoveDeviceAsync(Guid deviceId, string actor, CancellationToken ct = default) =>
+        MutateAsync((state, now) =>
+        {
+            Actor(actor);
+            var index = state.Devices.FindIndex(item => item.Device.Id == deviceId);
+            if (index < 0) return (state, false);
+            var device = state.Devices[index].Device;
+            var task = state.Tasks.FirstOrDefault(item => item.Task.Id == device.TaskId)?.Task;
+            if (device.Phase is HardwareDevicePhase.Approved or HardwareDevicePhase.Installing or HardwareDevicePhase.AwaitingEnrollment
+                && task is not null && (task.ProgressExpiresAt ?? task.AuthorityExpiresAt) > now)
+                throw Conflict("installation_in_progress", "This machine is still installing. Wait for it to finish or fail before removing it.");
+            state.Devices.RemoveAt(index);
+            state.Tasks.RemoveAll(item => item.Task.DeviceId == deviceId);
+            for (var i = 0; i < state.Events.Count; i++)
+                if (state.Events[i].DeviceId == deviceId) state.Events[i] = state.Events[i] with { DeviceId = null, TaskId = null };
+            return (Event(state, now, "DeviceRemoved", actor, null, null), true);
+        }, ct);
+
     private async Task<T> ReadAsync<T>(Func<State, DateTimeOffset, T> read, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);

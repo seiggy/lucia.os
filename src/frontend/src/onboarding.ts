@@ -82,8 +82,24 @@ export interface ManagedNodeSummary {
   address: string | null; dnsName: string | null
   status: { osVersion: string; uptimeSeconds: number; loadAverage: number | null; memoryTotalBytes: number
     memoryAvailableBytes: number; storageTotalBytes: number | null; storageAvailableBytes: number | null
-    runtime: NodeRuntimeSummary | null } | null
+    runtime: NodeRuntimeSummary | null; updates: NodeUpdatesSummary | null; agentRelease: string | null
+    /** Null when the node can't measure it, or its agent predates reporting it. */
+    cpuPercent: number | null; cpuTemperatureCelsius: number | null; gpuPercent: number | null; gpuTemperatureCelsius: number | null } | null
+  /** Heartbeats from the last hour, oldest first; starts over when the host restarts. */
+  history: NodeUsageSample[]
   gpu: NodeGpuSettings; gpuWarning: string | null
+  /** Whether Lucia ships a newer agent than this server runs; null when the agent is too old to say. */
+  agentUpdateAvailable: boolean | null
+}
+
+export interface NodeUsageSample {
+  at: string; cpu: number | null; memory: number; gpu: number | null; cpuTemperature: number | null; gpuTemperature: number | null
+}
+
+export interface NodeUpdatesSummary {
+  state: 'Idle' | 'Checking' | 'Installing' | 'Failed'; checkedAt: string | null; count: number; securityCount: number
+  packages: { name: string; current: string | null; candidate: string; security: boolean }[]
+  restartRequired: boolean; message: string | null
 }
 
 export interface NodeGpuSettings { cudaLine: CudaLine | null }
@@ -239,6 +255,15 @@ export function parseManagedNodes(value: unknown): ManagedNodeSummary[] {
     if (typeof input !== 'number' || !Number.isFinite(input) || input < 0) throw invalid()
     return input
   }
+  function percent(input: unknown): number {
+    const value = nonnegative(input)
+    if (value > 100) throw invalid()
+    return value
+  }
+  function celsius(input: unknown): number {
+    if (typeof input !== 'number' || !Number.isFinite(input) || input <= -40 || input >= 150) throw invalid()
+    return input
+  }
   return array(value, entry => {
     const node = object(entry)
     return { nodeId: uuid(node.nodeId), hostname: text(node.hostname),
@@ -267,13 +292,35 @@ export function parseManagedNodes(value: unknown): ManagedNodeSummary[] {
                 return { vendor: text(gpu.vendor), model: text(gpu.model), memoryBytes: nullable(gpu.memoryBytes, integer),
                   computeCapability: nullable(gpu.computeCapability, text), uuid: nullable(gpu.uuid ?? null, text) }
               }) }
-          }) }
+          }),
+          updates: nullable(status.updates ?? null, entry => {
+            const updates = object(entry)
+            const count = nonnegative(updates.count), securityCount = nonnegative(updates.securityCount)
+            if (!Number.isSafeInteger(count) || !Number.isSafeInteger(securityCount) || securityCount > count) throw invalid()
+            return { state: enumeration(updates.state, ['Idle', 'Checking', 'Installing', 'Failed'] as const),
+              checkedAt: nullable(updates.checkedAt, timestamp), count, securityCount,
+              packages: array(updates.packages, entry => {
+                const item = object(entry)
+                return { name: text(item.name), current: nullable(item.current, text), candidate: text(item.candidate), security: boolean(item.security) }
+              }),
+              restartRequired: boolean(updates.restartRequired), message: optionalText(updates.message ?? null) }
+          }),
+          agentRelease: nullable(status.agentRelease ?? null, text),
+          cpuPercent: nullable(status.cpuPercent ?? null, percent), cpuTemperatureCelsius: nullable(status.cpuTemperatureCelsius ?? null, celsius),
+          gpuPercent: nullable(status.gpuPercent ?? null, percent), gpuTemperatureCelsius: nullable(status.gpuTemperatureCelsius ?? null, celsius) }
+      }),
+      history: node.history === undefined ? [] : array(node.history, entry => {
+        const sample = object(entry)
+        return { at: timestamp(sample.at), cpu: nullable(sample.cpu ?? null, percent), memory: percent(sample.memory),
+          gpu: nullable(sample.gpu ?? null, percent), cpuTemperature: nullable(sample.cpuTemperature ?? null, celsius),
+          gpuTemperature: nullable(sample.gpuTemperature ?? null, celsius) }
       }),
       gpu: node.gpu === undefined || node.gpu === null ? { cudaLine: null } : (() => {
         const gpu = object(node.gpu)
         return { cudaLine: nullable(gpu.cudaLine, line => { if (line !== 12 && line !== 13) throw invalid(); return line as CudaLine }) }
       })(),
-      gpuWarning: nullable(node.gpuWarning ?? null, text) }
+      gpuWarning: nullable(node.gpuWarning ?? null, text),
+      agentUpdateAvailable: nullable(node.agentUpdateAvailable ?? null, boolean) }
   })
 }
 
@@ -341,7 +388,13 @@ export type OnboardingAction =
   | { kind: 'reject'; deviceId: string }
   | { kind: 'dismiss' | 'restore'; deviceId: string }
   | { kind: 'approve'; deviceId: string; approval: InstallApproval }
+  | { kind: 'remove'; deviceId: string }
+  | { kind: 'node'; nodeId: string; action: NodeAction }
 
+export type NodeAction = 'check-updates' | 'install-updates' | 'restart' | 'update-agent'
+const nodeActionPaths: Record<NodeAction, string> = {
+  'check-updates': 'updates/check', 'install-updates': 'updates/install', restart: 'restart', 'update-agent': 'agent/update',
+}
 export function onboardingRequest(session: AuthenticationSession, action: OnboardingAction): { url: string; init: RequestInit } {
   if (!session.authenticated || !session.canAccess || !session.isOwner) throw new Error('Owner access is needed to manage hardware.')
   const init: RequestInit = { credentials: 'same-origin', cache: 'no-store', method: 'GET' }
@@ -349,11 +402,16 @@ export function onboardingRequest(session: AuthenticationSession, action: Onboar
   if (action.kind === 'snapshot') return { url, init }
   if (action.kind === 'managed') return { url: '/api/host/nodes', init }
   if (!session.csrfToken) throw new Error('Your session is missing its security token. Sign in again before making changes.')
-  init.method = action.kind === 'close' ? 'DELETE' : 'POST'
+  init.method = action.kind === 'close' || action.kind === 'remove' ? 'DELETE' : 'POST'
   init.headers = { 'X-CSRF-TOKEN': session.csrfToken }
   if (action.kind === 'open' || action.kind === 'close') {
     url += '/window'
     if (action.kind === 'open') init.body = JSON.stringify({ minutes: 30 })
+  } else if (action.kind === 'remove') {
+    url = `/api/host/devices/${uuid(action.deviceId)}`
+  } else if (action.kind === 'node') {
+    if (!Object.prototype.hasOwnProperty.call(nodeActionPaths, action.action)) throw new Error('That machine action isn’t available.')
+    url = `/api/host/nodes/${uuid(action.nodeId)}/${nodeActionPaths[action.action]}`
   } else {
     url = `/api/host/devices/${uuid(action.deviceId)}/${action.kind === 'approve' ? 'approve-install' : action.kind}`
     if (action.kind === 'approve') {

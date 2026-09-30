@@ -40,6 +40,7 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import signal
 import stat
 import subprocess
@@ -576,6 +577,41 @@ def handle(p, directory, path):
     }) + "\n")
 
 
+def remove(p, directory, path):
+    # Retire a removed machine's LDAP reader and enrollment receipt, only once Lucia no longer knows the machine.
+    value = parse_json(safe_bytes(path, 4096))
+    require(isinstance(value, dict) and set(value) == {"schemaVersion", "nodeId"} and value["schemaVersion"] == 1
+            and isinstance(value["nodeId"], str) and value["nodeId"] == path.stem and guid(path.stem))
+    node_id = path.stem
+    journal = parse_json(safe_bytes(p.load_scoped().parent / "onboarding" / "state.json", 32 * 1024 * 1024))
+    require(isinstance(journal, dict) and isinstance(journal.get("devices"), list)
+            and all(isinstance(row, dict) and isinstance(row.get("device"), dict) for row in journal["devices"]))
+    require(not any(row["device"].get("id") == node_id for row in journal["devices"]))
+    for queue in ("identities", "enrollment-requests"):
+        require(not os.path.lexists(directory / queue / path.name))
+    with lease(ROOT.parent / ".run.lock"), lease(p.state / ".provision.lock"):
+        p.deadline = time.monotonic() + 120
+        require(p.load_scoped() == directory)
+        uid = "node-" + node_id.replace("-", "")
+        dn = f"uid={uid},ou=Services,{p.settings['ldap_base_dn']}"
+        entries = owner.ldap_search(p, None, f"(uid={uid})", "description")
+        if entries:
+            entry = {k.lower(): v for k, v in entries[0].items()}
+            require(len(entries) == 1 and entry.get("dn") == [dn]
+                    and entry.get("description") == ["Lucia managed node " + node_id])
+            owner.ldap_command(p, "ldapdelete", dn)
+        receipt = p.state / "node-enrollment" / path.name
+        if os.path.lexists(receipt):
+            require(receipt.is_file() and not receipt.is_symlink())
+            receipt.unlink()
+        workspace = p.state / "certificates" / "node-enrollment" / node_id
+        if os.path.lexists(workspace):
+            require(workspace.is_dir() and not workspace.is_symlink())
+            shutil.rmtree(workspace)
+    path.unlink()
+    print(json.dumps({"event": "node-removed", "nodeId": node_id}), flush=True)
+
+
 def candidates(directory):
     fd = open_directory(directory)
     try:
@@ -607,7 +643,7 @@ def run():
     p = Native(argparse.Namespace(state=str(state)))
     directory = p.load_scoped()
     private_directory(directory)
-    for name in ("enrollment-requests", "enrollment-responses"):
+    for name in ("enrollment-requests", "enrollment-responses", "removals"):
         private_directory(directory / name)
     stopping = False
     def stop(*_):
@@ -628,6 +664,16 @@ def run():
                     # Unreadable/symlink/FIFO input has no safe snapshot to acknowledge.
                     print('{"event":"node-enrollment-unsafe-queue-file"}', flush=True)
                 write_file(heartbeat, json.dumps({"schemaVersion": 1, "ready": True, "checkedAt": now().isoformat()}) + "\n")
+            for path in candidates(directory / "removals"):
+                if stopping:
+                    break
+                try:
+                    remove(p, directory, path)
+                except BlockingIOError:
+                    pass  # Shared native jobs own the lease; retry next poll.
+                except Exception as error:
+                    print(json.dumps({"event": "node-removal-failed", "nodeId": path.stem,
+                                      "errorType": type(error).__name__}), flush=True)
             time.sleep(5)
     finally:
         write_file(heartbeat, json.dumps({"schemaVersion": 1, "ready": False, "checkedAt": now().isoformat()}) + "\n")

@@ -197,6 +197,137 @@ internal static class StackChecks
             "Plex must mount its media folders at the same paths, keep its claim token out of the manifest and reserve a GPU only for NVIDIA transcoding.");
         Rejects(() => plex.Render(StackCatalog.Settings(plex, new() { ["media"] = "/srv/media" }), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()),
             "Plex must refuse a media folder outside a NAS share.");
+        var sonarr = StackCatalog.Find("sonarr");
+        var so = sonarr.Render(StackCatalog.Settings(sonarr, new() { ["media"] = "/mnt/lucia/nas/unas/Media/", ["also-at"] = "/qbitvpn, /media2/", ["downloads"] = "/mnt/lucia/nas/unas/Media/downloads" }),
+            new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        check(so.Env == "" && sonarr.BackupMode == "stop" && so.Require is ["nas=unas/Media"] && so.Routes is [{ Host: "sonarr", Port: 8989 }]
+            && so.Compose.Contains("""
+                      - "/mnt/lucia/nas/unas/Media:/data"
+                      - "/mnt/lucia/nas/unas/Media:/qbitvpn"
+                      - "/mnt/lucia/nas/unas/Media:/media2"
+                      - "/mnt/lucia/nas/unas/Media/downloads:/downloads"
+                    ports:
+                      - "8989:8989"
+                    depends_on:
+                      init:
+                        condition: service_completed_successfully
+                volumes:
+                  config:
+
+                """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
+            && so.Compose.Contains("    user: \"1000:1000\"\n    environment:\n      SONARR__SERVER__PORT: \"8989\"\n", StringComparison.Ordinal)
+            && so.Compose.Contains("chown -R 1000:1000 /config", StringComparison.Ordinal),
+            "Sonarr must run as its owner with its config folder given to it, and show the media folder at every old path.");
+        var lidarr = StackCatalog.Find("lidarr").Render(StackCatalog.Settings(StackCatalog.Find("lidarr"), []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        var flare = StackCatalog.Find("flaresolverr");
+        var fs = flare.Render(StackCatalog.Settings(flare, []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        check(!lidarr.Compose.Contains("init:", StringComparison.Ordinal) && lidarr.Compose.Contains("      PUID: \"1000\"\n", StringComparison.Ordinal) && lidarr.Require.Length == 0
+            && flare.Fields.All(field => field.Id == "port") && fs.Routes is [] && flare.BackupMode == "live" && !fs.Compose.Contains("volumes:\n  config:", StringComparison.Ordinal)
+            && StackCatalog.Find("seerr").Render(StackCatalog.Settings(StackCatalog.Find("seerr"), []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>())
+                .Compose.Contains("      - config:/app/config\n", StringComparison.Ordinal),
+            "PUID images must take the owner by environment, and FlareSolverr must keep nothing and have no web address.");
+        foreach (var bad in new[] { "/config", "/data/x", "relative", "/etc/passwd" })
+            Rejects(() => sonarr.Render(StackCatalog.Settings(sonarr, new() { ["media"] = "/mnt/lucia/nas/unas/Media", ["also-at"] = bad }),
+                new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()), $"Sonarr must refuse the media path {bad}.");
+        Rejects(() => sonarr.Render(StackCatalog.Settings(sonarr, new() { ["also-at"] = "/tv" }), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()),
+            "Other media paths must need a media folder.");
+        var downloads = StackCatalog.Find("download-client");
+        var dlSettings = StackCatalog.Settings(downloads, new() { ["client"] = "soulseek", ["web-host"] = "soulseek", ["port"] = "6080",
+            ["downloads"] = "/mnt/lucia/nas/unas/Media/soulseek/downloads", ["media"] = "/mnt/lucia/nas/unas/Media/soulseek/shared",
+            ["vpn-user"] = "p123", ["vpn-password"] = "pw-1", ["vpn-regions"] = "Netherlands,US East", ["port-forwarding"] = "on", ["local-networks"] = "192.168.0.0/23, 192.168.4.0/23" });
+        var dl = downloads.Render(dlSettings, new(Guid.NewGuid(), "lucialab01", true, null), StackCatalog.KeepSecrets(downloads, dlSettings, []));
+        check(dlSettings["vpn-password"] == "" && dl.Env == "VPN_USER=p123\nVPN_PASSWORD=pw-1\n" && dl.Require is ["nas=unas/Media"] && dl.Routes is [{ Host: "soulseek", Port: 6080 }]
+            && dl.Compose.Contains("""
+                      VPN_PORT_FORWARDING: "on"
+                      PORT_FORWARD_ONLY: "true"
+                      SERVER_REGIONS: "Netherlands,US East"
+                      FIREWALL_OUTBOUND_SUBNETS: "192.168.0.0/23,192.168.4.0/23"
+                    volumes:
+                      - vpn:/gluetun
+                    ports:
+                      - "6080:6080"
+                  soulseek:
+                """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
+            && dl.Compose.Contains("""
+                    network_mode: service:vpn
+                    environment:
+                      PUID: "1000"
+                      PGID: "1000"
+                    volumes:
+                      - config:/data
+                      - /etc/localtime:/etc/localtime:ro
+                      - "/mnt/lucia/nas/unas/Media/soulseek/downloads:/data/Soulseek Downloads"
+                      - "/mnt/lucia/nas/unas/Media/soulseek/shared:/data/Soulseek Shared Folder"
+                    depends_on:
+                """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
+            && !dl.Compose.Contains("pw-1", StringComparison.Ordinal),
+            "The download client must route through gluetun, keep the VPN account in its environment and mount Soulseek's folders in its home.");
+        Rejects(() => downloads.Render(StackCatalog.Settings(downloads, []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()),
+            "The download client must need a VPN account.");
+        Rejects(() => downloads.Render(StackCatalog.Settings(downloads, new() { ["vpn-provider"] = "pia\" x" }), new(Guid.NewGuid(), "lucialab01", true, null),
+            new Dictionary<string, string> { ["VPN_USER"] = "u", ["VPN_PASSWORD"] = "p" }), "The download client must refuse a provider that could break its compose.");
+        var home = new Lucia.Homelab.Server.Nodes.ManagedNodeFacts(Guid.NewGuid(), "lucialab01", true, null);
+        var none = new Dictionary<string, string>();
+        var ha = StackCatalog.Find("home-assistant");
+        var haOut = ha.Render(StackCatalog.Settings(ha, null), home, none);
+        check(ha.BackupMode == "stop" && haOut.Env == "" && haOut.Routes is [{ Host: "homeassistant", Port: 8123 }]
+            && haOut.Compose.Contains("    network_mode: host\n", StringComparison.Ordinal)
+            && haOut.Compose.Contains("\"[ -e /config/configuration.yaml ] || {", StringComparison.Ordinal)
+            && haOut.Compose.Contains("        use_x_forwarded_for: true\n", StringComparison.Ordinal),
+            "Home Assistant must use the host's network, leave an existing configuration alone and trust Lucia's gateway in a new one.");
+        var mosquitto = StackCatalog.Find("mosquitto");
+        var mqSettings = StackCatalog.Settings(mosquitto, new() { ["mqtt-password"] = "pw-1" });
+        var mq = mosquitto.Render(mqSettings, home, StackCatalog.KeepSecrets(mosquitto, mqSettings, []));
+        check(mqSettings["mqtt-password"] == "" && mq.Env == "MQTT_PASSWORD=pw-1\n" && !mq.Compose.Contains("pw-1", StringComparison.Ordinal)
+            && mq.Compose.Contains("      MQTT_USER: \"homeassistant\"\n", StringComparison.Ordinal)
+            && mq.Compose.Contains("      allow_anonymous false\n", StringComparison.Ordinal) && mq.Compose.Contains("      - \"1883:1883\"\n", StringComparison.Ordinal),
+            "Mosquitto must refuse anonymous clients and keep its login's password in its environment.");
+        Rejects(() => mosquitto.Render(StackCatalog.Settings(mosquitto, []), home, none), "Mosquitto must need a password.");
+        Rejects(() => mosquitto.Render(StackCatalog.Settings(mosquitto, new() { ["mqtt-user"] = "a\" b" }), home, new Dictionary<string, string> { ["MQTT_PASSWORD"] = "p" }),
+            "Mosquitto must refuse a username that could break its compose.");
+        var voice = StackCatalog.Find("voice");
+        var vo = voice.Render(StackCatalog.Settings(voice, null), home, none);
+        check(vo.Routes is null && voice.BackupExclude is ["volumes/whisper", "volumes/piper"]
+            && vo.Compose.Contains("    command: [\"--model\", \"auto\", \"--language\", \"en\"]\n", StringComparison.Ordinal)
+            && vo.Compose.Contains("    command: [\"--voice\", \"en_US-lessac-medium\"]\n", StringComparison.Ordinal),
+            "Voice must pass its model, language and voice to the Wyoming servers and skip the models in backups.");
+        Rejects(() => voice.Render(StackCatalog.Settings(voice, new() { ["language"] = "en\", \"--x" }), home, none), "Voice must refuse a language that could break its compose.");
+        var runner = StackCatalog.Find("github-runner");
+        var runnerSettings = StackCatalog.Settings(runner, new()
+        {
+            ["repositories"] = "https://github.com/seiggy/lucia.os/, seiggy/lucia-dotnet, seiggy, other/lucia.os", ["access-token"] = "github_pat_" + new string('a', 40), ["labels"] = "arm, LuciaLab01",
+        });
+        var gr = runner.Render(runnerSettings, home, StackCatalog.KeepSecrets(runner, runnerSettings, []));
+        check(runner.RunsOnSpark && gr.Env == $"ACCESS_TOKEN=github_pat_{new string('a', 40)}\n" && !gr.Compose.Contains("github_pat_", StringComparison.Ordinal)
+            && gr.Compose.Contains("  runner-lucia-os:\n", StringComparison.Ordinal) && gr.Compose.Contains("  runner-lucia-os-2:\n", StringComparison.Ordinal)
+            && gr.Compose.Contains("      REPO_URL: \"https://github.com/seiggy/lucia.os\"\n", StringComparison.Ordinal)
+            && gr.Compose.Contains("      RUNNER_SCOPE: org\n      ORG_NAME: \"seiggy\"\n", StringComparison.Ordinal)
+            && gr.Compose.Contains("      LABELS: \"lucialab01,arm\"\n", StringComparison.Ordinal)
+            && gr.Compose.Contains("      EPHEMERAL: \"true\"\n", StringComparison.Ordinal)
+            && gr.Compose.Contains("    privileged: true\n", StringComparison.Ordinal) && !gr.Compose.Contains("docker.sock:/var/run", StringComparison.Ordinal)
+            && !gr.Compose.Contains("2375", StringComparison.Ordinal) && runner.BackupExclude.Contains("volumes/docker"),
+            "The GitHub runner must run one ephemeral runner per repository on its own Docker, with the token only in its environment.");
+        Rejects(() => runner.Render(StackCatalog.Settings(runner, new() { ["repositories"] = "seiggy/lucia.os" }), home, none), "The GitHub runner must need a token.");
+        foreach (var bad in new[] { "", "a/b/c", "seiggy/lucia.os.git", "seiggy/\"x", string.Join(',', Enumerable.Range(1, 9).Select(n => $"o/r{n}")) })
+            Rejects(() => GitHubRunnerApp.Repositories(bad), $"The GitHub runner must refuse repositories \"{bad}\".");
+        Rejects(() => GitHubRunnerApp.Labels("ok, bad label", "x"), "The GitHub runner must refuse a label that could break its compose.");
+        var esphome = StackCatalog.Find("esphome").Render(StackCatalog.Settings(StackCatalog.Find("esphome"), null), home, none);
+        var matter = StackCatalog.Find("matter-server");
+        var ms = matter.Render(StackCatalog.Settings(matter, null), home, none);
+        var nodeRed = StackCatalog.Find("node-red").Render(StackCatalog.Settings(StackCatalog.Find("node-red"), new() { ["port"] = "1881" }), home, none);
+        check(esphome.Routes is [{ Host: "esphome", Port: 6052 }] && esphome.Compose.Contains("    network_mode: host\n", StringComparison.Ordinal)
+            && !esphome.Compose.Contains("ports:", StringComparison.Ordinal) && !esphome.Compose.Contains("init:", StringComparison.Ordinal)
+            && matter.Fields.Length == 0 && ms.Routes is [] && ms.Compose.Contains("chown -R 1000:1000 /data", StringComparison.Ordinal)
+            && nodeRed.Routes is [{ Host: "node-red", Port: 1881 }] && nodeRed.Compose.Contains("""
+                    user: "1000:1000"
+                    volumes:
+                      - data:/data
+                      - /etc/localtime:/etc/localtime:ro
+                    ports:
+                      - "1881:1880"
+                    depends_on:
+                """.ReplaceLineEndings("\n"), StringComparison.Ordinal),
+            "Home Assistant's companions must use the host's network only where they find devices, and give their data to the user they run as.");
         Rejects(() => StackStore.ValidateName(StackStore.RelayName), "An app could take the telemetry relay's name.");
         var relayConfig = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"lucialab01\"", true,
             [new("vllm", "127.0.0.1:8000"), new("llama-cpp", "127.0.0.1:8080", ["org/model:Q4_K_M"])],
@@ -426,5 +557,31 @@ internal static class StackChecks
         var abandoned = transfers.Receive(cancelled, new MemoryStream(), CancellationToken.None);
         transfers.Forget(cancelled);
         check(!await abandoned.WaitAsync(TimeSpan.FromSeconds(5)), "A cancelled move left its receiver waiting.");
+
+        check(StackImages.Compare("v8.9.0-ls104", "v9.1.0-ls108") > 0 && StackImages.Compare("v8.9.0-ls104", "v8.9.0-ls105") > 0
+            && StackImages.Compare("v8.9.0-ls104", "9.1.0-dev") == 0 && StackImages.Compare("2026.9.2", "2026.10.0b1") == 0
+            && StackImages.Compare("2026.9.2", "2026.10.0") > 0 && StackImages.Compare("2026.9.2", "2026.9.1") < 0
+            && StackImages.Compare("1.43.4.10903-e5521bd8c-ls326", "1.43.5.11000-0ab12cd34-ls327") > 0
+            && StackImages.Version("latest") is null, "Image tags compared wrongly.");
+        check(new ImageRef("lscr.io/linuxserver/plex", "1", null).Source == ("lscr.io", "linuxserver/plex")
+            && new ImageRef("eclipse-mosquitto", "2", null).Source == ("registry-1.docker.io", "library/eclipse-mosquitto")
+            && new ImageRef("docker.io/valkey/valkey", "9", null).Source == ("registry-1.docker.io", "valkey/valkey")
+            && new ImageRef("grafana/loki", "3", null).Source == ("registry-1.docker.io", "grafana/loki"), "An image's registry was misread.");
+        check(StackImages.DataStore("ghcr.io/immich-app/postgres") && StackImages.DataStore("valkey/valkey")
+            && StackImages.DataStore("metabrainz/musicbrainz-docker-db") && !StackImages.DataStore("docker.litellm.ai/berriai/litellm-database"),
+            "A database image was offered major upgrades, or an app wasn't.");
+        const string pinnedCompose = "services:\n  a:\n    image: lscr.io/linuxserver/nzbhydra2:v8.9.0-ls104@sha256:aa\n  b:\n    image: \"nodered/node-red:5.0.4\"\n  c:\n    image: ${IMAGE}\n";
+        var upgraded = StackImages.Apply(pinnedCompose, new Dictionary<string, string>
+        {
+            ["lscr.io/linuxserver/nzbhydra2"] = "v9.1.0-ls108@sha256:bb", ["nodered/node-red"] = "5.1.0@sha256:cc",
+        });
+        check(upgraded.Contains("image: lscr.io/linuxserver/nzbhydra2:v9.1.0-ls108@sha256:bb\n", StringComparison.Ordinal)
+            && upgraded.Contains("image: \"nodered/node-red:5.1.0\"\n", StringComparison.Ordinal) && upgraded.Contains("image: ${IMAGE}\n", StringComparison.Ordinal),
+            "Upgrading rewrote a compose's images wrongly.");
+        check(StackImages.Keep(pinnedCompose, new Dictionary<string, string> { ["lscr.io/linuxserver/nzbhydra2"] = "v9.1.0-ls108@sha256:bb" })?.Count == 1
+            && StackImages.Keep(pinnedCompose, new Dictionary<string, string> { ["lscr.io/linuxserver/nzbhydra2"] = "v8.9.0-ls104@sha256:aa" }) is null
+            && StackImages.Keep(pinnedCompose, new Dictionary<string, string> { ["gone/app"] = "2.0@sha256:dd" }) is null,
+            "A catalog app kept an image override its catalog had caught up with.");
+        check(!StackImages.Refs($"services:\n  init:\n    image: {ObservabilityApp.Alpine}\n").Any(), "Lucia's own helper image was offered as an app update.");
     }
 }

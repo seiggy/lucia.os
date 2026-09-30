@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
+import type { IconName } from './Icon'
 import { ownerRequest } from './managementApi'
 import { cudaLines, cudaLineUnsupported, formatBytes, formatCountdown, installationBlockers, isInstallableDisk, parseOnboardingSnapshot, parseManagedNodes, requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries } from './onboarding'
-import type { CudaLine, DevicePhase, InstallationTask, OnboardingAction, OnboardingDevice, OnboardingSnapshot, TaskPhase, ManagedNodeSummary, NodeRuntimeSummary } from './onboarding'
+import type { CudaLine, DevicePhase, InstallationTask, NodeAction, OnboardingAction, OnboardingDevice, OnboardingSnapshot, TaskPhase, ManagedNodeSummary, NodeRuntimeSummary } from './onboarding'
+import { ServerUsage } from './ServerUsage'
+import { parseStackList } from './stackManagement'
 import './HardwareOnboarding.css'
 
 interface HardwareOnboardingProps {
@@ -33,6 +36,8 @@ function DateTime({ value }: { value: string }) {
 function useOnboarding(session: AuthenticationSession, refreshSession: () => Promise<void>) {
   const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null)
   const [nodes, setNodes] = useState<ManagedNodeSummary[]>([])
+  const [apps, setApps] = useState<Record<string, number> | null>(null)
+  const appsReadAt = useRef(0)
   const [nodeError, setNodeError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -68,6 +73,17 @@ function useOnboarding(session: AuthenticationSession, refreshSession: () => Pro
             if (alive && !controller.signal.aborted) { setNodes(records); setNodeError(null) }
           } catch (failure) {
             if (alive && !controller.signal.aborted) setNodeError(failure instanceof Error ? failure.message : 'Managed-node status is unavailable.')
+          }
+          if (Date.now() - appsReadAt.current > 30_000) {
+            appsReadAt.current = Date.now()
+            try {
+              const stacks = parseStackList(await (await ownerRequest(session, refreshSession, '/api/host/stacks', 'GET', undefined, controller.signal)).json())
+              const counts: Record<string, number> = {}
+              for (const stack of stacks) if (stack.nodeId) counts[stack.nodeId] = (counts[stack.nodeId] ?? 0) + 1
+              if (alive && !controller.signal.aborted) setApps(counts)
+            } catch {
+              // The app count is a nicety on each server card; leave it out rather than fail the page.
+            }
           }
         }
         return true
@@ -132,7 +148,7 @@ function useOnboarding(session: AuthenticationSession, refreshSession: () => Pro
     }
   }
 
-  return { snapshot, nodes, nodeError, error, actionError, notice, loading, busy, refresh: () => refresh.current(), perform }
+  return { snapshot, nodes, apps, nodeError, error, actionError, notice, loading, busy, refresh: () => refresh.current(), perform }
 }
 
 export function HardwareOnboarding(props: HardwareOnboardingProps) {
@@ -149,11 +165,22 @@ export function HardwareOnboarding(props: HardwareOnboardingProps) {
 }
 
 function OwnerOnboarding({ session, refreshSession, view }: HardwareOnboardingProps) {
-  const { snapshot, nodes, nodeError, error, actionError, notice, loading, busy, refresh, perform } = useOnboarding(session, refreshSession)
+  const { snapshot, nodes, apps, nodeError, error, actionError, notice, loading, busy, refresh, perform } = useOnboarding(session, refreshSession)
   const [now, setNow] = useState(() => Date.now())
   const [showDismissed, setShowDismissed] = useState(false)
+  const [showFinished, setShowFinished] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
+  const [selected, setSelected] = useState<string | null>(null)
   const devices = snapshot ? visibleDiscoveries(snapshot.devices, showDismissed) : []
+  const servers = showDismissed ? [] : devices.filter(device => device.phase === 'Managed')
+  const others = devices.filter(device => !servers.includes(device))
+  const chosen = servers.find(device => device.id === selected)
+  const title = (device: OnboardingDevice) => snapshot?.tasks.find(task => task.id === device.taskId)?.hostname
+    || [device.hardware.manufacturer, device.hardware.model].filter(Boolean).join(' ') || 'Discovered device'
   const dismissedCount = snapshot ? visibleDiscoveries(snapshot.devices, true).length : 0
+  const openTasks = snapshot?.tasks.filter(taskOpen) ?? []
+  const finishedCount = (snapshot?.tasks.length ?? 0) - openTasks.length
+  const tasks = showFinished ? snapshot?.tasks ?? [] : openTasks
   const hasExpiry = !!snapshot && (snapshot.window.isOpen || snapshot.devices.some(device => device.phase === 'Discovered'))
   useEffect(() => {
     if (!hasExpiry) return
@@ -199,64 +226,164 @@ function OwnerOnboarding({ session, refreshSession, view }: HardwareOnboardingPr
     {loading && !snapshot && !error && <p className="hardware-loading" role="status"><Icon name="clock" />Reading hardware status from your host…</p>}
 
     {view === 'devices' && <section className="surface hardware-window" aria-labelledby="hardware-window-heading">
+      <h2 id="hardware-window-heading" className="visually-hidden">Hardware discovery</h2>
       <div className="hardware-window-row">
-        <div>
-          <h2 id="hardware-window-heading">Hardware discovery</h2>
-          <p id="hardware-window-description" className={`status status-${error ? 'amber' : open ? 'green' : 'muted'}`}>
-            <Icon name={error ? 'attention' : open ? 'clock' : 'shield'} />
-            {error ? 'Current status unavailable' : !snapshot ? 'Checking status' : open ? remaining > 0 ? `Open · ${formatCountdown(remaining)} remaining` : 'Checking window expiry' : 'Off'}
-          </p>
-          {open && snapshot?.window.expiresAt && <p className="hardware-meta">Closes <DateTime value={snapshot.window.expiresAt} /></p>}
-        </div>
+        <p id="hardware-window-description" className={`status status-${error ? 'amber' : open ? 'green' : 'muted'}`}>
+          <Icon name={error ? 'attention' : open ? 'clock' : 'shield'} />
+          {error ? 'Discovery status unavailable' : !snapshot ? 'Checking discovery' : open ? remaining > 0 ? `Discovery open · ${formatCountdown(remaining)} left` : 'Checking window expiry' : 'Discovery off'}
+        </p>
+        <p className="hardware-window-note">{open && snapshot?.window.expiresAt
+          ? <>Closes <DateTime value={snapshot.window.expiresAt} />. Stopping it doesn’t cancel installations you’ve approved.</>
+          : snapshot?.readiness.canInstall ? 'Installation prerequisites confirmed by the host. Each device still needs your approval.'
+            : 'Add hardware opens a 30-minute window for read-only discovery.'}</p>
         {snapshot?.window.isOpen && <div className="hardware-actions">
           <button className="button secondary" disabled={disabled || !snapshot.readiness.canDiscover} onClick={() => void perform({ kind: 'open' }, 'The hardware discovery window was extended.')}>Extend 30 minutes</button>
           <button className="button secondary" disabled={disabled} onClick={() => void perform({ kind: 'close' }, 'Hardware discovery was stopped. Previously approved installations were not cancelled.')}><Icon name="stop" />Stop discovery</button>
         </div>}
+        <button className="text-link hardware-help-toggle" aria-expanded={showHelp} aria-controls="hardware-help" onClick={() => setShowHelp(value => !value)}>
+          How adding hardware works<Icon name={showHelp ? 'down' : 'chevron'} /></button>
       </div>
-      <p>Off by default. Add hardware opens a 30-minute window for read-only discovery. It does not erase disks or install anything.</p>
-      <p className="hardware-meta">Stopping the window prevents new discoveries. It does not cancel installations you have already approved.</p>
       {snapshot && !snapshot.readiness.canInstall && <div className="hardware-readiness">
         <h3>{snapshot.readiness.canDiscover ? 'Discovery is ready. Installation is not.' : 'Setup is needed before discovery.'}</h3>
         {snapshot.readiness.reasons.length > 0 ? <ul>{snapshot.readiness.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
           : <p>The host has not confirmed its prerequisites. Check the host configuration before continuing.</p>}
         <p>No installation can start until boot, private CA, and directory enrollment are qualified by the host.</p>
       </div>}
-      {snapshot?.readiness.canInstall && <p className="status status-green"><Icon name="check" />Installation prerequisites confirmed by the host. Each device still needs your approval.</p>}
-      <details><summary>Connect your first device</summary>
+      {showHelp && <div id="hardware-help" className="hardware-help">
+        <p>Off by default. Add hardware opens a 30-minute window for read-only discovery. It does not erase disks or install anything.</p>
+        <p>Stopping the window prevents new discoveries. It does not cancel installations you have already approved.</p>
+        <h3>Connect your first device</h3>
         <p>Keep UniFi as your DHCP server. Complete its one-time network-boot settings first: use the Spark’s IP address as the boot server and <code>debian-installer/amd64/bootnetx64.efi</code> as the x86_64 UEFI boot file.</p>
         <p>The controller’s HTTPS hostname must resolve in local DNS. Connect the device to the configured provisioning network, then choose its network boot option.</p>
         <p>This development profile is being qualified on x86_64 UEFI with Secure Boot already off. Lucia reports that setting; it does not change firmware security settings.</p>
         <p>Compare the reported hardware with the physical device before approving a disk. Nothing is automatically reinstalled.</p>
-      </details>
+      </div>}
     </section>}
 
     {snapshot && (view === 'devices'
-      ? <section className="hardware-list-section" aria-labelledby="hardware-list-heading">
-        <div className="hardware-section-heading"><h2 id="hardware-list-heading" tabIndex={-1}>{showDismissed ? 'Dismissed discoveries' : 'Reported devices'}</h2>
+      ? <>
+        {servers.length > 0 && <section className="hardware-list-section" aria-labelledby="servers-heading">
+          <div className="hardware-section-heading">
+            <div><h2 id="servers-heading">Your servers</h2>
+              <p className="hardware-meta">{servers.length} managed · readings every 30 seconds</p></div>
+            <div className="hardware-actions">
+              {others.length === 0 && dismissedCount > 0 && <button className="text-link" onClick={() => setShowDismissed(true)}>View dismissed ({dismissedCount})</button>}
+              <button className="text-link" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</button>
+            </div>
+          </div>
+          <div className="server-grid">{servers.map(device => <ServerCard key={device.id} device={device} title={title(device)}
+            node={nodes.find(node => node.nodeId === device.id)} apps={apps?.[device.id]} selected={device.id === selected}
+            onManage={() => setSelected(value => value === device.id ? null : device.id)} />)}</div>
+          {chosen && <ServerDetail key={chosen.id} device={chosen} title={title(chosen)} node={nodes.find(node => node.nodeId === chosen.id)}
+            disabled={disabled} perform={perform} session={session} refreshSession={refreshSession} refresh={refresh}
+            onClose={() => { setSelected(null); document.getElementById(`manage-${chosen.id}`)?.focus() }} />}
+        </section>}
+        {(showDismissed || others.length > 0 || servers.length === 0) && <section className="hardware-list-section" aria-labelledby="hardware-list-heading">
+          <div className="hardware-section-heading"><h2 id="hardware-list-heading" tabIndex={-1}>{showDismissed ? 'Dismissed discoveries' : servers.length ? 'Other devices' : 'Reported devices'}</h2>
+            <div className="hardware-actions">
+              {(dismissedCount > 0 || showDismissed) && <button className="text-link" onClick={() => setShowDismissed(value => !value)}>
+                {showDismissed ? 'Back to devices' : `View dismissed (${dismissedCount})`}</button>}
+              {servers.length === 0 && <button className="text-link" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</button>}
+            </div>
+          </div>
+          {others.length > 0 ? <div className="surface hardware-list">{others.map(device =>
+            <DeviceEntry key={device.id} device={device} title={title(device)} snapshot={snapshot} now={now} disabled={disabled} perform={perform}
+              session={session} refreshSession={refreshSession} />)}</div>
+            : !error && <div className="hardware-empty"><Icon name="devices" /><h3>{showDismissed ? 'No dismissed discoveries.' : dismissedCount > 0 ? 'No devices to show.' : 'No devices have been reported.'}</h3>
+              <p>{showDismissed ? 'Dismissed discoveries stay rejected. Restoring a record only returns it to the device list.'
+                : dismissedCount > 0 ? 'Your dismissed discoveries are kept out of this list. You can view or restore them from View dismissed.'
+                  : open ? 'The window is open. A device will appear after its read-only discovery reaches the host.' : 'When discovery is ready, choose Add hardware and network-boot the device you want to add.'}</p></div>}
+        </section>}
+      </>
+      : <section aria-labelledby="hardware-tasks-heading">
+        <div className="hardware-section-heading"><h2 id="hardware-tasks-heading">{showFinished ? 'All installation tasks' : 'Installation tasks'}</h2>
           <div className="hardware-actions">
-            {(dismissedCount > 0 || showDismissed) && <button className="text-link" onClick={() => setShowDismissed(value => !value)}>
-              {showDismissed ? 'Back to devices' : `View dismissed (${dismissedCount})`}</button>}
+            {(finishedCount > 0 || showFinished) && <button className="text-link" onClick={() => setShowFinished(value => !value)}>
+              {showFinished ? 'Hide finished' : `Show finished (${finishedCount})`}</button>}
             <button className="text-link" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</button>
           </div>
         </div>
-        {devices.length > 0 ? <div className="surface hardware-list">{devices.map(device =>
-          <DeviceEntry key={device.id} device={device} snapshot={snapshot} now={now} disabled={disabled} perform={perform}
-            session={session} refreshSession={refreshSession} managed={nodes.find(node => node.nodeId === device.id)} refresh={refresh} />)}</div>
-          : !error && <div className="hardware-empty"><Icon name="devices" /><h3>{showDismissed ? 'No dismissed discoveries.' : dismissedCount > 0 ? 'No devices to show.' : 'No devices have been reported.'}</h3>
-            <p>{showDismissed ? 'Dismissed discoveries stay rejected. Restoring a record only returns it to the device list.'
-              : dismissedCount > 0 ? 'Your dismissed discoveries are kept out of this list. You can view or restore them from View dismissed.'
-                : open ? 'The window is open. A device will appear after its read-only discovery reaches the host.' : 'When discovery is ready, choose Add hardware and network-boot the device you want to add.'}</p></div>}
-      </section>
-      : <section aria-labelledby="hardware-tasks-heading">
-        <div className="hardware-section-heading"><h2 id="hardware-tasks-heading">Installation tasks</h2><button className="text-link" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</button></div>
-        {snapshot.tasks.length > 0 ? <><div className="surface hardware-list">{snapshot.tasks.map(task => <TaskEntry key={task.id} task={task} />)}</div><p className="section-note">These are the timestamps reported by the host. A detailed event history is not available from this connection.</p></>
-          : !error && <div className="hardware-empty"><Icon name="tasks" /><h3>No installation tasks have been reported.</h3><p>A task appears when you approve an installation for a discovered device. Opening discovery alone does not create a task.</p><a className="text-link" href="#/devices">View devices <Icon name="arrow" /></a></div>}
+        {tasks.length > 0 ? <><div className="surface hardware-list">{tasks.map(task => <TaskEntry key={task.id} task={task} />)}</div><p className="section-note">These are the timestamps reported by the host. A detailed event history is not available from this connection.</p></>
+          : !error && <div className="hardware-empty"><Icon name="tasks" /><h3>{finishedCount > 0 ? 'Nothing needs you right now.' : 'No installation tasks have been reported.'}</h3>
+            <p>{finishedCount > 0 ? 'Finished installations are tucked away. An installation shows here while it runs, and stays if it needs your attention.'
+              : 'A task appears when you approve an installation for a discovered device. Opening discovery alone does not create a task.'}</p>
+            <a className="text-link" href="#/devices">View devices <Icon name="arrow" /></a></div>}
       </section>)}
     {busy && <p className="hardware-working" role="status">Saving your change and checking the host…</p>}
   </div>
 }
 
 type Perform = (action: OnboardingAction, success: string) => Promise<void>
+
+/** Running installations, and failures that still need the owner. Managed and invalidated ones are finished. */
+const taskOpen = (task: InstallationTask) => task.phase !== 'Managed' && task.phase !== 'Invalidated'
+
+function UpdatesSection({ node, disabled, perform }: { node: ManagedNodeSummary; disabled: boolean; perform: Perform }) {
+  const [confirmRestart, setConfirmRestart] = useState(false)
+  const updates = node.status?.updates ?? null
+  const working = updates?.state === 'Checking' || updates?.state === 'Installing'
+  const locked = disabled || working || node.state !== 'Online'
+  const id = `updates-${node.nodeId}`
+  const act = (action: NodeAction, success: string) => perform({ kind: 'node', nodeId: node.nodeId, action }, success)
+  const more = updates ? updates.count - updates.packages.length : 0
+  return <section className="hardware-gpus hardware-updates" aria-labelledby={id}>
+    <h4 id={id}>Updates</h4>
+    {!updates ? node.agentUpdateAvailable === null && node.status
+      ? <p className="hardware-meta">This agent is too old to report updates or update itself. Upgrade it once from the host; later versions update from here.</p>
+      : <p className="hardware-meta">This agent doesn’t report updates yet. Update the agent to see them here.</p>
+      : <>
+        <p className={`status status-${updates.state === 'Failed' ? 'amber' : working ? 'accent' : updates.count ? 'amber' : updates.checkedAt ? 'green' : 'muted'}`}>
+          <Icon name={updates.state === 'Failed' ? 'attention' : working ? 'clock' : updates.count ? 'attention' : updates.checkedAt ? 'check' : 'clock'} />
+          {updates.state === 'Checking' ? 'Checking for updates…' : updates.state === 'Installing' ? 'Installing updates…'
+            : updates.state === 'Failed' ? 'The last update didn’t finish'
+              : !updates.checkedAt ? 'Not checked yet' : !updates.count ? 'Up to date'
+                : `${updates.count} update${updates.count === 1 ? '' : 's'} available${updates.securityCount ? ` · ${updates.securityCount} security` : ''}`}
+        </p>
+        {updates.state === 'Failed' && updates.message && <p className="hardware-failure">{updates.message}</p>}
+        {updates.state === 'Installing' && <p className="hardware-meta">Apps on this server may restart briefly while packages install.</p>}
+        {updates.checkedAt && <p className="hardware-meta">Checked <DateTime value={updates.checkedAt} />. Lucia checks every six hours.</p>}
+        {updates.packages.length > 0 && <details><summary>Show {updates.count === 1 ? 'the package' : `${updates.count} packages`}</summary>
+          <ul className="hardware-detail-list">{updates.packages.map(item => <li key={item.name}>
+            <strong>{item.name}</strong>{item.security && <span className="status status-amber hardware-security">Security</span>}
+            <span className="hardware-version">{item.current ? `${item.current} → ${item.candidate}` : `New · ${item.candidate}`}</span>
+          </li>)}</ul>
+          {more > 0 && <p className="hardware-meta">And {more} more.</p>}
+        </details>}
+        {updates.restartRequired && <p className="status status-amber hardware-gpu-warning"><Icon name="attention" />
+          <span>Restart this server to finish installing updates. Its apps stop until it’s back, usually a few minutes.</span></p>}
+      </>}
+    {node.agentUpdateAvailable && <p className="hardware-meta">A newer Lucia agent is ready for this server.</p>}
+    {node.agentUpdateAvailable === null && node.status && updates && <p className="hardware-meta">This agent is too old to update itself. Upgrade it once from the host; later versions update from here.</p>}
+    <div className="hardware-gpu-actions">
+      {updates && updates.count > 0 && <button className="button primary" type="button" disabled={locked}
+        onClick={() => void act('install-updates', 'Installing updates. Progress shows here as the server reports it.')}>Install updates</button>}
+      {updates && <button className="button secondary" type="button" disabled={locked}
+        onClick={() => void act('check-updates', 'Checking for updates. This takes a minute.')}>Check now</button>}
+      {node.agentUpdateAvailable && <button className="button secondary" type="button" disabled={locked}
+        onClick={() => void act('update-agent', 'Updating the agent. It reconnects in about a minute.')}>Update agent</button>}
+      {updates && (confirmRestart
+        ? <><button className="button secondary hardware-danger" type="button" disabled={locked}
+          onClick={() => { setConfirmRestart(false); void act('restart', 'Restarting. The server reports back in a few minutes.') }}>Restart {node.hostname}</button>
+          <button className="text-link" type="button" onClick={() => setConfirmRestart(false)}>Keep running</button></>
+        : <button className={updates.restartRequired ? 'button secondary' : 'text-link'} type="button" disabled={locked}
+          onClick={() => setConfirmRestart(true)}>Restart…</button>)}
+    </div>
+    {node.state !== 'Online' && <p className="hardware-meta">Actions are available while the agent is reporting.</p>}
+  </section>
+}
+
+function RemoveDevice({ device, title, disabled, perform }: { device: OnboardingDevice; title: string; disabled: boolean; perform: Perform }) {
+  const [confirm, setConfirm] = useState(false)
+  return <div className="hardware-reject">
+    <p>{confirm ? <>Lucia forgets {title}, revokes its agent’s access and drops its DNS name. The machine itself isn’t erased or shut down. Move its apps off first.</>
+      : 'Retired this machine? Remove it from Lucia. Nothing on the machine changes.'}</p>
+    <div className="hardware-actions">{confirm
+      ? <><button className="button secondary hardware-danger" disabled={disabled}
+        onClick={() => void perform({ kind: 'remove', deviceId: device.id }, `${title} was removed from Lucia.`)}>Remove {title}</button>
+        <button className="text-link" onClick={() => setConfirm(false)}>Keep it</button></>
+      : <button className="button secondary" disabled={disabled} onClick={() => setConfirm(true)}>Remove from Lucia…</button>}</div>
+  </div>
+}
 
 function containerSummary(runtime: NodeRuntimeSummary | null): string {
   if (!runtime) return 'Not reported by this agent version'
@@ -339,22 +466,145 @@ function GpuSection({ node, runtime, disabled, session, refreshSession, onSaved 
   </section>
 }
 
-function DeviceEntry({ device, snapshot, now, disabled, perform, session, refreshSession, managed, refresh }: {
-  device: OnboardingDevice; snapshot: OnboardingSnapshot; now: number; disabled: boolean; perform: Perform
+function NodeState({ node }: { node?: ManagedNodeSummary }) {
+  const [tone, icon, text]: [string, IconName, string] = node?.state === 'Online' ? ['green', 'check', 'Online']
+    : node?.state === 'Stale' ? ['amber', 'attention', 'Readings stale'] : ['muted', 'clock', 'Waiting for agent']
+  return <span className={`status status-${tone}`}><Icon name={icon} />{text}</span>
+}
+
+/** One line for the card footer: the thing about updates most worth knowing. */
+function updatesSummary(node?: ManagedNodeSummary): [string, IconName, string] {
+  const updates = node?.status?.updates
+  if (!node?.status) return ['muted', 'clock', 'Waiting for readings']
+  if (!updates) return ['muted', 'clock', node.agentUpdateAvailable === null ? 'Agent too old to report updates' : 'Updates not reported']
+  if (updates.state === 'Checking') return ['accent', 'clock', 'Checking for updates…']
+  if (updates.state === 'Installing') return ['accent', 'clock', 'Installing updates…']
+  if (updates.state === 'Failed') return ['amber', 'attention', 'The last update didn’t finish']
+  if (!updates.checkedAt) return ['muted', 'clock', 'Not checked yet']
+  if (updates.count) return ['amber', 'attention', `${updates.count} update${updates.count === 1 ? '' : 's'} available${updates.securityCount ? ` · ${updates.securityCount} security` : ''}`]
+  if (updates.restartRequired) return ['amber', 'attention', 'Restart to finish updates']
+  if (node.agentUpdateAvailable) return ['amber', 'upgrade', 'Agent update ready']
+  return ['green', 'check', 'Up to date']
+}
+
+function ServerCard({ device, node, title, apps, selected, onManage }: {
+  device: OnboardingDevice; node?: ManagedNodeSummary; title: string; apps: number | undefined; selected: boolean; onManage: () => void
+}) {
+  const hardware = device.hardware
+  const runtime = node?.status?.runtime ?? null
+  const [tone, icon, text] = updatesSummary(node)
+  const id = `server-${device.id}`
+  return <article className={`surface server-card${selected ? ' is-selected' : ''}`} aria-labelledby={id}>
+    <div className="server-card-head">
+      <div><h3 id={id}>{title}</h3><p className="hardware-meta">{node?.dnsName ?? node?.address ?? 'Address not reported yet'}</p></div>
+      <NodeState node={node} />
+    </div>
+    <p className="server-hardware"><strong>{hardware.cpuModel || 'CPU not reported'}</strong> · <span>{hardware.logicalCpuCount} threads</span> · <span>{formatBytes(hardware.memoryBytes)}</span><br />
+      <span>{!runtime ? 'GPU not reported' : runtime.gpus.length ? runtime.gpus.map(gpu => gpu.model).join(', ') : 'No GPU'}</span>
+      {apps !== undefined && <> · <span>runs {apps} app{apps === 1 ? '' : 's'}</span></>}</p>
+    {node ? <ServerUsage node={node} hasGpu={!runtime || runtime.gpus.length > 0} /> : <p className="server-note">Waiting for the agent’s first readings.</p>}
+    <div className="server-card-foot">
+      <span className={`status status-${tone}`}><Icon name={icon} />{text}</span>
+      <button id={`manage-${device.id}`} className="text-link" aria-expanded={selected} aria-controls={selected ? 'server-detail' : undefined} onClick={onManage}>
+        {selected ? 'Hide details' : 'Manage'}<Icon name={selected ? 'down' : 'chevron'} /></button>
+    </div>
+  </article>
+}
+
+function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86400), hours = Math.floor(seconds / 3600) % 24, minutes = Math.floor(seconds / 60) % 60
+  return days ? `${days} day${days === 1 ? '' : 's'}, ${hours} hour${hours === 1 ? '' : 's'}` : `${hours} hour${hours === 1 ? '' : 's'}, ${minutes} minute${minutes === 1 ? '' : 's'}`
+}
+
+/** Everything about one server: its readings, updates, GPUs, the hardware it reported at discovery, and removal. */
+function ServerDetail({ device, node, title, disabled, perform, session, refreshSession, refresh, onClose }: {
+  device: OnboardingDevice; node?: ManagedNodeSummary; title: string; disabled: boolean; perform: Perform
+  session: AuthenticationSession; refreshSession: () => Promise<void>; refresh: () => Promise<unknown>; onClose: () => void
+}) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    heading.current?.focus({ preventScroll: true })
+    heading.current?.closest('section')?.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  }, [])
+  const hardware = device.hardware
+  const status = node?.status
+  return <section id="server-detail" className="surface server-detail" aria-labelledby="server-detail-heading">
+    <div className="server-detail-head">
+      <div><h2 id="server-detail-heading" ref={heading} tabIndex={-1}>{title}</h2>
+        <p className="hardware-meta">{node?.state === 'Online' ? 'Agent is reporting.' : node?.state === 'Stale'
+          ? 'Agent readings are stale. Check the server and its connection.' : 'Waiting for current agent readings.'}
+          {status && ` Up ${formatUptime(status.uptimeSeconds)}.`}</p>
+        {device.statusMessage && <p className="hardware-meta">{device.statusMessage}</p>}
+      </div>
+      <button className="text-link" onClick={onClose}><Icon name="close" />Close</button>
+    </div>
+    <div className="server-detail-grid">
+      <section aria-labelledby="server-detail-machine">
+        <h4 id="server-detail-machine">Machine</h4>
+        <dl className="fact-list">
+          <div><dt>Address</dt><dd>{node?.dnsName ? <>{node.dnsName} · {node.address}</> : node?.address ?? 'Not reported'}</dd></div>
+          {status && <>
+            <div><dt>Operating system</dt><dd>{status.osVersion}</dd></div>
+            <div><dt>Uptime</dt><dd>{formatUptime(status.uptimeSeconds)}</dd></div>
+            <div><dt>Available memory</dt><dd>{formatBytes(status.memoryAvailableBytes)} / {formatBytes(status.memoryTotalBytes)}</dd></div>
+            <div><dt>Available root storage</dt><dd>{status.storageAvailableBytes === null || status.storageTotalBytes === null ? 'Not reported'
+              : `${formatBytes(status.storageAvailableBytes)} / ${formatBytes(status.storageTotalBytes)}`}</dd></div>
+            <div><dt>Load average</dt><dd>{status.loadAverage?.toFixed(2) ?? 'Not reported'}</dd></div>
+            <div><dt>Containers</dt><dd>{containerSummary(status.runtime)}</dd></div>
+          </>}
+          <div><dt>Architecture</dt><dd>{hardware.architecture}</dd></div>
+          <div><dt>CPU</dt><dd>{hardware.cpuModel || 'Not reported'} · {hardware.logicalCpuCount} logical CPUs</dd></div>
+          <div><dt>Installed memory</dt><dd>{formatBytes(hardware.memoryBytes)}</dd></div>
+          <div><dt>Secure Boot</dt><dd>{hardware.secureBoot === null ? 'Unknown — not reported' : hardware.secureBoot ? 'On' : 'Off'}</dd></div>
+          {node && <div><dt>Node certificate expires</dt><dd><DateTime value={node.certificateExpiresAt} /></dd></div>}
+          <div><dt>Last seen</dt><dd><DateTime value={device.lastSeenAt} /></dd></div>
+        </dl>
+      </section>
+      {node && <UpdatesSection node={node} disabled={disabled} perform={perform} />}
+      {node && status?.runtime?.gpus.length ? <GpuSection node={node} runtime={status.runtime}
+        disabled={disabled} session={session} refreshSession={refreshSession} onSaved={refresh} /> : null}
+    </div>
+    <HardwareDetails device={device} />
+    <RemoveDevice device={device} title={title} disabled={disabled} perform={perform} />
+  </section>
+}
+
+function HardwareDetails({ device }: { device: OnboardingDevice }) {
+  const hardware = device.hardware
+  const managed = device.phase === 'Managed'
+  return <details className="hardware-details"><summary>Hardware and network details</summary>
+    {managed && <p className="hardware-meta">Recorded when the device was discovered. Its current address is with the agent readings above.</p>}
+    <dl className="fact-list">
+      <div><dt>Device ID</dt><dd>{device.id}</dd></div>
+      <div><dt>Serial number</dt><dd>{hardware.serialNumber || 'Not reported'}</dd></div>
+      <div><dt>Hardware UUID</dt><dd>{hardware.hardwareUuid || 'Not reported'}</dd></div>
+      <div><dt>Boot mode</dt><dd>{hardware.bootMode}</dd></div>
+      <div><dt>Discovered</dt><dd><DateTime value={device.discoveredAt} /></dd></div>
+      <div><dt>Last heartbeat</dt><dd>{device.lastHeartbeatAt ? <DateTime value={device.lastHeartbeatAt} /> : 'Not reported'} · {device.heartbeatFreshness.toLowerCase()}</dd></div>
+    </dl>
+    <h4>{managed ? 'Network interfaces at discovery' : 'Network interfaces'}</h4>
+    <ul className="hardware-detail-list">{hardware.interfaces.map(nic => <li key={nic.name}><strong>{nic.name}</strong> · {nic.macAddress ?? 'MAC address not reported'}<span>{nic.addresses.join(', ') || 'No address reported'}</span></li>)}</ul>
+    <h4>Reported disks</h4>
+    {hardware.disks.length ? <ul className="hardware-detail-list">{hardware.disks.map(disk => <li key={disk.path}>
+      <strong>{disk.model || 'Model not reported'} · {formatBytes(disk.sizeBytes)}</strong>
+      <span>Serial: {disk.serial || 'Not reported'} · {disk.path}</span>{disk.id && <span>{disk.id}</span>}
+      <span>{disk.id === null ? 'Cannot safely identify this disk' : disk.isReadOnly ? 'Read-only — cannot install' : disk.isRemovable ? 'Removable — cannot install' : 'Writable, nonremovable disk'}</span>
+    </li>)}</ul> : <p>No disks were reported.</p>}
+  </details>
+}
+
+function DeviceEntry({ device, title, snapshot, now, disabled, perform, session, refreshSession }: {
+  device: OnboardingDevice; title: string; snapshot: OnboardingSnapshot; now: number; disabled: boolean; perform: Perform
   session: AuthenticationSession; refreshSession: () => Promise<void>
-  managed?: ManagedNodeSummary; refresh: () => Promise<unknown>
 }) {
   const hardware = device.hardware
   const task = snapshot.tasks.find(task => task.id === device.taskId)
-  const title = task?.hostname || [hardware.manufacturer, hardware.model].filter(Boolean).join(' ') || 'Discovered device'
   return <article className="hardware-entry">
     <div className="hardware-entry-heading"><div><h3>{title}</h3>
       {task && <p className="hardware-meta">{[hardware.manufacturer, hardware.model].filter(Boolean).join(' ') || 'Model not reported'}</p>}
     </div><Phase phase={device.phase} /></div>
     {device.phase === 'Discovered' && <p className="hardware-meta">Verification code: <strong>{device.verificationCode}</strong>. Match this code on the physical device’s console before approving.</p>}
     <p className="hardware-meta">Last seen <DateTime value={device.lastSeenAt} /></p>
-    {device.phase === 'Managed' && <p className="hardware-meta">{managed?.state === 'Online' ? 'Agent is reporting.' : managed?.state === 'Stale'
-      ? 'Agent readings are stale. Check the server and its connection.' : 'Waiting for current agent readings.'}</p>}
     {device.statusMessage && <p className={device.phase === 'Failed' ? 'hardware-failure' : 'hardware-meta'}>{device.statusMessage}</p>}
     <dl className="hardware-specs">
       <div><dt>Architecture</dt><dd>{hardware.architecture}</dd></div>
@@ -362,38 +612,7 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
       <div><dt>Memory</dt><dd>{formatBytes(hardware.memoryBytes)}</dd></div>
       <div><dt>Secure Boot</dt><dd>{hardware.secureBoot === null ? 'Unknown — not reported' : hardware.secureBoot ? 'On' : 'Off'}</dd></div>
     </dl>
-    {device.phase === 'Managed' && managed?.status && <dl className="hardware-specs">
-      <div><dt>Address</dt><dd>{managed.dnsName ? <>{managed.dnsName} · {managed.address}</> : managed.address ?? 'Not reported'}</dd></div>
-      <div><dt>Operating system</dt><dd>{managed.status.osVersion}</dd></div>
-      <div><dt>Uptime</dt><dd>{Math.floor(managed.status.uptimeSeconds / 3600)} hours, {Math.floor(managed.status.uptimeSeconds / 60) % 60} minutes</dd></div>
-      <div><dt>Available memory</dt><dd>{formatBytes(managed.status.memoryAvailableBytes)} / {formatBytes(managed.status.memoryTotalBytes)}</dd></div>
-      <div><dt>Available root storage</dt><dd>{managed.status.storageAvailableBytes === null || managed.status.storageTotalBytes === null ? 'Not reported'
-        : `${formatBytes(managed.status.storageAvailableBytes)} / ${formatBytes(managed.status.storageTotalBytes)}`}</dd></div>
-      <div><dt>Load average</dt><dd>{managed.status.loadAverage?.toFixed(2) ?? 'Not reported'}</dd></div>
-      <div><dt>Containers</dt><dd>{containerSummary(managed.status.runtime)}</dd></div>
-      <div><dt>Node certificate expires</dt><dd><DateTime value={managed.certificateExpiresAt} /></dd></div>
-    </dl>}
-    {device.phase === 'Managed' && managed?.status?.runtime?.gpus.length ? <GpuSection node={managed} runtime={managed.status.runtime}
-      disabled={disabled} session={session} refreshSession={refreshSession} onSaved={refresh} /> : null}
-    <details><summary>Hardware and network details</summary>
-      {device.phase === 'Managed' && <p className="hardware-meta">Recorded when the device was discovered. Its current address is with the agent readings above.</p>}
-      <dl className="fact-list">
-        <div><dt>Device ID</dt><dd>{device.id}</dd></div>
-        <div><dt>Serial number</dt><dd>{hardware.serialNumber || 'Not reported'}</dd></div>
-        <div><dt>Hardware UUID</dt><dd>{hardware.hardwareUuid || 'Not reported'}</dd></div>
-        <div><dt>Boot mode</dt><dd>{hardware.bootMode}</dd></div>
-        <div><dt>Discovered</dt><dd><DateTime value={device.discoveredAt} /></dd></div>
-        <div><dt>Last heartbeat</dt><dd>{device.lastHeartbeatAt ? <DateTime value={device.lastHeartbeatAt} /> : 'Not reported'} · {device.heartbeatFreshness.toLowerCase()}</dd></div>
-      </dl>
-      <h4>{device.phase === 'Managed' ? 'Network interfaces at discovery' : 'Network interfaces'}</h4>
-      <ul className="hardware-detail-list">{hardware.interfaces.map(nic => <li key={nic.name}><strong>{nic.name}</strong> · {nic.macAddress ?? 'MAC address not reported'}<span>{nic.addresses.join(', ') || 'No address reported'}</span></li>)}</ul>
-      <h4>Reported disks</h4>
-      {hardware.disks.length ? <ul className="hardware-detail-list">{hardware.disks.map(disk => <li key={disk.path}>
-        <strong>{disk.model || 'Model not reported'} · {formatBytes(disk.sizeBytes)}</strong>
-        <span>Serial: {disk.serial || 'Not reported'} · {disk.path}</span>{disk.id && <span>{disk.id}</span>}
-        <span>{disk.id === null ? 'Cannot safely identify this disk' : disk.isReadOnly ? 'Read-only — cannot install' : disk.isRemovable ? 'Removable — cannot install' : 'Writable, nonremovable disk'}</span>
-      </li>)}</ul> : <p>No disks were reported.</p>}
-    </details>
+    <HardwareDetails device={device} />
     {device.phase === 'Discovered' && <InstallForm key={`${device.id}:${device.inventoryRevision}`} device={device} snapshot={snapshot}
       now={now} disabled={disabled} perform={perform} session={session} refreshSession={refreshSession} />}
     {device.phase === 'Rejected' && <div className="hardware-reject">
@@ -405,7 +624,9 @@ function DeviceEntry({ device, snapshot, now, disabled, perform, session, refres
         document.getElementById('hardware-list-heading')?.focus({ preventScroll: true })
       }}>{device.dismissedAt ? 'Restore to list' : 'Dismiss discovery'}</button>
     </div>}
-    {task && <a className="text-link" href="#/tasks">Follow installation <Icon name="arrow" /></a>}
+    {(device.phase === 'Managed' || device.phase === 'Failed')
+      && <RemoveDevice key={device.id} device={device} title={title} disabled={disabled} perform={perform} />}
+    {task && taskOpen(task) && <a className="text-link" href="#/tasks">Follow installation <Icon name="arrow" /></a>}
   </article>
 }
 

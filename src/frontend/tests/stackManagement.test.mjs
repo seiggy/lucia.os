@@ -25,6 +25,12 @@ assert.equal(stackState({ ...stack, status: null, reportedAt: null }).label, 'Se
 assert.equal(stackState({ ...stack, status: null }).label, 'Waiting for server')
 assert.throws(() => parseStackList({ stacks: [{ ...summary, name: '../x' }] }))
 assert.throws(() => parseStackList({ stacks: [{ ...summary, desired: 'Maybe' }] }))
+assert.deepEqual(stack.updates, [])
+const [updated] = parseStackList({ stacks: [{ ...summary, updates: [
+  { image: 'lscr.io/linuxserver/sonarr', current: '4.0.1', tag: '4.0.2', digest: 'sha256:aa', major: false, notes: 'https://github.com/linuxserver/docker-sonarr/releases/tag/4.0.2' },
+  { image: 'lscr.io/linuxserver/sonarr', current: '4.0.1', tag: '5.0.0', digest: 'sha256:bb', major: true, notes: 'javascript:alert(1)' }] }] })
+assert.deepEqual(updated.updates.map(update => [update.tag, update.major, update.notes]),
+  [['4.0.2', false, 'https://github.com/linuxserver/docker-sonarr/releases/tag/4.0.2'], ['5.0.0', true, null]])
 
 const detail = parseStackDetail({ stack: summary, compose: 'services: {}\n', env: 'TZ=UTC\n', manifest: { schemaVersion: 1, placement: { node: 'lucialab01' } } })
 assert.deepEqual(detail.placement, { node: 'lucialab01', require: [] })
@@ -254,3 +260,27 @@ assert.equal(appAddressProblem(' 192.168.1.230 '), null)
 for (const bad of ['', '8.8.8.8', '192.168.1.0', '192.168.1.255', '192.168.01.5', '192.168.1', '10.0.0.5/24', 'fd00::53'])
   assert.notEqual(appAddressProblem(bad), null, bad)
 assert.equal(stackState(parseStackList({ stacks: [{ ...summary, status: { ...summary.status, state: 'Failed', message: 'Waiting for this server to take the address 192.168.1.230.' } }] })[0]).label, 'Waiting')
+
+// Spark runner
+{
+  const { parseSparkRunner, sparkRunnerState, sparkIdleProblem, parseCatalog } = await import('../.checks/stackManagement.js')
+  assert.deepEqual(parseRoute('#/apps/spark-runner'), { page: 'apps', view: 'spark' })
+  const [runnerApp] = parseCatalog({ apps: [{ id: 'github-runner', version: 1, name: 'R', summary: 's', needs: 'n', require: [], runsOnSpark: true, fields: [], servers: [] }] })
+  assert.equal(runnerApp.onSpark, true)
+  const none = parseSparkRunner({ configured: false, workerReady: true, label: 'spark' })
+  assert.equal(none.configured, false)
+  assert.deepEqual(none.repositories, [])
+  const base = { configured: true, workerReady: true, label: 'spark', repositories: ['seiggy/lucia.os'], labels: [], idleMinutes: 30, reason: null,
+    since: at, lastJobAt: null, busy: false, message: null, stopsAt: null }
+  const waiting = parseSparkRunner({ ...base, state: 'running', stopsAt: at })
+  assert.equal(sparkRunnerState(waiting).label, 'Waiting for jobs')
+  assert.match(sparkRunnerState(waiting).detail, /^Stops at .* unless a job starts\.$/)
+  assert.equal(sparkRunnerState({ ...waiting, busy: true }).label, 'Running a job')
+  assert.equal(sparkRunnerState({ ...waiting, message: 'A runner keeps restarting.' }).tone, 'amber')
+  assert.match(sparkRunnerState(parseSparkRunner({ ...base, state: 'stopped', reason: 'idle' })).detail, /after 30 minutes without a job/)
+  assert.equal(sparkRunnerState(parseSparkRunner({ ...base, state: 'failed', message: 'Bad token.' })).detail, 'Bad token.')
+  assert.match(sparkRunnerState({ ...waiting, workerReady: false }).detail, /isn’t reporting/)
+  assert.throws(() => parseSparkRunner({ ...base, state: 'exploded' }))
+  assert.equal(sparkIdleProblem('30'), null)
+  for (const bad of ['', '4', '1441', '3x']) assert.notEqual(sparkIdleProblem(bad), null, bad)
+}
