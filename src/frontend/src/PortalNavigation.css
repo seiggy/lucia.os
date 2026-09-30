@@ -11,6 +11,8 @@
 .portal-search-button svg, .portal-account-button svg { width: 20px; height: 20px; }
 .portal-search-button kbd { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 7px; }
 .portal-account-button span { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portal-assistant-button[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-ink); }
+@media (max-width: 699px) { .portal-assistant-button { display: none; } }
 .portal-context { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 0 40px; min-height: 62px; border-block: 1px solid var(--line); background: var(--surface); position: sticky; top: 88px; z-index: 29; }
 .portal-breadcrumb { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
 .portal-breadcrumb svg { width: 12px; height: 12px; }
@@ -56,7 +58,7 @@
 .portal-workspace .text-link { min-height: 44px; }
 .portal-workspace summary { min-height: 44px; padding-block: 10px; }
 .portal-workspace :is(a, button, input, select, textarea, summary) { scroll-margin-block: 174px 24px; }
-html:has(.portal-workspace) { scroll-padding-block: 174px 24px; }
+html:has(.portal-workspace), html[data-assistant-push] .portal-workspace { scroll-padding-block: 174px 24px; }
 .portal-dialog :is(a, button, input) { scroll-margin-block: 80px 16px; }
 .portal-workspace > .skip-link { z-index: 40; }
 .portal-workspace .app-footer { max-width: 1280px; padding: 0 40px 32px; }

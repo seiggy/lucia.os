@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-23T12:18:16.224Z",
+  "generatedAt": "2026-09-30T21:54:44.921Z",
   "title": "Design System: Lucia portal",
   "extensions": {
     "colorMeta": {
@@ -231,12 +231,14 @@
       { "name": "surface-dark", "value": "0 3px 10px #0000001a", "purpose": "Retained dark root custom property; contextual links use an underline, not this shadow." },
       { "name": "navigation-overlay", "value": "0 24px 80px #10182730", "purpose": "Diffuse separation for the opaque directory, search, and account dialogs; backdrop dimming uses #10182766, without blur." },
       { "name": "primary-hover", "value": "0 3px 9px #18233224", "purpose": "Hover feedback for an enabled primary action." },
-      { "name": "primary-active", "value": "inset 0 1px 2px #00000026", "purpose": "Pressed feedback for an enabled primary action." }
+      { "name": "primary-active", "value": "inset 0 1px 2px #00000026", "purpose": "Pressed feedback for an enabled primary action." },
+      { "name": "assistant-menu", "value": "0 12px 32px #10182724", "purpose": "Floating model menu above the assistant composer; scoped to that menu, not a card or panel elevation. The overlay assistant column reuses navigation-overlay without a backdrop." }
     ],
     "motion": [
       { "name": "button-transition", "value": "background-color 160ms ease-out, box-shadow 160ms ease-out", "purpose": "Primary and secondary button state changes." },
       { "name": "navigation-open", "value": "180ms cubic-bezier(.16,1,.3,1); transform: translateY(-8px) to translateY(0)", "purpose": "Modal opening translates only at full opacity. No scale, fade, decorative page entrance, or status delay." },
-      { "name": "reduced-motion-duration", "value": "0.01ms", "purpose": "Under prefers-reduced-motion: reduce, animation and transition durations use this value with !important; animation iteration count is one and scroll behavior is auto." }
+      { "name": "reduced-motion-duration", "value": "0.01ms", "purpose": "Under prefers-reduced-motion: reduce, animation and transition durations use this value with !important; animation iteration count is one and scroll behavior is auto." },
+      { "name": "assistant-dock-open", "value": "180ms cubic-bezier(.16,1,.3,1); from translateX(16px) (left dock: -16px; phone sheet: translateY(24px)) and opacity 0", "purpose": "Assistant column and phone-sheet opening with the navigation timing and easing. The opacity fade is shipped drift from the brief's slide-only intent, not a pattern for navigation panels, which stay opaque under the Opaque Navigation Rule." }
     ],
     "breakpoints": [
       { "name": "portal-compact (at or below)", "value": "1000px" },
@@ -244,7 +246,10 @@
       { "name": "working-controls-stack (at or below)", "value": "700px" },
       { "name": "portal-phone-sheet (at or below)", "value": "600px" },
       { "name": "global-narrow-fallback (at or below)", "value": "380px" },
-      { "name": "native-desktop-compact (below; Avalonia DIP)", "value": "960" }
+      { "name": "native-desktop-compact (below; Avalonia DIP)", "value": "960" },
+      { "name": "assistant-push (at or above)", "value": "1200px" },
+      { "name": "assistant-pushed-compact (at or below, while pushed)", "value": "1400px" },
+      { "name": "assistant-phone-sheet (below)", "value": "700px" }
     ]
   },
   "components": [
@@ -346,7 +351,8 @@
       { "name": "The Plain Language Rule", "body": "Lead with the understandable state or decision; keep technical detail behind disclosure rather than making it the primary label.", "section": "typography" },
       { "name": "The Quiet Depth Rule", "body": "Use neutral layers and thin borders for structure; reserve the larger shadow for modal separation and the smaller interaction shadows for enabled primary actions.", "section": "elevation" },
       { "name": "The Opaque Navigation Rule", "body": "Navigation opens by translation only; keep panel opacity at full strength so underlying tools never bleed through the moving surface.", "section": "components" },
-      { "name": "The Native Desktop Scope Rule", "body": "In the native setup utility, use the shipped Ocean resources and System/Light/Dark appearance selector; the web custom-accent behavior remains web-only.", "section": "components" }
+      { "name": "The Native Desktop Scope Rule", "body": "In the native setup utility, use the shipped Ocean resources and System/Light/Dark appearance selector; the web custom-accent behavior remains web-only.", "section": "components" },
+      { "name": "The Beside-the-Page Rule", "body": "The assistant opens beside the page it is about and pushes that page aside wherever there is room; it never becomes a floating bubble launcher, and it reserves no desktop rail while closed.", "section": "components" }
     ],
     "dos": [
       "Do preserve \"A simple check-in\" through plain-language priorities and familiar controls.",

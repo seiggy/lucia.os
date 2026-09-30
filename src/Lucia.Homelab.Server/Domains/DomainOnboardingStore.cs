@@ -153,7 +153,7 @@ public sealed class DomainOnboardingStore : IDisposable
     public static string Hash(DomainSetupPlan plan) =>
         Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(plan with { ReviewHash = "" }, Json)));
 
-    internal static async Task WriteJson<T>(string path, T value, CancellationToken ct = default)
+    internal static async Task WriteJson<T>(string path, T value, CancellationToken ct = default, JsonSerializerOptions? json = null)
     {
         EnsureDirectory(Path.GetDirectoryName(path)!);
         RejectLinks(path);
@@ -164,7 +164,7 @@ public sealed class DomainOnboardingStore : IDisposable
             if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
             await using (var stream = new FileStream(temporary, options))
             {
-                await JsonSerializer.SerializeAsync(stream, value, Json, ct);
+                await JsonSerializer.SerializeAsync(stream, value, json ?? Json, ct);
                 stream.Flush(flushToDisk: true);
             }
             ct.ThrowIfCancellationRequested();

@@ -109,6 +109,10 @@ class HostTests(unittest.TestCase):
         (self.publish / "Lucia.Homelab.Server").write_bytes(b"fixture-arm64-apphost")
         (self.publish / "libGgmlOps.so").write_bytes(b"fixture-native-library")
         (self.publish / "Magick.Native-Q8-arm64.dll.so").write_bytes(b"fixture-magick-native-library")
+        self.copilot = self.publish / "runtimes/linux-arm64/native"
+        self.copilot.mkdir(parents=True)
+        (self.copilot / "copilot-runtime").write_bytes(b"fixture-copilot-launcher")
+        (self.copilot / "runtime.node").write_bytes(b"fixture-copilot-runtime")
         (self.publish / "wwwroot/index.html").write_text("<html>Fixture SPA</html>")
         (self.publish / "wwwroot/assets/app.js").write_text("console.log('fixture')")
         self.archive = self.root / "host.tar.gz"
@@ -134,7 +138,10 @@ class HostTests(unittest.TestCase):
     def test_deterministic_allowlist_and_permissions(self):
         excluded = (".env", "appsettings.json", "appsettings.Production.json", "owner.key", "server.pfx",
                     "model.gguf", "weights.safetensors", "weights.bin", "NuGet.Config", "source.cs",
-                    "wwwroot/credentials.json", "obj/private.dll", "bin/private.dll", "models/weights.dll")
+                    "wwwroot/credentials.json", "obj/private.dll", "bin/private.dll", "models/weights.dll",
+                    "runtimes/linux-arm64/native/copilot", "runtimes/linux-arm64/native/libcopilot_runtime.so",
+                    "runtimes/linux-arm64/native/definitions/task.agent.yaml",
+                    "runtimes/linux-arm64/native/ripgrep/bin/linux-arm64/rg")
         for name in excluded:
             path = self.publish / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +161,8 @@ class HostTests(unittest.TestCase):
             self.assertEqual(tar.getmember("Lucia.Homelab.Server").mode, 0o755)
             self.assertEqual(tar.getmember("libGgmlOps.so").mode, 0o755)
             self.assertEqual(tar.getmember("Magick.Native-Q8-arm64.dll.so").mode, 0o755)
+            self.assertEqual(tar.getmember("runtimes/linux-arm64/native/copilot-runtime").mode, 0o755)
+            self.assertEqual(tar.getmember("runtimes/linux-arm64/native/runtime.node").mode, 0o755)
             self.assertEqual(tar.getmember(artifact.ENTRYPOINT).mode, 0o644)
         self.assertFalse(set(excluded) & files.keys())
 

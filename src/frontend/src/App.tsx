@@ -7,6 +7,9 @@ import { InferenceKeys } from './InferenceKeys'
 import { ModelManager } from './ModelManager'
 import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
+import { AssistantDock } from './AssistantDock'
+import { parseDock } from './assistant'
+import type { DockState } from './assistant'
 import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
 import { StorageSettings } from './StorageSettings'
@@ -35,6 +38,16 @@ function loadPreferences(): { value: Preferences; notice: string | null } {
   } catch (error) {
     console.warn('Lucia could not read saved appearance preferences.', error)
     return { value: defaultPreferences, notice: 'Saved appearance settings could not be read. The default theme is being used.' }
+  }
+}
+
+const dockKey = 'lucia.assistant.dock.v1'
+
+function loadDock(): DockState {
+  try {
+    return parseDock(JSON.parse(localStorage.getItem(dockKey) ?? 'null'), window.matchMedia('(min-width: 1200px)').matches)
+  } catch {
+    return { open: false, side: 'right' }
   }
 }
 
@@ -111,10 +124,19 @@ function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const [route, setRoute] = useState(() => parseRoute(location.hash))
   const [playgroundVisited, setPlaygroundVisited] = useState(false)
+  const [dock, setDock] = useState(loadDock)
   const main = useRef<HTMLElement>(null)
   const firstRoute = useRef(true)
   const scheme = preferences.appearance === 'system' ? (systemDark ? 'dark' : 'light') : preferences.appearance
+  const toggleDock = useCallback(() => setDock(current => ({ ...current, open: !current.open })), [])
+  const closeDock = useCallback(() => setDock(current => ({ ...current, open: false })), [])
+  const moveDock = useCallback(() => setDock(current => ({ ...current, side: current.side === 'right' ? 'left' : 'right' })), [])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(dockKey, JSON.stringify(dock))
+    } catch { /* The dock position still applies until the page closes. */ }
+  }, [dock])
   useEffect(() => {
     const query = window.matchMedia('(prefers-color-scheme: dark)')
     const update = () => setSystemDark(query.matches)
@@ -145,6 +167,7 @@ function App() {
             : `${routeDestination(route)?.label ?? 'Page not found'} · Lucia`
     if (firstRoute.current) { firstRoute.current = false; return }
     window.scrollTo({ top: 0, behavior: 'instant' })
+    main.current?.parentElement?.scrollTo({ top: 0, behavior: 'instant' })
     main.current?.focus({ preventScroll: true })
   }, [route, authentication.loading, authentication.error, authentication.session])
 
@@ -168,7 +191,7 @@ function App() {
           <div className="custom-color"><div><label htmlFor="custom-accent">Or choose your own color</label><p>Button text adjusts to stay readable.</p></div><input id="custom-accent" type="color" value={preferences.customAccent} onChange={event => updatePreferences({ ...preferences, theme: 'custom', customAccent: event.target.value })} /></div>
           <div className="theme-example"><span className="icon-tile tone-accent"><Icon name="home" /></span><div><strong>{preferences.theme === 'custom' ? 'Your custom theme' : themes.find(theme => theme.id === preferences.theme)?.name}</strong><p>Same simple home. Your own feel.</p></div><span className="sample-button" aria-label="Theme color sample">Aa</span></div>
         </section>
-        <section className="connection-note"><Icon name="shield" /><div><h2>Your account and connection.</h2><p>{authentication.session?.enabled ? `Signed in through Authentik as ${authentication.session.displayName || authentication.session.username}. Permissions are enforced by your host.` : 'This is a development session. Managed deployments use Authentik sign-in.'}</p><p className="section-note">Appearance is saved on this browser. Account credentials and chat history are not stored here.</p></div></section>
+        <section className="connection-note"><Icon name="shield" /><div><h2>Your account and connection.</h2><p>{authentication.session?.enabled ? `Signed in through Authentik as ${authentication.session.displayName || authentication.session.username}. Permissions are enforced by your host.` : 'This is a development session. Managed deployments use Authentik sign-in.'}</p><p className="section-note">Appearance and assistant preferences are saved on this browser. Assistant chats are saved on your host. Account credentials and Playground chats are not stored here.</p></div></section>
       </div>
     </>
   }
@@ -177,6 +200,7 @@ function App() {
     (authentication.session.enabled && (!authentication.session.authenticated || !authentication.session.canAccess)))
     return <AuthenticationPanel {...authentication} retry={() => void authentication.refresh()} />
   const session = authentication.session
+  const assistantAvailable = session.isOwner && session.authenticated && !!session.csrfToken
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
       : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
@@ -195,7 +219,7 @@ function App() {
   return <div className="app-shell portal-workspace">
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
     {!session.enabled && <div className="development-note"><strong>Development mode</strong><span>Browser sign-in is disabled on this development host.</span></div>}
-    <PortalNavigation route={route} session={session} />
+    <PortalNavigation route={route} session={session} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock } : undefined} />
     {storageNotice && <div className="storage-notice" role="alert"><Icon name="attention" /><p>{storageNotice}</p><button className="icon-button" aria-label="Dismiss appearance notice" onClick={() => setStorageNotice(null)}><Icon name="close" /></button></div>}
     <main id="main-content" ref={main} tabIndex={-1}>
       {content}
@@ -204,6 +228,8 @@ function App() {
       </div>}
     </main>
     <footer className="app-footer"><span>{session.enabled ? 'Connected through Authentik' : 'Trusted-network development connection'}</span><a className="text-link" href="#/ai">Local AI <Icon name="arrow" /></a></footer>
+    {assistantAvailable && <AssistantDock session={session} refreshSession={authentication.refresh} page={routeDestination(route)?.label ?? 'Page not found'}
+      open={dock.open} side={dock.side} onToggle={toggleDock} onClose={closeDock} onMove={moveDock} />}
   </div>
 }
 

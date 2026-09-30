@@ -10,7 +10,7 @@ import './PortalNavigation.css'
 
 const areaIcons: Record<AreaId, IconName> = { overview: 'home', lab: 'devices', ai: 'spark', settings: 'settings' }
 
-export function PortalNavigation({ route, session }: { route: Route; session: AuthenticationSession }) {
+export function PortalNavigation({ route, session, assistant }: { route: Route; session: AuthenticationSession; assistant?: { open: boolean; toggle: () => void } }) {
   const [panel, setPanel] = useState<'areas' | 'search' | 'account' | null>(null)
   const [query, setQuery] = useState('')
   const dialog = useRef<HTMLDialogElement>(null)
@@ -73,6 +73,10 @@ export function PortalNavigation({ route, session }: { route: Route; session: Au
         <Icon name={areaIcons[area.id]} /><span>{area.label}</span><Icon name="down" />
       </button>
       <div className="portal-header-tools">
+        {assistant && <button className="portal-search-button portal-assistant-button" type="button" data-assistant-toggle onClick={assistant.toggle}
+          aria-expanded={assistant.open} aria-controls="assistant-dock" aria-keyshortcuts="Control+J Meta+J" aria-label="Assistant">
+          <Icon name="chat" /><span>Assistant</span><kbd>⌘ / Ctrl J</kbd>
+        </button>}
         <button className="portal-search-button" onClick={() => open('search')} aria-haspopup="dialog" aria-label="Find a tool">
           <Icon name="search" /><span>Find a tool</span><kbd>⌘ / Ctrl K</kbd>
         </button>

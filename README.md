@@ -191,8 +191,9 @@ release; do not erase an existing lab to manufacture a clean test.
 
 ## Base host
 
-The ASP.NET Core server now hosts TensorSharp inference in-process, a Microsoft
-Agent Framework SRE agent, and persistent Hugging Face model downloads. The
+The ASP.NET Core server now hosts TensorSharp inference in-process, the Lucia
+assistant (Microsoft Agent Framework over the GitHub Copilot runtime), and
+persistent Hugging Face model downloads. The
 dashboard uses Authentik sign-in and same-origin authenticated API calls.
 
 ### Dashboard foundation
@@ -432,7 +433,7 @@ Authentik access tokens are checked for issuer, audience, signature, expiry,
 and `lucia_api` scope; ID tokens are not accepted as API access tokens.
 Browser requests use the same identity through HttpOnly secure cookies, with
 CSRF validation for unsafe methods. Separate opaque owner/inference API keys
-remain supported for machine clients. Owner-only model administration and SRE
+remain supported for machine clients. Owner-only model administration and assistant
 routes remain more privileged than inference. See
 `src/Lucia.Homelab.Server/AUTHENTICATION.md` for the exact contract and limits.
 
@@ -504,7 +505,7 @@ require authentication; Redis remains private. Do not expose these development
 listeners directly to the internet.
 
 An owner key is required. An optional, **different** `Parameters:inference-api-key`
-grants access to `/v1` without model administration or SRE tools. Optional
+grants access to `/v1` without model administration or the assistant. Optional
 `Parameters:huggingface-token` is passed only to the server. Tokens are not put
 in download arguments or model manifests. For standalone hosting, the equivalent
 settings are `HostPlatform__ApiKey`, `HostPlatform__InferenceApiKey`, and
@@ -810,7 +811,7 @@ fit is not loaded.
 
 In development, open `/scalar/v1` on the .NET server for the Scalar API explorer.
 The server root redirects there, and the underlying document is
-`/openapi/v1.json`. Routes are grouped into host/model management, SRE, and
+`/openapi/v1.json`. Routes are grouped into host/model management, the assistant, and
 OpenAI-compatible inference, with request examples for TensorSharp's raw JSON
 handlers. Authentication requirements are documented; no keys are prefilled or
 stored persistently by the explorer. Browsing the reference does not require a
@@ -834,7 +835,8 @@ Send `Authorization: Bearer <token>`. Owner credentials are required for
 | `POST /api/host/models/{id}/load` | Load a model; body `{}` or `{"contextTokens":32768}` |
 | `POST /api/host/models/{Chat\|Embedding}/unload` | Release a resident model |
 | `DELETE /api/host/models/{id}` | Delete an unloaded, inactive model |
-| `POST /api/host/sre` | Run the SRE agent; body `{"message":"..."}` |
+| `POST /api/assistant/chat` | Send an assistant message; streams AI SDK UI message chunks |
+| `GET /api/assistant/sessions` | The owner's saved assistant chats |
 | `GET /v1/models` | List loaded chat and embedding models |
 | `POST /v1/chat/completions` | TensorSharp chat, including streaming |
 | `POST /v1/responses` | TensorSharp Responses, including streaming |
@@ -861,14 +863,18 @@ Queued cancellations take effect immediately. If a model-state write fails
 (for example, a full disk), the API exposes `persistenceError` and keeps owner
 cleanup operations available rather than stopping the host.
 
-The SRE agent uses an in-process `IChatClient` adapter and Agent Framework's
-tool loop. Its initial tools are **read-only** inventory and inference
-diagnostics, not shell execution or autonomous remediation. Owner-configured
-action policies, durable conversations/tasks, remote-device tools, and the
-voice stack are not implemented by this foundation.
-Generated tool calls are released only after non-truncated completion. The SRE
-response exposes `finishReason` and `incomplete` rather than presenting token,
-thinking-budget, or repetition cutoffs as completed answers.
+The assistant runs Microsoft Agent Framework over the GitHub Copilot runtime,
+which the server starts as a child process with no built-in tools, files, shell,
+or ambient configuration. This first slice only answers questions; it cannot
+inspect or change the lab. Until GitHub sign-in ships, set
+`Assistant__GitHubToken` to a token with Copilot access; without one, the chat
+bar asks the owner to connect GitHub. Turns keep running if the browser
+disconnects, and the chat bar reattaches to them or stops them. Chats are
+stored per owner as JSON under `Assistant__Directory` (`/data/assistant` on the
+appliance). Build and publish download the SHA-256-checked Copilot runtime for
+the target RID from GitHub releases (set `CopilotCliReleaseBaseUrl` to use a
+mirror). The host package keeps only its launcher and module
+(`runtimes/linux-arm64/native/copilot-runtime` and `runtime.node`).
 
 OpenAI compatibility comes from TensorSharp's protocol adapters, not a claim
 of complete OpenAI API parity. This host exposes text chat and embeddings only,

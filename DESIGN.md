@@ -219,6 +219,28 @@ components:
     textColor: "var(--text)"
     rounded: "{rounded.surface}"
     padding: "{spacing.inset-reading}"
+  assistant-dock:
+    backgroundColor: "var(--surface)"
+    textColor: "var(--text)"
+    width: "400px"
+  assistant-owner-message:
+    backgroundColor: "var(--accent-soft)"
+    textColor: "var(--text)"
+    rounded: "{rounded.control}"
+    padding: "10px 14px"
+  assistant-mode-choice:
+    textColor: "var(--muted)"
+    rounded: "{rounded.field}"
+    padding: "4px 10px"
+  assistant-mode-choice-current:
+    backgroundColor: "var(--accent-soft)"
+    textColor: "var(--accent-ink)"
+  assistant-send:
+    backgroundColor: "var(--accent)"
+    textColor: "var(--on-accent)"
+    rounded: "{rounded.field}"
+    width: "36px"
+    height: "36px"
 ---
 
 # Design System: Lucia portal
@@ -447,6 +469,44 @@ The shell inset is 28 horizontal, 22 top, and 18 bottom; pane content uses 34 ho
 Evidence is bounded: the user exercised the Windows desktop flow, confirmed successful identity provisioning, and confirmed managed-dashboard access after Authentik sign-in. Earlier Skia/headless captures in `desktop-screens/contact-sheet.png` use labeled synthetic fixtures, not proof of deployment. Native macOS/Linux qualification remains outstanding.
 
 Not canonized or repaired for this extension: missing generated FORM-seed provenance remains a nonfunctional process note, not a fabricated selection record or a new design rule. The existing-owner password and placeholder-contrast fixes are reflected in the shipped source; no further UI changes are part of this pass.
+
+### Assistant dock — scoped extension
+
+The Owner-only assistant extends **"A simple check-in"** as a working companion beside the page, not a destination. It answers questions about the current page and how Lucia works; for now it only advises and cannot read or change anything in the lab. It is separate from the Playground's local-model conversation. This is a code-led local extension without an approved comp; no generated concept seed or FORM selection is claimed.
+
+Source of truth: `src/frontend/src/AssistantDock.tsx` and `AssistantDock.css` (layouts, entry, focus, and motion), `AssistantPanel.tsx` and `assistant.css` (header, conversation, composer, states, and history), the header entry in `PortalNavigation.tsx`/`PortalNavigation.css`, and the model select in `components/ui/select.tsx`. The **Assistant dock** and **Direction contract** sections of `.impeccable/surfaces/src-frontend-src-app-tsx.md` own surface strategy. A theme layer scoped to the dock maps the chat components' background, primary, muted, destructive, border, and ring roles onto the existing surface, accent/on-accent, surface-subtle/muted, failed-ink, line, and accent-ink properties, so custom accents and dark appearance carry through. The dock adds no color token; its corners use the field (12px) and control (14px) radii.
+
+#### Layout and motion
+
+- **Push (1200px and wider):** a 400px full-height surface column beside the page, divided by a one-pixel line. The page reflows into the remaining width and scrolls in its own column, which ends at that divider. While pushed at or below 1400px, the portal-compact treatment starts early: 28px insets, a 32px top margin on main content, a centered context strip, and hidden shortcut hints, account name, and breadcrumb.
+- **Overlay (700–1199px):** the same column floats over the unchanged page with the existing navigation-overlay shadow and no backdrop.
+- **Phone (below 700px):** the header entry hides and a fixed bottom bar holds one **Ask the assistant** button (48px minimum, control radius, one-pixel line border, muted 15px text, accent-ink chat icon). It expands to a full-height sheet with a 64px header; the page behind it is inert and does not scroll, and the composer clears the bottom safe area. The bar is the brief's user-requested exception to the portal's no-fixed-bottom-bar layout: a single assistant entry, not bottom navigation.
+
+The dock opens on the right by default; **Move to the left**/**Move to the right** swaps its side, divider, and page margin. The browser remembers the side, the current chat and model, and—at push width—whether the dock was open; chat transcripts are kept on the host. Closed, the dock reserves no rail. **Ctrl/Cmd+J** and the header button toggle it (the shortcut yields while a dialog is open). Opening moves focus to the message field; closing returns it to the opener. Escape closes the overlay and phone sheet; the pushed column closes from **Close**, the header entry, or the shortcut.
+
+Opening uses the navigation timing, **180ms `cubic-bezier(.16,1,.3,1)`**: the column slides 16px in from its side and the phone sheet rises 24px. As shipped, both also fade in from zero opacity. Reduced motion uses the shared duration override.
+
+#### Header, conversation, and composer
+
+- **Header:** 88px plus a one-pixel bottom line that continues the portal header's rule. **Assistant** uses the compact-heading values above the current chat title in muted 14px text. The **New chat**, **History**, side-move (hidden in the phone sheet), and **Close** icon buttons are 40px square with the field radius and muted icons; hover adds surface-subtle, and pressed **History** uses accent-soft with accent-ink.
+- **Conversation:** Owner messages are accent-soft blocks (control radius, 10px/14px padding, 15px/1.55 text, at most 85% wide). Replies are unboxed prose at 15px/1.6 with 16px/680 headings, underlined accent-ink links, and muted, line-ruled blockquotes; messages sit 24px apart. A **Thinking…** / **Thought for N seconds** disclosure (32px minimum, 14px/650 muted) reveals line-ruled 14px reasoning.
+- **Code and tables:** one frame with a line border, the field radius, and a surface fill. Code adds a 40px top row with a muted 12px language label and a 32px copy button over a 12px/14px body in the portal's existing monospace stack; tables use the same frame without the top row.
+- **Composer:** a control-radius group with a line border and no shadow holds the message field (15px/1.5, growing from 64px to 192px; 16px in the phone sheet) above a toolbar: the **Answer mode** pair (**Plan**, **Execute** by default), the model select, and send at the bottom right. Mode choices are 32px-minimum, field-radius, line-bordered 14px/650 muted buttons; the pressed choice uses the portal's accent-soft/accent-ink selection. The model select has no fill at rest and gains surface-subtle on hover or while open. Its menu uses the field radius, a line border, and a scoped menu shadow (`0 12px 32px #10182724`), with 36px options and a check on the current model. Send is a 36px field-radius accent button with an on-accent arrow; while answering it becomes **Stop answering**.
+
+Solid accent appears only on send. Accent-soft or accent-ink marks owner messages, the chosen mode, the pressed **History** toggle, the current chat, the open header entry, links, starter arrows, and focus. Dock focus is the portal's 3px accent-ink outline at a 2px offset; the message group shows a 2px focus-within outline.
+
+#### Entry, states, and history
+
+- **Header entry:** **Assistant** reuses the **Find a tool** button (44px minimum, field radius, muted 14px) with a chat icon and a **⌘ / Ctrl J** hint in the shortcut-keycap style. When open, it uses accent-soft with accent-ink. The hint hides at the portal-compact width and while pushed at or below 1400px.
+- **Empty chat:** an **On:** chip naming the current page (field radius, surface-subtle, muted 14px with the page name in text color), a muted introduction stating the advice-only limit, and three starter prompts: 49px-minimum, field-radius, line-bordered 14px/600 buttons with an accent-ink arrow. Hover accents the border.
+- **States:** a stopped answer uses the amber status treatment with a stop icon and **Stopped**. A failed turn is a failed-ink line (**The model stopped responding.**) with a **Try again** text link. A chat already answering elsewhere shows a muted note with **Reload chat**. When GitHub is not connected, an amber note above the composer names `Assistant__GitHubToken` as the host-side fallback, and the model select hides. Request errors use a failed-bg/failed-ink notice with the field radius; a working answer shows a muted **Answering…** line with a spinner.
+- **History:** **Your chats** lists 56px-minimum field-radius rows with a 14px/600 title and a 12px muted date or **Answering now**; hover is surface-subtle and the current chat accent-soft. Deleting confirms inline (**Delete this chat from your host? This can't be undone.**) with a failed-ink secondary **Delete chat** button and a **Cancel** text link. The empty list says chats are kept on the host.
+
+**The Beside-the-Page Rule.** The assistant opens beside the page it is about and pushes that page aside wherever there is room; it never becomes a floating bubble launcher, and it reserves no desktop rail while closed.
+
+Evidence is bounded: review captures in `.impeccable/review/assistant-*.png` (light and dark push, left side, overlay, phone bar and sheet, model menu, history, and stopped, failed, busy, and disconnected states) are fixture captures with synthetic data—a fixture Owner and a synthetic model—not real transcripts, model output, or hardware readings. Finish review round 1 returned eight fixes, all applied; the verdict pass returned ship with nothing remaining. This pass checked shipped source and captures only.
+
+Not canonized or repaired for this extension: the opening fade departs from the brief's slide-only intent; it is recorded as shipped, not as a pattern for navigation panels, which stay under the Opaque Navigation Rule. The brief's 25px radius does not appear in the dock; the column is square-edged. The dock's 2px focus offset, 32px mode/model/reasoning/text-link targets, button-based reasoning disclosure, 8px copy-button and menu-option corners, and the scroll-to-latest button's library hairline shadow are dock-scoped; they do not replace the portal's 4px offset, 44px text actions, native disclosures, swatch-scoped 8px radius, or Quiet Depth vocabulary. The overlay column's backdrop-free navigation-overlay shadow and the model menu's shadow are limited to those floating dock surfaces; Quiet Depth still governs structure elsewhere. No source edits are part of this pass.
 
 ## Do's and Don'ts
 

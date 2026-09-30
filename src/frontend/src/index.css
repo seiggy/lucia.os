@@ -14,7 +14,7 @@ button, summary { cursor: pointer; }
 button:disabled { cursor: wait; }
 a { color: inherit; text-decoration: none; }
 button { color: inherit; }
-svg { width: 24px; height: 24px; flex-shrink: 0; }
+svg:where(:not(.assistant *)) { width: 24px; height: 24px; flex-shrink: 0; }
 h1, h2, h3, p { margin: 0; }
 button, a, input, select, summary { touch-action: manipulation; }
 :focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 4px; }

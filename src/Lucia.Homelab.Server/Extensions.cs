@@ -62,11 +62,12 @@ public static class Extensions
                 metrics.AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
                     .AddRuntimeInstrumentation()
-                    .AddMeter(Lucia.Homelab.Server.Host.InferenceMetrics.MeterName);
+                    .AddMeter(Lucia.Homelab.Server.Host.InferenceMetrics.MeterName)
+                    .AddMeter(Lucia.Homelab.Server.Assistant.AssistantRuntime.TelemetryName);
             })
             .WithTracing(tracing =>
             {
-                tracing.AddSource(builder.Environment.ApplicationName)
+                tracing.AddSource(builder.Environment.ApplicationName, Lucia.Homelab.Server.Assistant.AssistantRuntime.TelemetryName)
                     .AddAspNetCoreInstrumentation(tracing =>
                         // Exclude health check requests from tracing
                         tracing.Filter = context =>

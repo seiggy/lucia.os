@@ -1,4 +1,5 @@
 using Lucia.Homelab.Server.Host;
+using Lucia.Homelab.Server.Assistant;
 using Lucia.Homelab.Server.Boot;
 using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Telemetry;
@@ -55,6 +56,7 @@ builder.Services.AddHostedService(services => services.GetRequiredService<Manage
 builder.AddSparkTelemetry();
 builder.AddControllerRelay();
 builder.AddPackageUpdates();
+builder.AddAssistant();
 
 var app = builder.Build();
 TelemetryForwarder.Destination = app.Services.GetRequiredService<StackStore>().TelemetryEndpoint;
@@ -83,37 +85,14 @@ app.MapStacks();
 app.MapSparkTelemetry();
 app.MapControllerRelay();
 app.MapPackageUpdates();
+app.MapAssistant();
 
 app.MapDevelopmentApiDocumentation();
 
 app.UseOutputCache();
-
-string[] summaries = ["Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"];
-
-var api = app.MapGroup("/api");
-api.MapGet("weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.CacheOutput(p => p.Expire(TimeSpan.FromSeconds(5)))
-.WithTags("Starter demo")
-.WithName("GetWeatherForecast");
 
 app.MapDefaultEndpoints();
 
 app.MapHostWeb();
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

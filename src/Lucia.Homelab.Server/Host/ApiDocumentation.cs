@@ -16,7 +16,7 @@ public static class ApiDocumentation
             options.AddDocumentTransformer((document, _, _) =>
             {
                 document.Info.Title = "Lucia Host API";
-                document.Info.Description = "Model management, local inference, and SRE diagnostics. Authentik browser sessions use same-origin cookies and X-CSRF-TOKEN on unsafe requests. API callers use scoped Authentik access tokens or separate static machine keys.";
+                document.Info.Description = "Model management, local inference, and the Lucia assistant. Authentik browser sessions use same-origin cookies and X-CSRF-TOKEN on unsafe requests. API callers use scoped Authentik access tokens or separate static machine keys.";
                 document.Components ??= new OpenApiComponents();
                 document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
                 document.Components.SecuritySchemes[SecurityScheme] = new OpenApiSecurityScheme

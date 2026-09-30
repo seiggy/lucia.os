@@ -222,7 +222,7 @@ is a separate migration, not an implicit overwrite of an active profile.
 After a setup failure, Lucia keeps the failed task and automatically prepares a
 confirmed diagnosis, followed by a plain-language explanation from a
 **Microsoft Agent Framework (MAF)** agent. It uses the currently loaded Lucia
-chat model through the same in-process inference adapter as the local SRE agent.
+chat model through Lucia's in-process inference adapter.
 It does not choose a fixed model, load one automatically, or fall back to a cloud
 LLM.
 

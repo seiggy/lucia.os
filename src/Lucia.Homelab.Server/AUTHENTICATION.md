@@ -102,7 +102,8 @@ marker and disables implicit CLI credentials for future downloads.
 
 ## Resource authorization
 
-`/api/host/*` model, host-status, and SRE operations require Owner. `/v1/*`
+`/api/host/*` model and host-status operations, and the `/api/assistant/*`
+chat, require Owner. `/v1/*`
 requires Owner or Inference. Authentication/authorization failures are JSON
 401/403, never login-page redirects. Missing/invalid CSRF returns JSON 403.
 

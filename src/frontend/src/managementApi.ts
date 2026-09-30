@@ -4,7 +4,7 @@ export async function ownerRequest(session: AuthenticationSession, refreshSessio
   path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<Response> {
   if (!session.isOwner || !session.authenticated || !session.csrfToken)
     throw new Error('Sign in as a Lucia owner to manage this setting.')
-  if (!path.startsWith('/api/host/')) throw new Error('Management requests must use the local host API.')
+  if (!path.startsWith('/api/host/') && !path.startsWith('/api/assistant/')) throw new Error('Management requests must use the local host API.')
   const response = await fetch(path, {
     method, credentials: 'same-origin', cache: 'no-store', signal,
     headers: {
@@ -15,6 +15,10 @@ export async function ownerRequest(session: AuthenticationSession, refreshSessio
   })
   if (response.status === 401) void refreshSession()
   if (response.ok) return response
+  throw await responseError(response)
+}
+
+export async function responseError(response: Response): Promise<Error & { code?: string; certificateSha256?: string }> {
   let message = `Lucia could not complete this request (HTTP ${response.status}).`
   let code: string | undefined
   let certificateSha256: string | undefined
@@ -31,5 +35,5 @@ export async function ownerRequest(session: AuthenticationSession, refreshSessio
       }
     }
   } catch { /* A non-JSON upstream failure retains its HTTP status. */ }
-  throw Object.assign(new Error(message), { code, certificateSha256 })
+  return Object.assign(new Error(message), { code, certificateSha256 })
 }

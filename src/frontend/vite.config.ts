@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 import type { Plugin, ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { hostname } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { checkPlaygroundRequest, playgroundRoutes } from './src/playground';
 
 const target = process.env.SERVER_HTTPS || process.env.SERVER_HTTP;
@@ -44,7 +46,10 @@ const playgroundBridge: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), playgroundBridge],
+  plugins: [react(), tailwindcss(), playgroundBridge],
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
   server: {
     allowedHosts: [hostname()],
     proxy: {

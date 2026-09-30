@@ -11,7 +11,8 @@ The external manifest is schema 1:
  files: [{path, sha256, size}]}.
 SHA-256 and size describe the compressed archive. File sizes are uncompressed bytes.
 Paths use canonical POSIX separators. Modes are inferred from the path allowlist:
-0755 for the apphost/native libraries, 0644 for managed assemblies and static assets.
+0755 for the apphost/native libraries and the assistant's Copilot runtime, 0644 for managed
+assemblies and static assets.
 Archive and manifest must arrive through the installer's trusted artifact transport;
 hashes detect corruption, not the authenticity of an untrusted manifest.
 """
@@ -98,6 +99,13 @@ def file_mode(name):
             return 0o644
     if len(parts) == 2 and re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z]{2,4})?", parts[0]):
         return 0o644 if lower.endswith(".resources.dll") else None
+    if len(parts) == 4 and parts[:3] == ("runtimes", RID, "native"):
+        # The assistant's stdio Copilot runtime: the launcher and the module it loads. The rest of the
+        # SDK bundle (in-process libcopilot_runtime.so copy, coding agents and skills, ripgrep) stays out.
+        if path.name in ("copilot-runtime", "runtime.node"):
+            return 0o755
+        if path.name == "libcopilot_runtime.so":
+            return None
     if len(parts) == 1 or (len(parts) == 4 and parts[:3] == ("runtimes", RID, "native")):
         if re.fullmatch(r"lib[A-Za-z0-9_+.-]+\.so(?:\.[0-9]+)*", path.name) or path.name == "Magick.Native-Q8-arm64.dll.so":
             return 0o755

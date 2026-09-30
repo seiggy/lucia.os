@@ -28,6 +28,13 @@ const paths = {
   down: <path d="m6 9 6 6 6-6" />,
   upgrade: <><circle cx="12" cy="12" r="9" /><path d="M12 16.5v-9m-4 4 4-4 4 4" /></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,
+  chat: <path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2Z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  history: <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5m4-1v5l3 2" />,
+  'dock-left': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></>,
+  'dock-right': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></>,
+  send: <path d="M12 19V5m-7 7 7-7 7 7" />,
+  trash: <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M9 7V4h6v3" />,
 } as const
 
 export type IconName = keyof typeof paths

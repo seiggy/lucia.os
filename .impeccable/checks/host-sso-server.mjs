@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import { inferenceFixture, resetInferenceFixture } from './inference-management-fixture.mjs'
 import { dnsFixture, resetDnsFixture } from './dns-management-fixture.mjs'
+import { assistantFixture, resetAssistantFixture } from './assistant-fixture.mjs'
 
 const root = resolve('src/frontend/dist')
 const anonymous = { enabled: true, authenticated: false, username: null, displayName: null, isOwner: false, canAccess: false, csrfToken: null }
@@ -30,6 +31,7 @@ const server = createServer(async (request, response) => {
     discoveryUpdatedAt = null
     resetInferenceFixture()
     resetDnsFixture()
+    resetAssistantFixture(new URL(request.url, 'http://127.0.0.1:4175').searchParams.get('assistant') ?? 'ready')
     if (mode === 'anonymous') requests.length = 0
     return json({ mode })
   }
@@ -43,6 +45,7 @@ const server = createServer(async (request, response) => {
   }
   if (await inferenceFixture(request, path, mode, json)) return
   if (await dnsFixture(request, path, mode, json)) return
+  if (await assistantFixture(request, response, path, mode, json)) return
   if (path === '/api/host/ssh-keys/github/synthetic-owner') {
     if (mode !== 'owner') return json({ error: { message: 'Synthetic Owner access is required.' } }, 403)
     const publicKey = 'ssh-ed25519 ' + Buffer.from('0000000B7373682D6564323535313900000020D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A', 'hex').toString('base64')
