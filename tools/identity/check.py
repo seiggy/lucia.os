@@ -223,7 +223,7 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
     assert sum(method == "POST" and path.endswith("/send/") for method, path, _ in requests) == 2
     source = next(body for method, path, body in requests if method == "PATCH" and path.endswith("/lucia-ldap/"))
     assert source["peer_certificate"] == "ca" and source["sni"]
-    assert not source["sync_users_password"] and not source["password_login_update_internal_password"]
+    assert source["sync_users_password"] and not source["password_login_update_internal_password"]
     assert login_stage["session_duration"] == "hours=8"
     assert login_stage["remember_me_offset"] == "seconds=0" and not login_stage["terminate_other_sessions"]
     writes = [call for call in requests if call[0] != "GET"]

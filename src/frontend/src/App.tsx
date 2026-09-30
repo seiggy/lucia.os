@@ -11,6 +11,7 @@ import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
 import { StorageSettings } from './StorageSettings'
 import { SshKeySettings } from './SshKeySettings'
+import { People } from './People'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
 import { AppUpdates, Stacks } from './Stacks'
@@ -185,6 +186,7 @@ function App() {
         : route.page === 'storage-settings' ? <StorageSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'people-settings' ? <People session={session} refreshSession={authentication.refresh} view={route.view} />
           : route.page === 'domain-settings' ? <DomainOnboarding session={session} refreshSession={authentication.refresh} />
         : route.page === 'ai' ? null
           : route.page === 'ai-keys' ? <InferenceKeys session={session} refreshSession={authentication.refresh} />

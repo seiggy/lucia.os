@@ -433,7 +433,7 @@ class Provisioner:
         self.check_ldap_tls()
         source = self.api("GET", "/api/v3/sources/ldap/lucia-ldap/")
         if (source["base_dn"] != self.settings["ldap_base_dn"] or not source.get("peer_certificate")
-                or source.get("password_login_update_internal_password") or source.get("sync_users_password")
+                or source.get("password_login_update_internal_password")
                 or source["server_uri"] != "ldaps://identity-gateway:8636" or not source.get("sni")):
             raise RuntimeError("LDAP source drifted from the verified directory/TLS/password policy.")
         certificate = self.api("GET", f"/api/v3/crypto/certificatekeypairs/{source['peer_certificate']}/")
@@ -528,7 +528,8 @@ def configure_authentik(provisioner):
         "group_property_mappings": [mappings["openldap-cn"]],
         "peer_certificate": certificate["pk"], "client_certificate": None,
         "start_tls": False, "sni": True, "sync_users": True, "sync_groups": True,
-        "sync_users_password": False, "password_login_update_internal_password": False,
+        # Self-service password changes write back to LDAP; people.enable_password_changes grants the write.
+        "sync_users_password": True, "password_login_update_internal_password": False,
         "delete_not_found_objects": False, "lookup_groups_from_user": False, "sync_group_hierarchy": False,
     }
     current = provisioner.api("GET", "/api/v3/sources/ldap/lucia-ldap/", allow_missing=True)
@@ -542,7 +543,7 @@ def configure_authentik(provisioner):
     if backend not in stage["backends"]:
         provisioner.api("PATCH", f"/api/v3/stages/password/{stage['pk']}/", {"backends": [*stage["backends"], backend]})
     configure_browser_session(provisioner)
-    emit("authentik", "LDAP source reconciled with explicit CA verification, stable IDs, and directory-owned passwords.")
+    emit("authentik", "LDAP source reconciled with explicit CA verification, stable IDs, and LDAP password write-back.")
     sync_ldap(provisioner, saved["pk"], certificate["pk"], started)
 
 

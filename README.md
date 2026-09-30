@@ -601,10 +601,30 @@ independent of a future public DNS domain.
 
 Authentik imports users from `ou=Users` with `posixAccount` and groups from
 `ou=Groups` with `groupOfUniqueNames`, using stable LDAP entry UUIDs. It checks
-passwords against LDAP with explicit CA verification; password writeback and
-internal password caching are disabled. No demo users are created. The initial
-owner is a real LDAP-backed human account; additional user enrollment and
-managed-device sign-in remain separate work. The bootstrap account `akadmin` is Authentik-only
+passwords against LDAP with explicit CA verification. Password write-back is
+on: when someone changes their password in Authentik (Settings → Change
+password), Authentik writes it to LDAP through its `uid=authentik` service
+account, which is a member of `cn=ldap-password-reset` for exactly that
+purpose. The trade-off is that the Authentik service account can now set any
+directory password; it already reads the whole directory, so this adds write
+access to one attribute rather than a new trust boundary. No demo users are
+created. The initial owner is a real LDAP-backed
+human account; managed-device sign-in remains separate work.
+
+Owners manage everyone else in **Settings → People** (`#/settings/people`):
+add, edit, disable, enable and delete people, set or generate a temporary
+password (shown once), create and delete groups, and choose which groups can
+open each app that signs in with Lucia (App access). The web host holds no
+identity credentials: it queues a private request file, and the Spark's
+`lucia-domain-activation` worker applies it to LDAP and Authentik
+(`tools/identity/people.py`), deletes the request, and republishes a
+secret-free `directory.json` snapshot. `lucia-owners` is bound to every app;
+Lucia's first owner can't be deleted, disabled or removed from it; and adding
+anyone to `lucia-owners` requires an explicit confirmation because owners get
+sudo on every server and Authentik admin rights. App-side roles (for example
+Grafana Admin) still follow `lucia-owners` only.
+
+The bootstrap account `akadmin` is Authentik-only
 break-glass access, not a normal LDAP user. Its generated password is in
 `secrets/authentik-admin-password` under the state directory; retrieve it
 locally through an authorized SSH session, never through dashboard assets or
@@ -619,10 +639,10 @@ ssh zackw@192.168.0.222 "cat /home/zackw/.local/share/lucia/identity/secrets/own
 ```
 
 Sign in to Authentik as `zackw`, not as the LDAP root DN or `akadmin`. Change
-this initial password in LDAP, not through Authentik's local-password reset:
-LDAP password writeback/self-service is not configured yet. An authorized
-interactive SSH terminal on the Spark can prompt for the old and new passwords
-without putting them in command arguments:
+this initial password in Authentik under Settings → Change password (written
+back to LDAP), or from an authorized interactive SSH terminal on the Spark,
+which prompts for the old and new passwords without putting them in command
+arguments:
 
 ```sh
 docker exec -it -e LDAPTLS_CACERT=/trust/lucia-root-ca.crt -e LDAPTLS_REQCERT=demand \
@@ -633,7 +653,7 @@ docker exec -it -e LDAPTLS_CACERT=/trust/lucia-root-ca.crt -e LDAPTLS_REQCERT=de
 The stored initial credential is not updated after a password change; remove
 it through your normal secure credential-handling process once handed over.
 Other bootstrap credentials stay in the protected `secrets` directory.
-Additional user enrollment and device login integration remain separate work.
+Device login integration remains separate work.
 The managed host's OIDC application and dashboard/API security are configured
 by the desktop; the temporary inference bridge is only for development.
 

@@ -1,4 +1,5 @@
-"""Narrow native bridge: reconcile only the owned Lucia OIDC callbacks and launch URL, and owner-only app sign-in clients."""
+"""Narrow native bridge: reconcile only the owned Lucia OIDC callbacks and launch URL, app sign-in clients, and
+owner-requested people, group and app-access changes (tools/identity/people.py)."""
 
 import argparse
 import contextlib
@@ -20,6 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/identity"))
 import app_clients
 import application
+import people
 from provision import Provisioner
 
 UTC = datetime.timezone.utc
@@ -275,6 +277,60 @@ def app_sign_ins(p, state, directory, previous):
     return fingerprint, time.monotonic() + retry
 
 
+def directory_changes(p, state, directory, timing):
+    """Apply owner-requested people and group changes in order, then republish directory.json (every minute otherwise).
+
+    timing holds when the next snapshot is due and, after a failure, how long queued changes wait before a retry."""
+    queue, answers = directory / "directory-requests", directory / "directory-responses"
+    files = sorted(path for path in queue.iterdir() if path.suffix == ".json" and people.REQUEST.fullmatch(path.stem))
+    if len(files) > 100:
+        raise ValueError("Too many directory requests; review the queue.")
+    now = time.monotonic()
+    if now < timing["hold"] or not files and now < timing["due"]:
+        return
+    try:
+        with contextlib.ExitStack() as stack:
+            for lock_path in (ROOT.parent / ".run.lock", state / ".provision.lock"):
+                lock = stack.enter_context(lock_path.open("a+b"))
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            p.load_existing()
+            p.deadline = time.monotonic() + 290
+            origin = read_json(state / "host-settings.json")["authentication"]["public_origin"]
+            installation = application._load(p, origin)["installation_id"]
+            people.enable_password_changes(p)
+            for path in files[:10]:
+                try:
+                    value = parse_json(regular(path, 16384))
+                except (OSError, ValueError):
+                    value = None
+                try:
+                    people.apply(p, value, path.stem, installation)
+                    result = {"success": True, "message": None}
+                except people.Refused as error:
+                    result = {"success": False, "message": error.message}
+                except Exception as error:
+                    print(json.dumps({"event": "directory-change-failed", "id": path.stem, "errorType": type(error).__name__}), flush=True)
+                    result = {"success": False, "message": "The identity service couldn't finish this change. Check the result and try again."}
+                target = next((value[key] for key in ("username", "group", "app")
+                               if isinstance(value, dict) and isinstance(value.get(key), str)), None)
+                write_file(answers / path.name, json.dumps({
+                    "schemaVersion": 1, "id": path.stem, **result, "checkedAt": datetime.datetime.now(UTC).isoformat(),
+                    "action": value.get("action") if isinstance(value, dict) and value.get("action") in people.ACTIONS else None,
+                    "target": target if isinstance(target, str) and len(target) <= 64 else None,
+                }) + "\n")
+                path.unlink()  # It may hold a password.
+                if p.deadline - time.monotonic() < 150:
+                    break
+            write_file(directory / "directory.json", json.dumps(people.snapshot(p, installation)) + "\n")
+    except BlockingIOError:
+        timing["hold"] = time.monotonic() + 2
+        return
+    except Exception as error:
+        print(json.dumps({"event": "directory-snapshot-failed", "errorType": type(error).__name__}), flush=True)
+        timing["hold"] = time.monotonic() + 30
+    timing["due"] = time.monotonic() + 60
+
+
 def run():
     if sys.platform != "linux" or os.getuid() == 0:
         raise RuntimeError("Run this worker as the non-root Spark setup user.")
@@ -290,7 +346,7 @@ def run():
         raise ValueError("The domain worker requires the owned managed host data path.")
     directory = expected / "domains"
     private_directory(directory)
-    for name in ("activation-requests", "activation-responses"):
+    for name in ("activation-requests", "activation-responses", "directory-requests", "directory-responses"):
         private_directory(directory / name)
     stopping = False
     def stop(*_):
@@ -300,6 +356,7 @@ def run():
     signal.signal(signal.SIGINT, stop)
     seen = {}
     sign_ins = (None, 0)
+    directory_timing = {"due": 0, "hold": 0}
     ingress_fingerprint = None
     while not stopping:
         ingress_ready = True
@@ -361,7 +418,15 @@ def run():
             sign_ins = app_sign_ins(p, state, directory, sign_ins)
         except (OSError, ValueError) as error:
             print(json.dumps({"event": "app-sign-in-queue-failed", "errorType": type(error).__name__}), flush=True)
-        time.sleep(5)
+        try:
+            directory_changes(p, state, directory, directory_timing)
+        except (OSError, ValueError) as error:
+            print(json.dumps({"event": "directory-queue-failed", "errorType": type(error).__name__}), flush=True)
+        # Owner changes wait at most about a second.
+        for _ in range(5):
+            time.sleep(1)
+            if stopping or any(path.suffix == ".json" for path in (directory / "directory-requests").iterdir()):
+                break
     write_file(directory / "activation-worker.json", json.dumps({
         "schemaVersion": 1, "ready": False, "checkedAt": datetime.datetime.now(UTC).isoformat(),
     }) + "\n")

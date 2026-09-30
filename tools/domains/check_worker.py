@@ -1,7 +1,9 @@
 """Pure request/rollback checks with fake transports; never contacts Authentik."""
 
+import contextlib
 import datetime
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -83,6 +85,45 @@ with tempfile.TemporaryDirectory(prefix="lucia-domain-worker-check-") as folder:
             raise AssertionError("Unrelated callback changes were overwritten.")
         except ValueError:
             pass
+
+with tempfile.TemporaryDirectory(prefix="lucia-directory-check-") as folder:
+    root = pathlib.Path(folder)
+    state, directory = root / "identity", root / "domains"
+    for path in (state, directory / "directory-requests", directory / "directory-responses"):
+        path.mkdir(parents=True)
+    (state / "host-settings.json").write_text(json.dumps({"authentication": {"public_origin": "https://spark"}}))
+    ids = ["20260101000000000-" + str(n) * 32 for n in (1, 2, 3)]
+    for index, name in enumerate(ids):
+        (directory / "directory-requests" / (name + ".json")).write_text("{" if index == 2 else json.dumps({"n": index}))
+    (directory / "directory-requests" / "not-a-request.json").write_text("{}")
+
+    def apply(p, value, request_id, installation):
+        assert installation == "install-1"
+        if value["n"] == 1:
+            raise worker.people.Refused("That name is already taken.")
+
+    p = SimpleNamespace(load_existing=Mock())
+    timing = {"due": 0, "hold": 0}
+    with patch.object(worker, "ROOT", root / "tools"), \
+            patch.object(worker, "regular", side_effect=lambda path, maximum: path.read_bytes()), \
+            patch.object(worker, "read_json", side_effect=lambda path: json.loads(path.read_text())), \
+            patch.object(worker, "write_file", side_effect=lambda path, data: path.write_text(data)), \
+            patch.object(worker.application, "_load", return_value={"installation_id": "install-1"}), \
+            patch.object(worker.people, "enable_password_changes") as enable, \
+            patch.object(worker.people, "apply", side_effect=apply), \
+            patch.object(worker.people, "snapshot", return_value={"schemaVersion": 1, "users": []}), \
+            contextlib.redirect_stdout(io.StringIO()) as log:
+        worker.directory_changes(p, state, directory, timing)
+        answers = [json.loads((directory / "directory-responses" / (name + ".json")).read_text()) for name in ids]
+        assert [answer["success"] for answer in answers] == [True, False, False]
+        assert answers[1]["message"] == "That name is already taken."
+        assert "couldn't finish" in answers[2]["message"] and enable.call_count == 1
+        assert sorted(path.name for path in (directory / "directory-requests").iterdir()) == ["not-a-request.json"]
+        assert json.loads((directory / "directory.json").read_text())["schemaVersion"] == 1
+        assert timing["due"] > 0 and "{" not in "".join(a["message"] or "" for a in answers)
+        worker.people.snapshot.reset_mock()
+        worker.directory_changes(p, state, directory, timing)
+        assert worker.people.snapshot.call_count == 0, "An idle queue republished before the minute was up."
 
 if sys.platform == "linux":
     with tempfile.TemporaryDirectory(prefix=".lucia-native-activation-", dir=pathlib.Path.home()) as temporary:

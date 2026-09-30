@@ -82,6 +82,18 @@ public sealed class OwnerSshKeys(IOptions<HardwareOnboardingOptions> options)
         finally { _gate.Release(); }
     }
 
+    /// <summary>Drops a deleted person's keys so heartbeats stop carrying them.</summary>
+    public async Task RemoveUser(string username, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var state = Read();
+            if (state.Users.Remove(username)) await Write(state, ct);
+        }
+        finally { _gate.Release(); }
+    }
+
     /// <summary>Username → normalized public keys, for heartbeat replies.</summary>
     public async Task<Dictionary<string, string[]>> Authorized(CancellationToken ct)
     {
