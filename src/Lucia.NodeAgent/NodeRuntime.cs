@@ -47,7 +47,8 @@ internal static class NodeRuntime
                 var report = await InspectAsync(token);
                 Volatile.Write(ref current, report with { State = "Failed", Message = Bounded(message, 512) });
             }
-            await Task.Delay(TimeSpan.FromMinutes(15), token);
+            // At boot Docker waits for NAS shares, so it may not be up yet; look again soon rather than holding stacks for 15 minutes.
+            await Task.Delay(Current.State == "Ready" ? TimeSpan.FromMinutes(15) : TimeSpan.FromSeconds(20), token);
         }
     }
 

@@ -53,6 +53,11 @@ internal static partial class StackRunner
     {
         var link = new NodeLink(client, node, certificate, key);
         string? lastError = null;
+        try { await StackAddresses.RestoreAsync(token); }
+        catch (Exception ex) when (ex is NodeAgentException or IOException or UnauthorizedAccessException or JsonException)
+        {
+            Console.Error.WriteLine("Couldn't take back app addresses. " + ex.Message);
+        }
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(20));
         do
         {

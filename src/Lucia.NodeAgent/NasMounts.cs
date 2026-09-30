@@ -78,6 +78,10 @@ internal static partial class NasMounts
             SecureStateDirectory.MakeReadableDirectory(Path.GetDirectoryName(DockerDropIn)!);
             reload |= NodeRuntime.WriteIfChanged(DockerDropIn, Encoding.UTF8.GetBytes(
                 Marker + " Starts Docker after NAS shares so apps don't see empty folders.\n[Unit]\nWants=remote-fs.target\nAfter=remote-fs.target\n"));
+            // ifupdown doesn't wait for allow-hotplug interfaces (Debian's default), so without this network-online.target
+            // is reached before DHCP and every share fails to mount at boot.
+            if (File.Exists("/usr/lib/systemd/system/ifupdown-wait-online.service"))
+                await NodeRuntime.TryCaptureAsync("/usr/bin/systemctl", ["enable", "ifupdown-wait-online.service"], token);
         }
         SecureStateDirectory.MakePrivateDirectory(Credentials);
         var changed = new HashSet<string>();

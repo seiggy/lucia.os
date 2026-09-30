@@ -446,7 +446,7 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp("observability", 5, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp("observability", 6, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
     "Any server with Docker ready, and room for about 50 GB of telemetry.",
     [],
@@ -461,7 +461,8 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 5, "Obser
     internal const string Collector = "otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1";
     private const string Prometheus = "prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e";
     private const string Loki = "grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193";
-    private const string Tempo = "grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a";
+    // Tempo 3 removed the ingester and compactor blocks; retention stays at its 336h default.
+    private const string Tempo = "grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd";
     private const string Grafana = "grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
     internal const string Alpine = "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
     public const string User = "lucia";
@@ -613,11 +614,6 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 5, "Obser
                   protocols:
                     grpc:
                       endpoint: 0.0.0.0:4317
-            ingester:
-              max_block_duration: 5m
-            compactor:
-              compaction:
-                block_retention: 336h
             storage:
               trace:
                 backend: local

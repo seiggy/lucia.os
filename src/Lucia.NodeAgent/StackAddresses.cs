@@ -11,13 +11,14 @@ internal sealed record OwnedAddress(string Address, string Interface, int Prefix
 
 /// <summary>
 /// Extra IPv4 addresses that stacks own, such as a DNS server's. This server takes one only after checking that no other
-/// device answers for it, adds it beside its own address on the matching network, and announces it. Addresses aren't
-/// persistent: a reboot drops them and the next sync takes them again after the same check.
+/// device answers for it, adds it beside its own address on the matching network, and announces it. A reboot drops the
+/// addresses; the agent takes the ones it held again at startup, after the same check, since the controller may only be
+/// reachable through one of them (a DNS server on this node).
 /// </summary>
 internal static partial class StackAddresses
 {
     private const string Ip = "/usr/bin/ip", Arping = "/usr/bin/arping";
-    private const string OwnedPath = "/run/lucia-agent/addresses.json";
+    private const string OwnedPath = "/var/lib/lucia-agent/addresses.json", LegacyOwnedPath = "/run/lucia-agent/addresses.json";
     internal const string Waiting = "Waiting for this server to take the address ";
     private static readonly ConcurrentDictionary<string, NodeAddressStatus> status = new();
     private static readonly SemaphoreSlim install = new(1, 1);
@@ -26,6 +27,20 @@ internal static partial class StackAddresses
     internal static bool Held(string address) => status.TryGetValue(address, out var item) && item.State == "Held";
     internal static string Problem(string address) =>
         status.TryGetValue(address, out var item) && item.Message is { } message ? $"{Waiting}{address}. {message}" : $"{Waiting}{address}.";
+
+    /// <summary>Takes back the addresses held before a reboot or restart, without waiting for the controller.</summary>
+    internal static async Task RestoreAsync(CancellationToken token)
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists(Arping)) return;
+        var owned = ReadOwned();
+        // The network can still be coming up at boot; wait for it rather than for a controller we may not reach.
+        for (var attempt = 0; owned.Count > 0 && attempt < 24; attempt++)
+        {
+            await ReconcileAsync(owned.Select(item => item.Address), token);
+            if (!status.Values.Any(item => item.State == "NoSubnet")) return;
+            await Task.Delay(TimeSpan.FromSeconds(5), token);
+        }
+    }
 
     /// <summary>Takes the addresses running stacks want and gives back every other address this agent added.</summary>
     internal static async Task ReconcileAsync(IEnumerable<string> addresses, CancellationToken token)
@@ -152,7 +167,8 @@ internal static partial class StackAddresses
 
     private static List<OwnedAddress> ReadOwned()
     {
-        try { return JsonSerializer.Deserialize<List<OwnedAddress>>(File.ReadAllText(OwnedPath), AgentJson.Options) ?? []; }
+        var path = File.Exists(OwnedPath) ? OwnedPath : LegacyOwnedPath;
+        try { return JsonSerializer.Deserialize<List<OwnedAddress>>(File.ReadAllText(path), AgentJson.Options) ?? []; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return []; }
     }
 
