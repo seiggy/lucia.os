@@ -336,7 +336,8 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     CancellationToken ct = default) =>
                     InstallCatalog(actor, app, name, node, settings, address, ct)),
             Tool(ToolTier.Change, "app_action",
-                "Starts, stops, restarts or updates an app (update pulls its images again), or cancels its move or restore.",
+                "Starts, stops, restarts or updates an app (update pulls its images again), or cancels its move or restore. "
+                    + "Private images pull only after an owner adds the registry's sign-in in Settings → Registries.",
                 async Task<object?> ([Description(AppHelp)] string app,
                     [Description("start, stop, restart, update, cancel-move or cancel-restore.")] string action, CancellationToken ct) =>
                     await stacks.Act(App(app), action, actor, ct)),

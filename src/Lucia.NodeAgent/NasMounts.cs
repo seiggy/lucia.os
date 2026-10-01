@@ -205,7 +205,7 @@ internal static partial class NasMounts
         return true;
     }
 
-    private static bool WritePrivate(string path, string text)
+    internal static bool WritePrivate(string path, string text)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
         try

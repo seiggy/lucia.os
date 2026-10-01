@@ -87,6 +87,18 @@ public static partial class StackEndpoints
             return Results.NoContent();
         });
 
+        var registries = app.MapGroup("/api/host/registries").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        registries.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.RegistryList(ct));
+        registries.MapPut("/{host}", async (string host, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.SaveRegistry(host, await ReadOwnerBody<SaveRegistryRequest>(context, 16 * 1024, "username and optionally secret", ct),
+                Actor(context), ct));
+        registries.MapDelete("/{host}", async (string host, StackStore stacks, CancellationToken ct) =>
+        {
+            await stacks.DeleteRegistry(host, ct);
+            return Results.NoContent();
+        });
+
         var backups = app.MapGroup("/api/host/backups").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
         backups.MapGet("", (StackStore stacks, CancellationToken ct) => stacks.Backups(ct));
@@ -138,7 +150,7 @@ public static partial class StackEndpoints
             return Results.Json(new
             {
                 stacks = await stacks.Sync(id, hostname, report, ct), mounts = await stacks.DesiredMounts(ct),
-                backup = await stacks.BackupRepository(ct),
+                backup = await stacks.BackupRepository(ct), registries = await stacks.DesiredRegistries(ct),
             }, HardwareOnboardingJson.Options);
         });
         nodes.MapPost("/requests", async (Guid id, HttpContext context, BootOptions options, DiscoveryChallenges challenges,

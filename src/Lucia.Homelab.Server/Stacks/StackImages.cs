@@ -139,7 +139,8 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
         foreach (var image in StackImages.Refs(compose)) _found.TryRemove(Key(image), out _);
     }
 
-    internal async Task Check(IEnumerable<string> composes, CancellationToken ct)
+    /// <param name="logins">Each signed-in registry's API host with its <c>username:secret</c>.</param>
+    internal async Task Check(IEnumerable<string> composes, IReadOnlyDictionary<string, string> logins, CancellationToken ct)
     {
         var stale = composes.SelectMany(StackImages.Refs).Where(image => StackImages.Version(image.Tag) is not null)
             .DistinctBy(Key).Where(image => !_found.TryGetValue(Key(image), out var found) || found.At < time.GetUtcNow() - Lifetime).ToArray();
@@ -147,7 +148,7 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
         {
             try
             {
-                var token = new string?[1];
+                var token = new[] { null, logins.GetValueOrDefault(repository.Key.Registry) };
                 var tags = await Tags(repository.Key.Registry, repository.Key.Path, token, ct);
                 foreach (var image in repository)
                 {
@@ -236,13 +237,42 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
         return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
     }
 
-    /// <summary>Sends anonymously, fetching a pull token when the registry asks for one.</summary>
+    /// <summary>
+    /// Signs in to a registry as <c>docker login</c> does: null when it accepts the username and secret, otherwise why not.
+    /// </summary>
+    internal static async Task<string?> SignIn(string host, string username, string secret, CancellationToken ct)
+    {
+        var api = StackStore.RegistryApi(host);
+        var name = host == "docker.io" ? "Docker Hub" : host;
+        try
+        {
+            using var response = await Send(HttpMethod.Get, new Uri($"https://{api}/v2/"), api, "", [null, $"{username}:{secret}"], ct);
+            return response.IsSuccessStatusCode ? null
+                : response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? $"{name} didn't accept that username and token."
+                : $"{name} answered {(int)response.StatusCode}.";
+        }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return $"{name} didn't accept that username and token.";
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            return $"Lucia couldn't reach {name} over HTTPS.";
+        }
+        catch (JsonException) { return $"{name} sent a reply Lucia can't read."; }
+        catch (InvalidOperationException error) { return error.Message; }
+    }
+
+    /// <summary>
+    /// Sends with the registry's saved sign-in, if any, fetching a pull token when the registry asks for one. A
+    /// <c>token</c> holds that token, then the sign-in as <c>username:secret</c>.
+    /// </summary>
     private static async Task<HttpResponseMessage> Send(HttpMethod method, Uri uri, string registry, string path, string?[] token, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
             using var request = new HttpRequestMessage(method, uri);
-            if (token[0] is { } bearer) request.Headers.Authorization = new("Bearer", bearer);
+            request.Headers.Authorization = token[0] is { } bearer ? new("Bearer", bearer) : Basic(token);
             if (uri.AbsolutePath.Contains("/manifests/", StringComparison.Ordinal))
                 foreach (var type in new[] { "application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
                     "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json" })
@@ -255,15 +285,20 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
             var values = AuthParameter().Matches(parameter).ToDictionary(match => match.Groups[1].Value.ToLowerInvariant(), match => match.Groups[2].Value);
             if (!values.TryGetValue("realm", out var realm) || !Uri.TryCreate(realm, UriKind.Absolute, out var realmUri) || realmUri.Scheme != Uri.UriSchemeHttps)
                 throw new InvalidOperationException($"{registry} asked for sign-in Lucia can't do.");
-            var query = $"scope={Uri.EscapeDataString($"repository:{path}:pull")}"
-                + (values.TryGetValue("service", out var service) ? $"&service={Uri.EscapeDataString(service)}" : "");
-            using var granted = await Http.GetAsync(new UriBuilder(realmUri) { Query = query }.Uri, ct);
+            var query = string.Join('&', new[] { path.Length > 0 ? $"scope={Uri.EscapeDataString($"repository:{path}:pull")}" : null,
+                values.TryGetValue("service", out var service) ? $"service={Uri.EscapeDataString(service)}" : null }.OfType<string>());
+            using var fetch = new HttpRequestMessage(HttpMethod.Get, new UriBuilder(realmUri) { Query = query }.Uri);
+            fetch.Headers.Authorization = Basic(token);
+            using var granted = await Http.SendAsync(fetch, ct);
             granted.EnsureSuccessStatusCode();
             var body = await granted.Content.ReadFromJsonAsync<JsonElement>(ct);
             token[0] = (body.TryGetProperty("token", out var value) || body.TryGetProperty("access_token", out value)) && value.ValueKind == JsonValueKind.String
                 ? value.GetString() : throw new InvalidOperationException($"{registry} returned no pull token.");
         }
     }
+
+    private static AuthenticationHeaderValue? Basic(string?[] token) =>
+        token[1] is { } login ? new("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(login))) : null;
 
     [GeneratedRegex(@"<([^>]+)>\s*;\s*rel=""?next""?")]
     private static partial Regex NextLink();
@@ -284,7 +319,7 @@ public sealed class ImageUpdateChecks(StackStore stacks, ImageRegistry registry,
         {
             try { await Task.Delay(TimeSpan.FromMinutes(1), stop); }
             catch (OperationCanceledException) { return; }
-            try { await registry.Check(await stacks.CheckedComposes(stop), stop); }
+            try { await registry.Check(await stacks.CheckedComposes(stop), await stacks.RegistryLogins(stop), stop); }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
             catch (Exception error) { logger.LogWarning("Image update checks failed ({ErrorType}); retrying.", error.GetType().Name); }
         }

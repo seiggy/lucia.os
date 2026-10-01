@@ -198,6 +198,26 @@ console.log('stacks checks passed')
 }
 
 {
+  const { parseRegistryList, registryHost, registryDraftProblem } = await import('../.checks/stackManagement.js')
+  const [saved] = parseRegistryList({ registries: [{ host: 'docker.io', username: 'zack', updatedAt: at, updatedBy: 'zack' }] })
+  assert.deepEqual(saved, { host: 'docker.io', username: 'zack', updatedAt: at, updatedBy: 'zack' })
+  assert.throws(() => parseRegistryList({ registries: [{ ...saved, updatedAt: 'soon' }] }))
+  assert.throws(() => parseRegistryList({ registries: Array(17).fill(saved) }))
+  for (const alias of ['hub.docker.com', ' HTTPS://Index.Docker.IO/ ', 'registry-1.docker.io']) assert.equal(registryHost(alias), 'docker.io')
+  assert.equal(registryHost('https://ghcr.io/'), 'ghcr.io')
+  const draft = { host: 'docker.io', username: 'zack', secret: 'dckr_pat_x' }
+  assert.equal(registryDraftProblem(draft, null), null)
+  assert.equal(registryDraftProblem({ ...draft, host: 'localhost:5000', username: 'org+robot' }, null), null)
+  assert.match(registryDraftProblem({ ...draft, host: 'dockerhub' }, null), /host name/)
+  assert.match(registryDraftProblem({ ...draft, host: 'ghcr.io/zack' }, null), /host name/)
+  assert.match(registryDraftProblem({ ...draft, username: 'zack:admin' }, null), /username/)
+  assert.match(registryDraftProblem({ ...draft, secret: '' }, null), /token/)
+  assert.equal(registryDraftProblem({ ...draft, secret: '' }, saved), null)
+  assert.match(registryDraftProblem({ ...draft, secret: 'a\nb' }, null), /one line/)
+  assert.deepEqual(parseRoute('#/settings/registries'), { page: 'registry-settings' })
+}
+
+{
   const { parseBackups, parseBackupRecovery, backupState, backupOrder, backupFolderProblem, ago } = await import('../.checks/stackManagement.js')
   const now = Date.parse(at)
   const snapshot = 'c'.repeat(64)

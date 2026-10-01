@@ -2,6 +2,8 @@ using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Stacks;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Options;
 
 internal static class StackChecks
 {
@@ -451,6 +453,51 @@ internal static class StackChecks
         StackStore.ValidateReport(report with { Mounts = [new("unas", "Media", "Mounted"), new("unas", "Models", "Failed", "access denied")] });
         check(true, "A valid mount report was rejected.");
         Rejects(() => StackStore.ValidateReport(report with { Mounts = [new("unas", "Media", "Exploded")] }), "An unknown mount state was accepted.");
+
+        foreach (var alias in new[] { "docker.io", "hub.docker.com", " Index.Docker.IO ", "registry-1.docker.io", "registry.hub.docker.com" })
+            check(StackStore.RegistryHost(alias) == "docker.io", $"The Docker Hub name '{alias}' wasn't kept as docker.io.");
+        check(StackStore.RegistryHost("GHCR.io") == "ghcr.io" && StackStore.RegistryHost("localhost:5000") == "localhost:5000"
+            && StackStore.RegistryApi("docker.io") == "registry-1.docker.io" && StackStore.RegistryApi("ghcr.io") == "ghcr.io",
+            "Registry hosts weren't normalised.");
+        foreach (var bad in new[] { "", "dockerhub", "bad host", "https://ghcr.io", "ghcr.io/zack", "-x.io" })
+            Rejects(() => StackStore.RegistryHost(bad), $"The registry '{bad}' was accepted.");
+        var registryRoot = Directory.CreateTempSubdirectory("lucia-registries-");
+        try
+        {
+            const string token = "dckr_pat_s3cret";
+            var registries = new StackStore(Options.Create(new HardwareOnboardingOptions { StateDirectory = Path.Combine(registryRoot.FullName, "state") }),
+                new EphemeralDataProtectionProvider(), null!, null!, null!, null!, TimeProvider.System, null!)
+            { RegistrySignIn = (_, _, secret, _) => Task.FromResult<string?>(secret == token ? null : "Docker Hub didn't accept that username and token.") };
+            async Task Refused(Func<Task> action, int status, string code, string message)
+            {
+                try { await action(); }
+                catch (HardwareOnboardingException error) when (error.StatusCode == status && error.Code == code) { check(true, message); return; }
+                throw new InvalidOperationException(message);
+            }
+            Task Save(string host, string? username, string? secret) => registries.SaveRegistry(host, new(username, secret), "tester", CancellationToken.None);
+
+            await Save("hub.docker.com", "zack", token);
+            await Save("docker.io", " zack2 ", null);
+            check(await registries.DesiredRegistries(CancellationToken.None) is [{ Host: "docker.io", Username: "zack2", Secret: token }],
+                "A sign-in saved without a token didn't keep the saved token.");
+            var listed = System.Text.Json.JsonSerializer.Serialize(await registries.RegistryList(CancellationToken.None));
+            check(listed.Contains("docker.io", StringComparison.Ordinal) && !listed.Contains(token, StringComparison.Ordinal)
+                && !File.ReadAllText(Path.Combine(registryRoot.FullName, "stacks", "registries.json")).Contains(token, StringComparison.Ordinal),
+                "A registry token was listed or stored in plain text.");
+            await Refused(() => Save("docker.io", "zack", "revoked"), 400, "registry_sign_in_failed", "A token the registry refused was saved.");
+            await Refused(() => Save("ghcr.io", "zack", null), 400, "invalid_registry_secret", "A new registry was saved without a token.");
+            await Refused(() => Save("ghcr.io", "za ck", token), 400, "invalid_registry_user", "A username with a space was accepted.");
+            await Refused(() => Save("ghcr.io", "zack", "a\nb"), 400, "invalid_registry_secret", "A token with a line break was accepted.");
+            for (var i = 1; i < StackStore.MaxRegistries; i++) await Save($"r{i}.example:5000", "org+robot", token);
+            await Save("r1.example:5000", "robot$two", token);
+            await Refused(() => Save("ghcr.io", "zack", token), 409, "too_many_registries", "A registry beyond the limit was saved.");
+            check((await registries.RegistryLogins(CancellationToken.None)).GetValueOrDefault("registry-1.docker.io") == $"zack2:{token}"
+                && (await registries.DesiredRegistries(CancellationToken.None)).Length == StackStore.MaxRegistries,
+                "Update checks didn't get Docker Hub's sign-in at its API host.");
+            await registries.DeleteRegistry("index.docker.io", CancellationToken.None);
+            await Refused(() => registries.DeleteRegistry("docker.io", CancellationToken.None), 404, "registry_not_found", "A removed registry was removed again.");
+        }
+        finally { registryRoot.Delete(true); }
         check(StackRequirements.Unmet(["memory>=1G"], null) == "memory>=1G", "A node that never reported met a requirement.");
 
         foreach (var bad in new[] { "cuda", "cuda=11", "cuda>=12", "cuda=12.4" })

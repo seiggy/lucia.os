@@ -25,6 +25,7 @@ export type Route =
   | { page: 'adguard-settings' }
   | { page: 'unifi-settings' }
   | { page: 'storage-settings' }
+  | { page: 'registry-settings' }
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
   | { page: 'assistant-settings' }
@@ -42,6 +43,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'adguard') return { page: 'adguard-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'unifi') return { page: 'unifi-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'storage') return { page: 'storage-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'registries') return { page: 'registry-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'domains') return { page: 'domain-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'ssh-keys') return { page: 'ssh-key-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'assistant') return { page: 'assistant-settings' }

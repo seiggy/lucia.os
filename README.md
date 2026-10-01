@@ -357,6 +357,16 @@ checked. `POST /api/host/stacks/{name}/upgrade-images` (`{"major": bool}`) rewri
 custom app's compose; for a catalog app it records the new pins in the app's template
 (`Images`), and the next catalog release that catches up drops them.
 
+**Private images.** Owners add up to 16 registry sign-ins in **Settings → Registries**
+(`#/settings/registries`): the registry (`docker.io`, `ghcr.io`, `registry.example.com:5000`),
+a username and a token. Use a read-only token, such as a Docker Hub personal access token
+with the Read-only scope. Lucia tries the sign-in before saving it and keeps the token
+encrypted. It never shows the token again. Every managed node gets it for pulls, and the
+update checks above use it too. Signing in to Docker Hub also lifts its anonymous pull
+limit. A revoked token makes that registry's pulls fail, public images included, until
+it's replaced or removed. API: `GET /api/host/registries`, `PUT /api/host/registries/{host}`
+(`{"username","secret"}`; a null secret keeps the saved token), `DELETE /api/host/registries/{host}`.
+
 **MusicBrainz mirror.** The catalog's MusicBrainz app runs the website and `/ws/2`
 API over its own copy of the database, with Solr search. A new install imports the
 latest data dump once (a few hours, about 100 GB); the website waits for it. With a

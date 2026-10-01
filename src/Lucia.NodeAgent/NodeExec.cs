@@ -95,7 +95,8 @@ internal static partial class NodeExec
         {
             var (exit, stdout, stderr) = await Commands.CaptureAsync("/usr/bin/systemd-run",
                 [$"--unit={unit}", "--collect", "--wait", $"--property=RuntimeMaxSec={seconds}", "--property=TimeoutStopSec=15",
-                    "--setenv=HOME=/root", "--setenv=DEBIAN_FRONTEND=noninteractive", "--", executable, script],
+                    "--setenv=HOME=/root", "--setenv=DEBIAN_FRONTEND=noninteractive",
+                    .. RegistryLogins.Environment.Select(item => $"--setenv={item.Key}={item.Value}"), "--", executable, script],
                 TimeSpan.FromSeconds(seconds + 120), token, 16 * 1024, failOnError: false);
             return Outcome(exit, stdout + "\n" + stderr, seconds);
         }

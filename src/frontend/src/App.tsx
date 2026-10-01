@@ -13,6 +13,7 @@ import type { DockState } from './assistant'
 import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
 import { StorageSettings } from './StorageSettings'
+import { RegistrySettings } from './RegistrySettings'
 import { SshKeySettings } from './SshKeySettings'
 import { AssistantSettings } from './AssistantSettings'
 import { People } from './People'
@@ -210,6 +211,7 @@ function App() {
       : route.page === 'settings' ? settings()
         : route.page === 'unifi-settings' ? <UniFiSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'storage-settings' ? <StorageSettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'registry-settings' ? <RegistrySettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'assistant-settings' ? <AssistantSettings session={session} refreshSession={authentication.refresh} />

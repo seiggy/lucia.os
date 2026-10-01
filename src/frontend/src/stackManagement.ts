@@ -650,6 +650,33 @@ export function nasDraftProblem(draft: NasDraft, saved: NasServer | null): strin
   if (new Set(names).size !== names.length) return 'Give each share a different folder name.'
   return null
 }
+
+export interface RegistryLogin { host: string; username: string; updatedAt: string; updatedBy: string }
+export interface RegistryDraft { host: string; username: string; secret: string }
+const registryHostPattern = /^(?=.{1,260}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/
+
+export function parseRegistryList(value: unknown): RegistryLogin[] {
+  return list(object(value).registries, registry => {
+    const item = object(registry)
+    return { host: text(item.host), username: text(item.username), updatedAt: timestamp(item.updatedAt), updatedBy: text(item.updatedBy) }
+  }, 16)
+}
+
+/** The registry as Lucia keys it, from a host or pasted URL: Docker Hub's other names become docker.io. */
+export function registryHost(input: string): string {
+  const host = input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '')
+  return ['hub.docker.com', 'index.docker.io', 'registry-1.docker.io', 'registry.hub.docker.com'].includes(host) ? 'docker.io' : host
+}
+
+export function registryDraftProblem(draft: RegistryDraft, saved: RegistryLogin | null): string | null {
+  const host = registryHost(draft.host)
+  if (!registryHostPattern.test(host) || !/[.:]/.test(host)) return "Enter the registry's host name, such as docker.io or ghcr.io."
+  if (!/^[!-9;-~]{1,256}$/.test(draft.username.trim())) return 'Enter the username, without spaces or colons.'
+  if (!draft.secret && !saved) return 'Enter the access token or password.'
+  if (draft.secret.length > 4096 || [...draft.secret].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) >= 127 && character.charCodeAt(0) < 160))
+    return 'The token must be 1 to 4096 characters on one line.'
+  return null
+}
 export type BackupState = 'Running' | 'Succeeded' | 'Failed'
 export interface BackupStatus {
   id: string; state: BackupState; startedAt: string; finishedAt: string | null; snapshot: string | null

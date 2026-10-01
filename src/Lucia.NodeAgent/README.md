@@ -284,6 +284,14 @@ A failed apply is reported with its error and retried after two minutes. When a
 stack is deleted in Lucia, the node takes it down and deletes its compose and env
 files. Its data directories are kept.
 
+Registry sign-ins from **Settings → Registries** come with each sync. The agent
+writes them to `/etc/lucia/docker/config.json` (`0600`, in a `0700` directory).
+While that file exists, Compose and the assistant's commands run with
+`DOCKER_CONFIG=/etc/lucia/docker`, so they can pull private images. Root's own
+`~/.docker` is never changed. Removing the last sign-in deletes the file, and
+Docker goes back to root's config. Older servers send no registries, and the
+file is then left as it is.
+
 The agent also holds a long-poll open for **requests**. Each is one fixed kind
 with fixed argument arrays; the server can't send commands or arguments beyond
 these:

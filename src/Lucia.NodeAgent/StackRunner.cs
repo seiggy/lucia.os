@@ -70,6 +70,8 @@ internal static partial class StackRunner
                 // Older servers send no mounts; leave existing units alone rather than removing them.
                 if (desired.Mounts is { } mounts) NasMounts.Reconcile(mounts, token);
                 ResticBackups.Configure(desired.Backup, token);
+                // Older servers send no registries either; keep the sign-ins Docker has.
+                if (desired.Registries is { } registries) RegistryLogins.Write(registries);
                 try
                 {
                     await StackAddresses.ReconcileAsync((desired.Stacks ?? []).Where(stack => stack.Desired == "Running" && stack.Send is null)
@@ -388,7 +390,7 @@ internal static partial class StackRunner
         List<string> command = ["compose", "-p", Project(name), "--project-directory", directory,
             "--env-file", Path.Combine(directory, ".env"), "-f", Path.Combine(directory, "compose.yaml")];
         if (File.Exists(Path.Combine(directory, "compose.lucia.json"))) command.AddRange(["-f", Path.Combine(directory, "compose.lucia.json")]);
-        return Commands.RunAsync("/usr/bin/docker", [.. command, .. arguments], limit, token);
+        return Commands.RunAsync("/usr/bin/docker", [.. command, .. arguments], limit, token, environment: RegistryLogins.Environment);
     }
 
     /// <summary>
@@ -574,8 +576,8 @@ internal static partial class StackRunner
 internal static class Commands
 {
     internal static async Task<string> RunAsync(string executable, string[] arguments, TimeSpan limit, CancellationToken token,
-        int keep = 256 * 1024) =>
-        (await CaptureAsync(executable, arguments, limit, token, keep, failOnError: true)).Stdout;
+        int keep = 256 * 1024, IReadOnlyDictionary<string, string>? environment = null) =>
+        (await CaptureAsync(executable, arguments, limit, token, keep, failOnError: true, environment)).Stdout;
 
     internal static async Task<(int Exit, string Stdout, string Stderr)> CaptureAsync(string executable, string[] arguments,
         TimeSpan limit, CancellationToken token, int keep, bool failOnError, IReadOnlyDictionary<string, string>? environment = null)
