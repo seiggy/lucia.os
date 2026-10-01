@@ -24,7 +24,8 @@ public sealed class AssistantOptions
 public sealed record AssistantTurn(string Owner, string SessionKey, string Prompt, string? Model);
 
 /// <summary>One Copilot CLI child in Empty mode (no built-in tools, files, shell or ambient config), shared by every session.</summary>
-public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubSignIn github, ILoggerFactory loggers) : IAsyncDisposable
+public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubSignIn github, AssistantProviders providers,
+    ILoggerFactory loggers) : IAsyncDisposable
 {
     public const string TelemetryName = "Lucia.Assistant";
 
@@ -108,35 +109,42 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         finally { _gate.Release(); }
     }
 
+    /// <summary>Every source's models; a source that can't list says why instead of failing the others.
+    /// <c>connected</c> is false when Copilot can't be used with the owner's sign-in, and stays true through a passing failure.</summary>
     public async Task<object> ModelsAsync(string owner, CancellationToken ct)
     {
-        if (await github.TokenAsync(owner, ct) is not { } token)
-            return new { connected = false, defaultModel = DefaultModel, models = Array.Empty<object>() };
+        var others = providers.ListAsync(owner, ct);
+        var (connected, copilot) = await CopilotModelsAsync(owner, ct);
+        AssistantSource[] sources = [copilot, .. await others];
+        return new { connected, defaultModel = DefaultModel, sources, models = sources.SelectMany(source => source.Models).ToArray() };
+    }
+
+    private async Task<(bool Connected, AssistantSource Source)> CopilotModelsAsync(string owner, CancellationToken ct)
+    {
+        const string id = "github", name = "GitHub Copilot";
+        if (await github.TokenAsync(owner, ct) is not { } token) return (false, new(id, name, [], "Sign in with GitHub to use Copilot's models."));
         try
         {
             var client = await ClientAsync(ct);
             var list = await client.Rpc.Models.ListAsync(gitHubToken: token, cancellationToken: ct);
-            return new
-            {
-                connected = true,
-                defaultModel = DefaultModel,
-                models = list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled)
-                    .Select(model => new { id = model.Id, name = model.Name }).ToArray()
-            };
+            return (true, new(id, name, list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled)
+                .Select(model => new AssistantModel(model.Id, model.Name)).ToArray()));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            if (await github.ExplainAsync(owner, e) is { } explained) throw explained;
-            throw;
+            if (await github.ExplainAsync(owner, e) is { } explained) return (false, new(id, name, [], explained.Message));
+            _logger.LogWarning("Listing Copilot's models failed ({ErrorType}).", e.GetType().Name);
+            return (true, new(id, name, [], "Copilot's models couldn't be listed. Try again shortly."));
         }
     }
 
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(AssistantTurn turn, [EnumeratorCancellation] CancellationToken ct)
     {
-        var token = await github.TokenAsync(turn.Owner, ct) ?? throw GitHubSignIn.NotConnected();
+        var (provider, model) = await providers.ResolveAsync(turn.Owner, turn.Model ?? DefaultModel, ct);
+        var token = provider is null ? await github.TokenAsync(turn.Owner, ct) ?? throw GitHubSignIn.NotConnected() : null;
         var client = await ClientAsync(ct);
         var resume = await client.GetSessionMetadataAsync(turn.SessionKey, ct) is not null;
-        var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, turn.Model, token),
+        var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, model, token, provider),
             name: "lucia-assistant", loggerFactory: loggers);
         using var agent = new OpenTelemetryAgent(copilot, TelemetryName);
         var session = resume ? await copilot.CreateSessionAsync(turn.SessionKey) : await copilot.CreateSessionAsync(ct);
@@ -150,10 +158,11 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var token = await github.TokenAsync(owner, timeout.Token);
+            var (provider, resolved) = await providers.ResolveAsync(owner, model ?? DefaultModel, timeout.Token);
+            var token = provider is null ? await github.TokenAsync(owner, timeout.Token) : null;
             var client = await ClientAsync(timeout.Token);
             await using var session = await client.ResumeSessionAsync(sessionKey,
-                Configure(new ResumeSessionConfig(), model, token), timeout.Token);
+                Configure(new ResumeSessionConfig(), resolved, token, provider), timeout.Token);
             await session.AbortAsync(timeout.Token);
         }
         catch (Exception e)
@@ -171,8 +180,10 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         }
     }
 
-    private T Configure<T>(T config, string? model, string? token) where T : SessionConfigBase
+    /// <summary>A provider replaces Copilot's API and its sign-in for the whole session.</summary>
+    private T Configure<T>(T config, string? model, string? token, ProviderConfig? provider) where T : SessionConfigBase
     {
+        config.Provider = provider;
         config.AvailableTools = [];
         config.DisabledMcpServers = ["github-mcp-server"];
         config.OnPermissionRequest = static (_, _) => Task.FromResult(PermissionDecision.Reject("Lucia's assistant has no tools yet."));
@@ -181,7 +192,7 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         config.ClientName = "lucia";
         config.Streaming = true;
         config.GitHubToken = token;
-        config.Model = model ?? DefaultModel;
+        config.Model = model;
         var sections = CodingSections.ToDictionary(section => section, _ => new SectionOverride { Action = SectionOverrideAction.Remove });
         sections[SystemMessageSection.Identity] = new() { Action = SectionOverrideAction.Replace, Content = Identity };
         config.SystemMessage = new SystemMessageConfig { Mode = SystemMessageMode.Customize, Sections = sections };

@@ -13,7 +13,8 @@ import {
 } from './components/ai-elements/prompt-input'
 import type { PromptInputMessage } from './components/ai-elements/prompt-input'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './components/ai-elements/reasoning'
-import { chatTitle, chooseModel, isChatId, maxMessageLength, messageText, newChatId, pageRoute, parseGitHub, parseModels, parseSessions, parseTranscript, settledText } from './assistant'
+import { SelectGroup, SelectLabel } from './components/ui/select'
+import { chatTitle, chooseModel, isChatId, isGitHubModel, maxMessageLength, messageText, newChatId, pageRoute, parseGitHub, parseModels, parseSessions, parseTranscript, settledText, signInModel } from './assistant'
 import type { AssistantMetadata, AssistantMode, AssistantModels, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
@@ -151,7 +152,7 @@ function useGitHub(auth: AuthRef): GitHub {
 
 const gateCopy: Record<Exclude<GitHubState, 'pending'>, [message: string, action: string]> = {
   connected: ['', 'Sign in again'],
-  disconnected: ['Sign in with GitHub to start asking. The assistant runs on your GitHub Copilot plan.', 'Sign in with GitHub'],
+  disconnected: ['Sign in with GitHub to use Copilot’s models. They run on your GitHub Copilot plan.', 'Sign in with GitHub'],
   expired: ['The code expired before it was entered on GitHub.', 'Get a new code'],
   denied: ['Access was declined on GitHub.', 'Try again'],
   error: ['Lucia could not finish the sign-in.', 'Try again'],
@@ -274,6 +275,8 @@ type ChatViewProps = {
 function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed }: ChatViewProps) {
   const draft = usePromptInputController()
   const input = useRef<HTMLTextAreaElement>(null)
+  const composer = useRef<HTMLDivElement>(null)
+  const picked = useRef<string>(undefined)
   const [phase, setPhase] = useState<'loading' | 'resuming' | 'ready'>(fresh ? 'ready' : 'loading')
   const [loadError, setLoadError] = useState<Error | null>(null)
   const [sent, setSent] = useState(false)
@@ -338,13 +341,15 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
   const focusInput = useCallback(() => input.current?.focus(), [])
 
   const busy = status === 'submitted' || status === 'streaming' || phase === 'resuming'
-  const connected = !github.status || (github.status.state === 'connected' && !github.notice)
+  // Only Copilot's models need the GitHub sign-in; LiteLLM and Local AI answer without it.
+  const needsGitHub = isGitHubModel(model)
+  const connected = !needsGitHub || (model !== signInModel && (!github.status || (github.status.state === 'connected' && !github.notice)))
   const ready = phase === 'ready' && !loadError
   const canAsk = ready && connected && !busy
   const last = messages.at(-1)
   const answering = busy && !(last?.role === 'assistant' && last.parts.some(part => (part.type === 'text' || part.type === 'reasoning') && part.text))
   const request = () => ({
-    body: { mode, model, route: pageRoute(location.hash) },
+    body: { mode, model: model === signInModel ? undefined : model, route: pageRoute(location.hash) },
     headers: { 'X-CSRF-TOKEN': auth.current.session.csrfToken ?? '' },
   })
   function send(text: string) {
@@ -371,6 +376,22 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     // The host refused this message because another answer is running, so keep its text for resending.
     if (failureCode(error) === 'run_active' && last?.role === 'user' && !draft.textInput.value.trim()) draft.textInput.setInput(messageText(last))
     onReload()
+  }
+  function pick(id: string) {
+    // Inside a form, Radix's hidden select reports '' when the value and its options change together.
+    if (!id) return
+    picked.current = id
+    onModel(id)
+  }
+  // Picking the GitHub sign-in moves focus to it rather than back to the picker.
+  function focusSignIn(event: Event) {
+    const signIn = picked.current === signInModel
+    picked.current = undefined
+    const gate = composer.current
+    const target = signIn && (gate?.querySelector<HTMLElement>('.assistant-gate [data-autofocus]') ?? gate?.querySelector<HTMLElement>('.assistant-gate button'))
+    if (!target) return
+    event.preventDefault()
+    target.focus()
   }
 
   let notice: ReactNode = null
@@ -403,8 +424,8 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
       </ConversationContent>
       <ConversationScrollButton aria-label="Scroll to the latest message" />
     </Conversation>
-    <div className="assistant-composer">
-      <GitHubGate github={github} onFocusInput={focusInput} />
+    <div className="assistant-composer" ref={composer}>
+      {models && needsGitHub && <GitHubGate github={github} onFocusInput={focusInput} />}
       <PromptInput onSubmit={submit}>
         <PromptInputBody>
           <PromptInputTextarea ref={input} aria-label="Message the assistant" placeholder="Ask about this page or your lab…" maxLength={maxMessageLength}
@@ -416,10 +437,19 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
               <button type="button" aria-pressed={mode === 'plan'} title="Get a short plan to review first" onClick={() => onMode('plan')}>Plan</button>
               <button type="button" aria-pressed={mode === 'execute'} title="Get a direct answer" onClick={() => onMode('execute')}>Execute</button>
             </div>
-            {model && !!models?.models.length && <PromptInputSelect value={model} onValueChange={onModel}>
-              <PromptInputSelectTrigger className="assistant-model" aria-label="Model"><PromptInputSelectValue /></PromptInputSelectTrigger>
-              <PromptInputSelectContent className="assistant">
-                {models.models.map(item => <PromptInputSelectItem key={item.id} value={item.id}>{item.name}</PromptInputSelectItem>)}
+            {model && models && <PromptInputSelect value={model} onValueChange={pick}>
+              <PromptInputSelectTrigger className="assistant-model" aria-label="Model" title={models.models.find(item => item.id === model)?.name}>
+                <PromptInputSelectValue /></PromptInputSelectTrigger>
+              <PromptInputSelectContent className="assistant" position="popper" side="top" align="start" collisionPadding={16} onCloseAutoFocus={focusSignIn}>
+                {models.sources.map(source => {
+                  const signIn = source.id === 'github' && !models.connected
+                  return (signIn || source.models.length > 0 || source.reason) && <SelectGroup key={source.id}>
+                    <SelectLabel>{source.name}</SelectLabel>
+                    {source.models.map(item => <PromptInputSelectItem key={item.id} value={item.id}>{item.name}</PromptInputSelectItem>)}
+                    {signIn ? <PromptInputSelectItem value={signInModel}>Sign in with GitHub…</PromptInputSelectItem>
+                      : source.reason && <p className="assistant-model-reason">{source.reason}</p>}
+                  </SelectGroup>
+                })}
               </PromptInputSelectContent>
             </PromptInputSelect>}
           </PromptInputTools>
@@ -567,9 +597,8 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
   const { check: checkGitHub, setNotice } = github
   const linked = github.status ? github.status.state === 'connected' : null
 
-  // Models come from Copilot, so they wait for a sign-in; a refusal then explains itself above the composer.
+  // Every source lists its own models, so Copilot's sign-in gates only Copilot's; a refusal explains itself above the composer.
   useEffect(() => {
-    if (!linked) return
     const controller = new AbortController()
     ownerRequest(auth.current.session, auth.current.refreshSession, '/api/assistant/models', 'GET', undefined, controller.signal)
       .then(response => response.json())
@@ -578,15 +607,17 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
         const available = parseModels(value)
         setModels(available)
         setModel(chooseModel(available, readStored(modelKey)))
-        setNotice(null)
-        if (!available.connected) void checkGitHub()
+        if (available.connected) setNotice(null)
+        else {
+          // When GitHub ends the sign-in, its explanation stays after the status turns disconnected.
+          if (linked) setNotice(available.sources.find(source => source.id === 'github')?.reason ?? null)
+          void checkGitHub()
+        }
       })
       .catch(failure => {
         if (controller.signal.aborted) return
-        const code = failureCode(failure)
-        if (code === 'copilot_unavailable' || code === 'github_signed_out') setNotice(failureMessage(failure, 'Sign in with GitHub again.'))
-        if (code === 'github_signed_out' || code === 'assistant_not_connected') void checkGitHub()
-        else if (code !== 'copilot_unavailable') console.warn('Lucia could not list assistant models.', failure)
+        console.warn('Lucia could not list assistant models.', failure)
+        setModels(current => current ?? { connected: false, sources: [], models: [] })
       })
     return () => controller.abort()
   }, [linked, modelsRound, checkGitHub, setNotice])
@@ -641,7 +672,7 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
         </div>
       </header>
       <ChatView key={`${chat.id}:${chat.nonce}`} id={chat.id} fresh={chat.fresh} hidden={view === 'history'} auth={auth} page={page}
-        github={github} models={linked && !github.notice ? models : null} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
+        github={github} models={models} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
         focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} />
       {view === 'history' && <ChatHistory auth={auth} current={chat.id} focusKey={focusToken} onOpen={openChat}
         onForget={id => { if (id === chat.id) startChat() }} />}

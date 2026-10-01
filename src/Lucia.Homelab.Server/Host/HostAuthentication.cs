@@ -236,6 +236,16 @@ public static class HostAuthentication
                 await next(context);
                 return;
             }
+            // The assistant's Copilot CLI runs in this container and reaches its OpenAI API over loopback HTTP.
+            // Traefik connects through Docker's network, never loopback; the API key is still required.
+            if (context.Connection.LocalIpAddress is { } local
+                && System.Net.IPAddress.IsLoopback(local.IsIPv4MappedToIPv6 ? local.MapToIPv4() : local)
+                && context.Request.Path.StartsWithSegments("/v1")
+                && context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                await next(context);
+                return;
+            }
             if (!context.Request.IsHttps || !origins.Any(origin => MatchesOrigin(context.Request, origin)))
             {
                 await WriteErrorAsync(context, 400, "Use the configured public HTTPS origin.", "invalid_origin");

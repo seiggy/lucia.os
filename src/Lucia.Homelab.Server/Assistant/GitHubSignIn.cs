@@ -38,7 +38,7 @@ public sealed partial class GitHubSignIn(IOptions<AssistantOptions> options, IDa
         Timeout = TimeSpan.FromSeconds(15), MaxResponseContentBufferSize = 65_536
     };
 
-    public static AssistantException NotConnected() => new(503, "assistant_not_connected", "Sign in with GitHub to use the assistant.");
+    public static AssistantException NotConnected() => new(503, "assistant_not_connected", "Sign in with GitHub to use Copilot's models.");
 
     public GitHubStatus Status(string owner)
     {

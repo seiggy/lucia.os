@@ -885,6 +885,19 @@ the target RID from GitHub releases (set `CopilotCliReleaseBaseUrl` to use a
 mirror). The host package keeps only its launcher and module
 (`runtimes/linux-arm64/native/copilot-runtime` and `runtime.node`).
 
+Not every model needs GitHub. The model picker groups models by where they run:
+GitHub Copilot, LiteLLM and Local AI. LiteLLM and Local AI models run in the
+same Copilot runtime as bring-your-own-key OpenAI-compatible providers, so they
+work without the GitHub sign-in. For an installed LiteLLM app, the host mints a
+virtual key per owner with the app's master key, keeps it encrypted under
+`litellm/` in `Assistant__Directory`, and mints a new one if LiteLLM rejects it.
+The Spark's loaded chat model is reached at `http://127.0.0.1:<port>/v1` with
+`HostPlatform__InferenceApiKey`: loopback `/v1` requests that carry a bearer key
+skip the browser origin check, but the key is still verified, and Traefik never
+connects over loopback. Each node's Local AI app adds its chat models, labeled
+with the node. A source without models says why in the picker, for example not
+installed, no model loaded, or not answering.
+
 OpenAI compatibility comes from TensorSharp's protocol adapters, not a claim
 of complete OpenAI API parity. This host exposes text chat and embeddings only,
 not TensorSharp's web UI, code execution, skills, media upload, or video APIs.
@@ -905,6 +918,7 @@ memory reservations, Qwen tool-call parsing, and HTTP permission boundaries.
 They use a tiny synthetic GGUF and a fake CLI; they do not substitute for
 selected-model GPU inference and tool-quality qualification on the Spark.
 The assistant checks cover stream mapping, turn replay, request validation,
-retries, per-owner chat storage, and GitHub sign-in (device flow, token renewal
-and sign-out) against a scripted GitHub, without starting the Copilot runtime or
+retries, per-owner chat storage, GitHub sign-in (device flow, token renewal
+and sign-out) against a scripted GitHub, and LiteLLM and Local AI model routing
+against scripted apps, without starting the Copilot runtime or
 using a real GitHub token.

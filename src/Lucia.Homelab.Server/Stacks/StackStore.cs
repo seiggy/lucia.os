@@ -36,6 +36,8 @@ public sealed record MoveStackRequest(string Node);
 public sealed record ServeModelRequest(Guid? ModelId, string? Context = null);
 /// <summary>A move in progress: the source stops the stack and streams its data to the target, which then starts it.</summary>
 public sealed record StackMove(Guid Id, string From, string To, string Desired, DateTimeOffset StartedAt, string StartedBy);
+/// <summary>An AI app's OpenAI API as this host reaches it. <paramref name="Problem"/> says why it can't be used, as a sentence.</summary>
+public sealed record AppEndpoint(string Template, string Stack, string Node, Uri? BaseUri, string? Key, string? Problem);
 
 public sealed record StackServiceStatus(string Service, string State, string? Health, string? Image, int? ExitCode);
 /// <param name="Received">The move whose data this node has finished receiving for the stack.</param>
@@ -516,6 +518,32 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     }
 
     private static readonly HttpClient ServingClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    /// <summary>Each LiteLLM and Local AI app: where this host reaches its OpenAI API and the key it takes, or why it can't.</summary>
+    public async Task<IReadOnlyList<AppEndpoint>> AiEndpoints(CancellationToken ct)
+    {
+        var addresses = await nodes.Addresses(ct);
+        var endpoints = new List<AppEndpoint>();
+        foreach (var stack in (await Read(ct)).Where(item => item.Manifest.Template?.Id is "litellm" or "local-ai").OrderBy(item => item.Name, StringComparer.Ordinal))
+        {
+            var template = stack.Manifest.Template!;
+            var what = $"{(template.Id == "litellm" ? "LiteLLM" : "Local AI")} on {stack.Assigned}";
+            var address = stack.Manifest.Address ?? addresses.FirstOrDefault(item => item.Hostname == stack.Assigned)?.Address;
+            string? key = null;
+            try { key = StackCatalog.ReadEnv(_protector.Unprotect(stack.ProtectedEnv)).GetValueOrDefault(template.Id == "litellm" ? "LITELLM_MASTER_KEY" : "LUCIA_INFERENCE_KEY"); }
+            catch (System.Security.Cryptography.CryptographicException) { }
+            Uri? baseUri = null;
+            string? problem = null;
+            if (stack.Move is not null) problem = $"{what} is moving.";
+            else if (stack.Desired != "Running") problem = $"{what} is stopped. Start it in Apps.";
+            else if (!IPAddress.TryParse(address, out var ip) || !int.TryParse(template.Settings?.GetValueOrDefault("port"), CultureInfo.InvariantCulture, out var port))
+                problem = $"{what} hasn't checked in.";
+            else if (key is not { Length: > 0 }) problem = $"{what} has no API key. Save it again in Apps.";
+            else baseUri = new UriBuilder("http", ip.ToString(), port).Uri;
+            endpoints.Add(new(template.Id, stack.Name, stack.Assigned, baseUri, problem is null ? key : null, problem));
+        }
+        return endpoints;
+    }
 
     /// <summary>What Local AI's engine serves. <c>ready</c> means vLLM or llama.cpp answered with the inference key; for llama.cpp,
     /// <c>models</c> is its router's list, which reading also makes it reread the worker's preset file.</summary>

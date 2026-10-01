@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { chatTitle, chooseModel, isChatId, messageText, newChatId, pageRoute, parseDock, parseGitHub, parseModels, parseSessions, parseTranscript, settledText }
-  from '../.checks/assistant.js'
+import { chatTitle, chooseModel, isChatId, isGitHubModel, messageText, newChatId, pageRoute, parseDock, parseGitHub, parseModels, parseSessions, parseTranscript,
+  settledText, signInModel } from '../.checks/assistant.js'
 
 const id = newChatId()
 assert.ok(isChatId(id))
@@ -42,16 +42,33 @@ assert.deepEqual(parseSessions({ sessions: [summary, { ...summary, model: null, 
 for (const broken of [null, { sessions: {} }, { sessions: [{ ...summary, id: 'nope' }] }, { sessions: [{ ...summary, running: 'no' }] }])
   assert.throws(() => parseSessions(broken))
 
-const models = parseModels({ connected: true, defaultModel: 'gpt-5-mini', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' },
-  { id: 'claude sonnet', name: 'Bad id' }, { id: 'o4', name: ' ' }] })
-assert.deepEqual(models, { connected: true, defaultModel: 'gpt-5-mini', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'o4', name: 'o4' }] })
-assert.deepEqual(parseModels({ connected: false, defaultModel: null, models: [] }), { connected: false, models: [] })
-assert.throws(() => parseModels({ connected: 'yes', models: [] }))
+const models = parseModels({ connected: true, defaultModel: 'gpt-5-mini', sources: [
+  { id: 'github', name: 'GitHub Copilot', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'claude sonnet', name: 'Bad id' }, { id: 'o4', name: ' ' }] },
+  { id: ' litellm ', name: ' ', models: 'none', reason: `  ${'x'.repeat(500)}  ` },
+  { id: 'local', name: 'Local AI', models: [{ id: 'local:qwen3', name: 'qwen3 · Spark' }, null], reason: ' ' },
+  null, { id: ' ', name: 'No id' }, 'github'] })
+assert.deepEqual(models, { connected: true, defaultModel: 'gpt-5-mini', sources: [
+  { id: 'github', name: 'GitHub Copilot', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'o4', name: 'o4' }] },
+  { id: 'litellm', name: 'litellm', models: [], reason: 'x'.repeat(400) },
+  { id: 'local', name: 'Local AI', models: [{ id: 'local:qwen3', name: 'qwen3 · Spark' }] }],
+  models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'o4', name: 'o4' }, { id: 'local:qwen3', name: 'qwen3 · Spark' }] })
+assert.deepEqual(parseModels({ connected: false, defaultModel: null, sources: [] }), { connected: false, sources: [], models: [] })
+for (const broken of [{ connected: 'yes', sources: [] }, { connected: true, models: [] }]) assert.throws(() => parseModels(broken))
 assert.equal(chooseModel(models, 'o4'), 'o4')
+assert.equal(chooseModel(models, 'local:qwen3'), 'local:qwen3')
 assert.equal(chooseModel(models, 'retired'), 'gpt-5-mini')
+assert.equal(chooseModel(models, signInModel), 'gpt-5-mini')
 assert.equal(chooseModel({ ...models, defaultModel: 'retired' }, null), 'gpt-5-mini')
-assert.equal(chooseModel({ connected: true, models: [{ id: 'o4', name: 'o4' }] }, undefined), 'o4')
-assert.equal(chooseModel({ connected: false, models: [] }, 'o4'), undefined)
+assert.equal(chooseModel({ connected: true, sources: [], models: [{ id: 'o4', name: 'o4' }] }, undefined), 'o4')
+assert.equal(chooseModel({ connected: true, sources: [], models: [] }, 'o4'), undefined)
+// Without Copilot, BYOK models answer and the sign-in stays a choice; with nothing listed, signing in is the only one.
+const byok = { connected: false, defaultModel: 'gpt-5-mini', sources: [], models: [{ id: 'litellm:llama3', name: 'llama3' }] }
+assert.equal(chooseModel(byok, 'gpt-5-mini'), 'litellm:llama3')
+assert.equal(chooseModel(byok, signInModel), signInModel)
+assert.equal(chooseModel({ connected: false, sources: [], models: [] }, 'o4'), signInModel)
+assert.equal(signInModel, 'github:')
+for (const model of [undefined, 'gpt-5-mini', signInModel, 'localhost:llama3']) assert.ok(isGitHubModel(model), String(model))
+for (const model of ['litellm:llama3', 'local:qwen3', 'local:ollama/llama3']) assert.ok(!isGitHubModel(model), model)
 
 const transcript = parseTranscript({ id, title: 'Add Immich', running: false, messages: [
   { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'How do I add Immich?' }] },

@@ -12,7 +12,8 @@ export type AssistantMessage = { id: string; role: 'user' | 'assistant'; parts: 
 export type Transcript = { title: string; messages: AssistantMessage[]; running: boolean }
 export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean }
 export type AssistantModel = { id: string; name: string }
-export type AssistantModels = { connected: boolean; defaultModel?: string; models: AssistantModel[] }
+export type AssistantSource = { id: string; name: string; models: AssistantModel[]; reason?: string }
+export type AssistantModels = { connected: boolean; defaultModel?: string; sources: AssistantSource[]; models: AssistantModel[] }
 export type GitHubState = 'connected' | 'pending' | 'disconnected' | 'expired' | 'denied' | 'error'
 export type GitHubStatus = { state: GitHubState; login?: string; userCode?: string; verificationUri?: string; message?: string }
 export type DockSide = 'left' | 'right'
@@ -36,6 +37,10 @@ export function newChatId(): string {
 
 export const isChatId = (value: unknown): value is string => typeof value === 'string' && chatIdPattern.test(value)
 export const isModelId = (value: unknown): value is string => typeof value === 'string' && modelPattern.test(value)
+// Picking this asks for a GitHub sign-in; it is never sent.
+export const signInModel = 'github:'
+// Mirrors the host: LiteLLM and Local AI ids carry their source, and every other id is Copilot's.
+export const isGitHubModel = (id?: string) => !id || !/^(litellm|local):/.test(id)
 
 export function pageRoute(hash: string): string | undefined {
   const route = hash.replace(/^#/, '').split('?')[0] || '/'
@@ -82,11 +87,19 @@ export function parseSessions(value: unknown): ChatSummary[] {
   })
 }
 
+const trimmed = (value: unknown) => typeof value === 'string' ? value.trim() : ''
+
 export function parseModels(value: unknown): AssistantModels {
-  if (!record(value) || typeof value.connected !== 'boolean' || !Array.isArray(value.models)) throw unexpected()
-  const models = value.models.flatMap(item => record(item) && isModelId(item.id)
-    ? [{ id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : item.id }] : [])
-  return { connected: value.connected, models, ...(isModelId(value.defaultModel) ? { defaultModel: value.defaultModel } : {}) }
+  if (!record(value) || typeof value.connected !== 'boolean' || !Array.isArray(value.sources)) throw unexpected()
+  const sources = value.sources.flatMap((item): AssistantSource[] => {
+    if (!record(item) || !trimmed(item.id)) return []
+    const models = Array.isArray(item.models) ? item.models.flatMap(model => record(model) && isModelId(model.id)
+      ? [{ id: model.id, name: trimmed(model.name) || model.id }] : []) : []
+    const reason = trimmed(item.reason).slice(0, 400)
+    return [{ id: trimmed(item.id), name: trimmed(item.name) || trimmed(item.id), models, ...(reason ? { reason } : {}) }]
+  })
+  return { connected: value.connected, sources, models: sources.flatMap(source => source.models),
+    ...(isModelId(value.defaultModel) ? { defaultModel: value.defaultModel } : {}) }
 }
 
 // The sign-in page opens in a new tab, so only GitHub's own HTTPS pages are accepted.
@@ -133,11 +146,12 @@ export function parseTranscript(value: unknown): Transcript {
   return { title: typeof value.title === 'string' && value.title.trim() ? value.title : 'Chat', messages, running: value.running }
 }
 
+// Choosing GitHub stays chosen until Copilot can be used, so a refusal after signing in still explains itself.
 export function chooseModel(models: AssistantModels, saved: string | null | undefined): string | undefined {
   const listed = (id: string) => models.models.some(model => model.id === id)
-  if (saved && listed(saved)) return saved
+  if (saved && (listed(saved) || (saved === signInModel && !models.connected))) return saved
   if (models.defaultModel && listed(models.defaultModel)) return models.defaultModel
-  return models.models[0]?.id
+  return models.models[0]?.id ?? (models.connected ? undefined : signInModel)
 }
 
 export function parseDock(value: unknown, wide: boolean): DockState {

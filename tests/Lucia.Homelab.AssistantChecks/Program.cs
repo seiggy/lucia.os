@@ -7,6 +7,7 @@ using System.Threading.Channels;
 using System.Web;
 using GitHub.Copilot;
 using Lucia.Homelab.Server.Assistant;
+using Lucia.Homelab.Server.Stacks;
 using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.AI;
@@ -172,9 +173,22 @@ try
         access_token = access, token_type = "bearer", scope = "", expires_in = expires, refresh_token = refresh, refresh_token_expires_in = 15_897_600
     };
 
+    // Bring-your-own models against scripted LiteLLM and Local AI apps: no network.
+    var openAi = new FakeOpenAi();
+    IReadOnlyList<AppEndpoint> apps =
+    [
+        new("litellm", "llm", "lucialab01", new Uri("http://10.0.0.5:4000/"), "sk-master", null),
+        new("local-ai", "ai", "lucialab02", new Uri("http://10.0.0.6:8000/"), "local-key", null),
+        new("local-ai", "ai-old", "lucialab03", new Uri("http://10.0.0.7:8000/"), "local-key", null),
+        new("local-ai", "ai-off", "lucialab04", null, null, "Local AI on lucialab04 is stopped. Start it in Apps.")
+    ];
+    var spark = new SparkInference(new Uri("http://127.0.0.1:8080/v1"), "inference-key", "qwen3-spark", 32_768, 2_048, null);
+    var providers = new AssistantProviders(options, new EphemeralDataProtectionProvider(), NullLogger<AssistantProviders>.Instance,
+        new HttpClient(openAi), _ => Task.FromResult(apps), () => spark);
+
     // Runs and chat files. Shutdown is already underway, so each turn stops before the Copilot runtime starts:
     // turns run end to end without a CLI, a real token or network.
-    await using var runtime = new AssistantRuntime(options, signIn, NullLoggerFactory.Instance);
+    await using var runtime = new AssistantRuntime(options, signIn, providers, NullLoggerFactory.Instance);
     await using var runs = new AssistantRuns(runtime, options, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance);
     const string owner = "0123456789abcdef", stranger = "fedcba9876543210";
     var chat = Guid.NewGuid().ToString("N");
@@ -191,8 +205,53 @@ try
     await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi"), default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
     Check(!Directory.Exists(Path.Combine(directory, "users")), "Rejected requests write nothing.");
-    Check(signIn.Status(owner) == new GitHubStatus("disconnected") && !(bool)Node(await runtime.ModelsAsync(owner, default))["connected"]!,
-        "Before signing in, the owner is disconnected and no models are listed.");
+    var listed = Node(await runtime.ModelsAsync(owner, default));
+    var sources = listed["sources"]!.AsArray();
+    Check(signIn.Status(owner) == new GitHubStatus("disconnected") && !(bool)listed["connected"]! && (string)sources[0]!["id"]! == "github"
+        && sources[0]!["models"]!.AsArray().Count == 0 && (string)sources[0]!["reason"]! == "Sign in with GitHub to use Copilot's models.",
+        "Before signing in, the owner is disconnected and Copilot's models ask them to sign in.");
+    Check(string.Join(",", listed["models"]!.AsArray().Select(item => (string)item!["id"]!)) == "litellm:gpt-4o,local:qwen3-spark,local:ai/qwen3"
+        && (string)listed["models"]![2]!["name"]! == "qwen3 · lucialab02",
+        "LiteLLM's and Local AI's chat models list without GitHub; embedding models and unsafe ids are left out.");
+    Check((string)sources[2]!["reason"]! == "Local AI on lucialab03 isn't answering. Local AI on lucialab04 is stopped. Start it in Apps.",
+        "Local AI apps that can't serve say why, and the others still list.");
+    var keyFile = Path.Combine(directory, "litellm", owner + ".json");
+    Check(openAi.Minted == 1 && File.Exists(keyFile) && !File.ReadAllText(keyFile).Contains("sk-virtual")
+        && openAi.Calls.Any(call => call.Contains("/key/generate") && call.Contains($"\"key_alias\":\"lucia-assistant-{owner}\"")),
+        "LiteLLM gets the owner a virtual key, named for them and saved encrypted.");
+    await runtime.ModelsAsync(owner, default);
+    Check(openAi.Minted == 1, "The saved key is reused.");
+    openAi.Revoked.Add("sk-virtual-1");
+    await runtime.ModelsAsync(owner, default);
+    Check(openAi.Minted == 2 && openAi.Calls.Count(call => call.Contains("/key/delete")) == 2, "A key LiteLLM refuses is replaced, deleting the old one first.");
+
+    var (provider, served) = await providers.ResolveAsync(owner, "litellm:gpt-4o", default);
+    Check(provider is { Type: "openai", WireApi: "completions", BaseUrl: "http://10.0.0.5:4000/v1", ApiKey: "sk-virtual-2", MaxOutputTokens: null }
+        && served == "gpt-4o", "A LiteLLM model runs on LiteLLM's OpenAI API with the owner's key.");
+    (provider, served) = await providers.ResolveAsync(owner, "local:qwen3-spark", default);
+    Check(provider is { BaseUrl: "http://127.0.0.1:8080/v1", ApiKey: "inference-key", MaxOutputTokens: 2_048, MaxPromptTokens: 30_720 }
+        && served == "qwen3-spark", "The Spark's model runs over loopback with the inference key, within the Spark's limits.");
+    (provider, served) = await providers.ResolveAsync(owner, "local:ai/qwen3", default);
+    Check(provider is { BaseUrl: "http://10.0.0.6:8000/v1", ApiKey: "local-key", MaxOutputTokens: 8_192, MaxPromptTokens: 24_576 }
+        && served == "qwen3", "A node's model runs on its Local AI app, leaving a quarter of the context for the answer.");
+    Check(await providers.ResolveAsync(owner, "gpt-5.1", default) == (null, "gpt-5.1") && AssistantProviders.IsGitHub(null)
+        && AssistantProviders.IsGitHub("other:model") && !AssistantProviders.IsGitHub("litellm:openai/gpt-4o") && !AssistantProviders.IsGitHub("local:ai/qwen3"),
+        "Other model ids are Copilot's.");
+    await Reject(() => providers.ResolveAsync(owner, "litellm:gone", default), 503, "assistant_source_unavailable", "A model LiteLLM dropped asks for another.");
+    await Reject(() => providers.ResolveAsync(owner, "local:llama", default), 503, "assistant_source_unavailable", "A model the Spark unloaded asks for another.");
+    await Reject(() => providers.ResolveAsync(owner, "local:removed/qwen3", default), 503, "assistant_source_unavailable", "A removed Local AI app asks for another model.");
+    await Reject(() => providers.ResolveAsync(owner, "local:ai-off/qwen3", default), 503, "assistant_source_unavailable", "A stopped Local AI app says so.");
+
+    spark = spark with { Model = null, Problem = "No chat model is loaded on the Spark. Load one on the AI page." };
+    apps = [apps[1]];
+    sources = Node(await runtime.ModelsAsync(owner, default))["sources"]!.AsArray();
+    Check((string)sources[1]!["reason"]! == "Install the LiteLLM app to use its models." && sources[2]!["models"]!.AsArray().Count == 1
+        && (string)sources[2]!["reason"]! == "No chat model is loaded on the Spark. Load one on the AI page.",
+        "Without LiteLLM or a Spark model, the picker says what to do and lists what's left.");
+    await Reject(() => providers.ResolveAsync(owner, "local:qwen3-spark", default), 503, "assistant_source_unavailable", "An unloaded Spark model says why.");
+    var local = await runs.StartAsync("00000000000000aa", Ask("Hi", model: "local:ai/qwen3", session: Guid.NewGuid().ToString("N")), default);
+    await local.Completion;
+    Check(local.Done, "Local models answer without a GitHub sign-in.");
 
     var pending = await signIn.StartAsync(owner, default);
     Check(pending is { State: "pending", UserCode: "CODE-0001", VerificationUri: "https://github.com/login/device", Interval: 5 }
@@ -369,6 +428,36 @@ sealed class FakeGitHub : HttpMessageHandler
     }
 
     private Channel<object> Queue(string key) => _replies.GetOrAdd(key, _ => Channel.CreateUnbounded<object>());
+
+    private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
+}
+
+/// <summary>LiteLLM (10.0.0.5) and Local AI (10.0.0.6, unreachable 10.0.0.7) OpenAI APIs. LiteLLM takes only keys it minted and hasn't revoked.</summary>
+sealed class FakeOpenAi : HttpMessageHandler
+{
+    public ConcurrentQueue<string> Calls { get; } = new();
+    public HashSet<string> Revoked { get; } = [];
+    public int Minted { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var key = request.Headers.Authorization?.Parameter;
+        Calls.Enqueue($"{request.Method} {request.RequestUri} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct))}");
+        return (request.Method.Method, request.RequestUri!.AbsoluteUri) switch
+        {
+            ("POST", "http://10.0.0.5:4000/key/delete") when key == "sk-master" => Minted == 0 ? new(HttpStatusCode.NotFound) : Json(new { deleted_keys = new[] { "old" } }),
+            ("POST", "http://10.0.0.5:4000/key/generate") when key == "sk-master" => Json(new { key = $"sk-virtual-{++Minted}" }),
+            ("GET", "http://10.0.0.5:4000/v1/models") when key is not null && key.StartsWith("sk-virtual-") && !Revoked.Contains(key) =>
+                Json(new { data = new object[] { new { id = "gpt-4o" }, new { id = "bad id" } } }),
+            ("GET", "http://10.0.0.5:4000/v1/models") => new(HttpStatusCode.Unauthorized),
+            ("GET", "http://10.0.0.6:8000/v1/models") when key == "local-key" => Json(new
+            {
+                data = new object[] { new { id = "qwen3", max_model_len = 32_768 }, new { id = "embed", capabilities = new[] { "embedding" } } }
+            }),
+            ("GET", "http://10.0.0.7:8000/v1/models") => throw new HttpRequestException("No route to host."),
+            _ => throw new InvalidOperationException("Unexpected request to " + request.RequestUri)
+        };
+    }
 
     private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
 }

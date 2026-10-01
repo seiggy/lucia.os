@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 // Synthetic /api/assistant for UI checks. Mirrors the host's contract and chunk order; no model, Copilot, or disk.
 const seedId = '5eed'.padEnd(31, '0') + '1'
 const models = [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5' }, { id: 'gpt-5', name: 'GPT-5' }]
+const spark = 'Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K'
+const local = [{ id: 'local:' + spark, name: spark + ' · Spark' }, { id: 'local:local-ai/qwen3-8b', name: 'qwen3-8b · lucialab02' }]
 const thinking = 'The owner wants the moving parts of a custom stack. Explain the stack file first, then where its logs show up.'
 const answer = `Custom app stacks are **Compose projects** that Lucia runs for you.
 
@@ -36,7 +38,7 @@ const signedIn = { state: 'connected', login: 'octocat' }
 
 export function resetAssistantFixture(value) {
   mode = value
-  github = value === 'disconnected' ? { state: 'disconnected' } : signedIn
+  github = value === 'disconnected' || value === 'byok' ? { state: 'disconnected' } : signedIn
   runs.clear()
   sessions = new Map([[seedId, {
     id: seedId, title: 'Why does my media stack keep restarting?', updated: '2026-09-24T18:30:00Z', model: 'gpt-5-mini',
@@ -135,10 +137,19 @@ export async function assistantFixture(request, response, path, sessionMode, jso
     github = { state: 'disconnected' }
     return empty()
   }
+  // Copilot's sign-in gates only Copilot's models; LiteLLM and Local AI list theirs either way.
   if (path === '/api/assistant/models') {
-    if (github.state !== 'connected') return json({ connected: false, defaultModel: null, models: [] }), true
-    if (mode === 'refused') return fail(503, 'copilot_unavailable', 'Copilot did not accept @octocat. Check that the account has GitHub Copilot, then sign in again.')
-    return json({ connected: true, defaultModel: 'gpt-5-mini', models }), true
+    const connected = github.state === 'connected' && mode !== 'refused'
+    const copilot = github.state !== 'connected' ? { models: [], reason: 'Sign in with GitHub to use Copilot\'s models.' }
+      : connected ? { models } : { models: [], reason: 'Copilot did not accept @octocat. Check that the account has GitHub Copilot, then sign in again.' }
+    const offline = mode === 'disconnected' || mode === 'refused'
+    const sources = [
+      { id: 'github', name: 'GitHub Copilot', ...copilot },
+      { id: 'litellm', name: 'LiteLLM', ...(mode === 'byok' ? { models: [{ id: 'litellm:llama3', name: 'llama3' }] }
+        : { models: [], reason: 'Install the LiteLLM app to use its models.' }) },
+      { id: 'local', name: 'Local AI', ...(offline ? { models: [], reason: 'Local AI on lucialab02 has no chat model loaded.' } : { models: local }) },
+    ]
+    return json({ connected, defaultModel: 'gpt-5-mini', sources, models: sources.flatMap(source => source.models) }), true
   }
   if (path === '/api/assistant/sessions')
     return json({ sessions: [...sessions.values()].sort((a, b) => b.updated.localeCompare(a.updated))
@@ -153,7 +164,8 @@ export async function assistantFixture(request, response, path, sessionMode, jso
       return fail(400, 'invalid_request', 'The request body is invalid.')
     if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 32768)
       return fail(400, 'invalid_message', 'Messages must be between 1 and 32,768 characters.')
-    if (github.state !== 'connected') return fail(503, 'assistant_not_connected', 'Sign in with GitHub to use the assistant.')
+    if (!/^(litellm|local):/.test(body.model ?? '') && github.state !== 'connected')
+      return fail(503, 'assistant_not_connected', 'Sign in with GitHub to use Copilot\'s models.')
     if (mode === 'busy' || running(body.sessionId)) return fail(409, 'run_active', 'This chat is still answering. Stop it or wait for it to finish.')
     let session = sessions.get(body.sessionId)
     if (!session) sessions.set(body.sessionId, session = { id: body.sessionId, title: title(body.text), messages: [] })

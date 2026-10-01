@@ -299,15 +299,16 @@ async page => {
     await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message the assistant"]')?.value === 'Is my whoami app healthy?', null, { timeout: 5000 })
     check(await page.locator('.assistant-bubble').count() === 0, 'The refused message stayed in the transcript')
 
-    // Without GitHub the composer explains why nothing can be sent and offers a device-code sign-in.
+    // Without GitHub or another source, the composer explains why nothing can be sent and offers a device-code sign-in.
     await start('disconnected')
     const signIn = button('Sign in with GitHub')
-    await wait(page.locator('.assistant-connect').filter({ hasText: 'Sign in with GitHub to start asking' }))
+    const choosingSignIn = model.filter({ hasText: 'Sign in with GitHub…' })
+    await wait(page.locator('.assistant-connect').filter({ hasText: 'Sign in with GitHub to use Copilot’s models' }))
     const before = sent.length
     await input.fill('Hello')
     await input.press('Enter')
     check(await button('Send message').isDisabled() && await button(starter).isDisabled(), 'Sending stayed available without GitHub')
-    check(await model.count() === 0 && sent.length === before, 'A message was sent or a model offered without GitHub')
+    check(await choosingSignIn.count() === 1 && sent.length === before, 'A message was sent or a Copilot model offered without GitHub')
     await shot('assistant-disconnected')
 
     // Signing in shows the code beside a link to GitHub, and cancelling returns to the offer.
@@ -344,7 +345,7 @@ async page => {
     // Approval on GitHub swaps the card for the composer, names the account, and unlocks models and starters.
     await page.request.get(base + '/api/assistant/github?approve')
     await card.waitFor({ state: 'detached', timeout: 5000 })
-    await wait(model)
+    await wait(model.filter({ hasText: 'GPT-5 mini' }))
     check(!await button(starter).isDisabled(), 'Starters stayed disabled after signing in')
     check(await spoken.innerText() === 'Signed in to GitHub as @octocat.', 'Finishing the sign-in was not announced')
     await focused(input, 'Finishing the sign-in did not focus the composer')
@@ -364,14 +365,14 @@ async page => {
     await focused(account.locator('p[tabindex="-1"]'), 'Signing out did not focus its result')
     await button('Chat history').click()
     await wait(signIn)
-    check(await model.count() === 0, 'Models stayed offered after signing out')
+    await wait(choosingSignIn)
 
     // When Copilot refuses the account, the composer says so and offers to sign in again.
     await start('refused')
     const refusal = page.locator('.assistant-connect').filter({ hasText: 'Copilot did not accept @octocat.' })
     await wait(refusal)
     check(await refusal.getByRole('button', { name: 'Sign in again', exact: true }).count() === 1, 'A refusal did not offer to sign in again')
-    check(await button(starter).isDisabled() && await model.count() === 0, 'Asking stayed available after Copilot refused')
+    check(await button(starter).isDisabled() && await choosingSignIn.count() === 1, 'Asking stayed available after Copilot refused')
     await shot('assistant-refused')
 
     // A failed answer keeps its partial text, explains the failure once with a retry, and survives a reload.
@@ -397,9 +398,43 @@ async page => {
     await wait(again)
     check(JSON.stringify(await replies()) === JSON.stringify(redone), 'The retried chat was not saved once')
 
+    // LiteLLM and Local AI answer without GitHub; the picker groups models by source and still offers the sign-in.
+    await start('byok')
+    await wait(model.filter({ hasText: 'llama3' }))
+    check(await page.locator('.assistant-connect').count() === 0 && !await button(starter).isDisabled(), 'A LiteLLM model still waited for GitHub')
+    const choose = page.getByRole('option', { name: 'Sign in with GitHub…', exact: true })
+    await model.click()
+    await wait(choose)
+    const groups = await page.locator('[data-slot="select-label"]').allInnerTexts()
+    check(groups.join('|') === 'GitHub Copilot|LiteLLM|Local AI', 'The picker did not group models by source: ' + groups.join('|'))
+    await page.waitForTimeout(300)
+    await shot('assistant-byok-menu')
+    await page.keyboard.press('Escape')
+    await focused(model, 'Closing the picker did not return focus to it')
+    await button(starter).click()
+    await wait(page.getByText(closing), 15000)
+    await wait(button('Send message'))
+    check(sent.at(-1).body.model === 'litellm:llama3', 'The LiteLLM model was not sent: ' + JSON.stringify(sent.at(-1).body))
+    // On a phone the picker stays on screen and wraps a long model name.
+    await page.setViewportSize({ width: 390, height: 844 })
+    await layout('sheet')
+    await model.click()
+    await wait(choose)
+    const menu = await page.getByRole('listbox').boundingBox()
+    check(menu && menu.x >= 0 && menu.x + menu.width <= 390, 'The picker left the phone screen: ' + JSON.stringify(menu))
+    await page.waitForTimeout(300)
+    await shot('assistant-byok-menu-mobile')
+    // Choosing the sign-in moves focus to it, and sending waits for GitHub again.
+    await choose.click()
+    await focused(signIn, 'Choosing the sign-in did not focus it')
+    await input.fill('Hello')
+    check(await saved('lucia.assistant.model.v1') === 'github:' && await button('Send message').isDisabled(), 'Choosing the sign-in left sending available')
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await layout('push')
+
     check(sent.every(item => item.csrf === 'fixture-csrf-request'), 'A chat request went out without the CSRF token')
     check(errors.length === 0, 'Page errors: ' + errors.join(' | '))
-    return { contract: true, focus: true, history: true, layouts: ['push', 'overlay', 'sheet'], column: pushed, stop: true, resume: resumed, busy: true, disconnected: true, signin: { copied }, account: true, refused: true, failing: true, retry: redone }
+    return { contract: true, focus: true, history: true, layouts: ['push', 'overlay', 'sheet'], column: pushed, stop: true, resume: resumed, busy: true, disconnected: true, signin: { copied }, account: true, refused: true, failing: true, retry: redone, byok: true }
   } finally {
     page.off('pageerror', onPageError)
     page.off('console', onConsole)

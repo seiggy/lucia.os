@@ -2,7 +2,12 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Lucia.Homelab.Server.Host;
+using Lucia.Homelab.Server.Stacks;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Options;
 
 namespace Lucia.Homelab.Server.Assistant;
 
@@ -16,8 +21,27 @@ public static class AssistantEndpoints
         builder.Services.AddDataProtection();
         builder.Services.AddSingleton(services =>
             ActivatorUtilities.CreateInstance<GitHubSignIn>(services, GitHubSignIn.CreateClient(), TimeProvider.System));
+        builder.Services.AddSingleton(services => ActivatorUtilities.CreateInstance<AssistantProviders>(services,
+            AssistantProviders.CreateClient(),
+            (Func<CancellationToken, Task<IReadOnlyList<AppEndpoint>>>)(ct => services.GetRequiredService<StackStore>().AiEndpoints(ct)),
+            (Func<SparkInference>)(() => Spark(services))));
         builder.Services.AddSingleton<AssistantRuntime>();
         builder.Services.AddSingleton<AssistantRuns>();
+    }
+
+    /// <summary>The Spark's model over loopback, which the host proxy lets through with the inference key.</summary>
+    private static SparkInference Spark(IServiceProvider services)
+    {
+        var runtime = services.GetRequiredService<InferenceRuntime>();
+        var platform = services.GetRequiredService<IOptions<HostPlatformOptions>>().Value;
+        var port = services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses
+            .Select(BindingAddress.Parse).FirstOrDefault(address => address.Scheme == "http")?.Port;
+        var model = runtime.ChatModelName;
+        var problem = string.IsNullOrEmpty(platform.InferenceApiKey) ? "Set HostPlatform:InferenceApiKey to use the Spark's model."
+            : model is null ? runtime.StartupError ?? "No chat model is loaded on the Spark. Load one on the AI page."
+            : port is null ? "The Spark's model needs the host to listen on HTTP." : null;
+        return new(port is { } open ? new UriBuilder("http", "127.0.0.1", open, "v1").Uri : null, platform.InferenceApiKey, model,
+            runtime.Chat.ContextTokens, platform.MaxOutputTokens, problem);
     }
 
     /// <summary>Owner-only; CSRF comes from the global UseHostCsrf middleware. Streams speak the AI SDK UI message protocol.</summary>

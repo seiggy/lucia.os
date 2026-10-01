@@ -35,7 +35,8 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             throw new AssistantException(400, "invalid_request", "The request body is invalid.");
         if (string.IsNullOrWhiteSpace(request.Text) || request.Text.Length > 32_768)
             throw new AssistantException(400, "invalid_message", "Messages must be between 1 and 32,768 characters.");
-        if (!await runtime.ConnectedAsync(owner, ct)) throw GitHubSignIn.NotConnected();
+        if (AssistantProviders.IsGitHub(request.Model ?? runtime.DefaultModel) && !await runtime.ConnectedAsync(owner, ct))
+            throw GitHubSignIn.NotConnected();
         var key = Key(owner, id);
         var folder = Path.Combine(Root, "users", owner, id);
         await _gate.WaitAsync(ct);
