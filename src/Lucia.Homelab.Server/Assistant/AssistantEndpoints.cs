@@ -26,6 +26,8 @@ public static class AssistantEndpoints
             (Func<CancellationToken, Task<IReadOnlyList<AppEndpoint>>>)(ct => services.GetRequiredService<StackStore>().AiEndpoints(ct)),
             (Func<SparkInference>)(() => Spark(services))));
         builder.Services.AddSingleton<AssistantRuntime>();
+        builder.Services.AddSingleton<AssistantBroker>();
+        builder.Services.AddSingleton<AssistantTools>();
         builder.Services.AddSingleton<AssistantRuns>();
     }
 
@@ -51,7 +53,10 @@ public static class AssistantEndpoints
             .RequireAuthorization("HostOwner").AddEndpointFilter<AssistantFilter>();
         group.MapPost("/chat", async (HttpContext context, AssistantRuns runs, CancellationToken ct) =>
         {
-            var run = await runs.StartAsync(Owner(context), await Read<AssistantChatRequest>(context, ct), ct);
+            // Owner API keys carry no username: the assistant's changes are then credited to "owner via assistant".
+            var user = context.User.FindFirst("preferred_username")?.Value is { Length: > 0 and <= 64 } name ? name : null;
+            var actor = (user is { Length: <= 50 } ? user : "owner") + " via assistant";
+            var run = await runs.StartAsync(Owner(context), await Read<AssistantChatRequest>(context, ct), actor, user, ct);
             await StreamAsync(context, run, ct);
             return Results.Empty;
         }).DisableRequestTimeout();
@@ -68,6 +73,38 @@ public static class AssistantEndpoints
         {
             runs.Stop(Owner(context), id);
             return Results.NoContent();
+        });
+        group.MapPost("/sessions/{id}/approvals/{approvalId}", async (string id, string approvalId, HttpContext context, AssistantRuns runs,
+            CancellationToken ct) =>
+        {
+            var answer = await Read<AssistantApproval>(context, ct);
+            if (answer.Reason?.Length > 500) throw new AssistantException(400, "invalid_reason", "Keep the reason under 500 characters.");
+            return runs.Respond(Owner(context), id, approvalId, answer.Approved, string.IsNullOrWhiteSpace(answer.Reason) ? null : answer.Reason.Trim(),
+                answer.Always)
+                ? Results.NoContent()
+                : throw new AssistantException(404, "approval_not_found", "This request was already answered, or its chat has moved on.");
+        });
+        group.MapPost("/sessions/{id}/answers/{toolCallId}", async (string id, string toolCallId, HttpContext context, AssistantRuns runs,
+            CancellationToken ct) =>
+        {
+            var answer = await Read<AssistantAnswer>(context, ct);
+            var text = answer.Answer?.Trim();
+            var secret = answer.Secret?.Trim();
+            if ((text is not null ? 1 : 0) + (secret is not null ? 1 : 0) + (answer.Declined ? 1 : 0) != 1 || toolCallId.Length > 128)
+                throw new AssistantException(400, "invalid_request", "Send an answer, a secret or a decline.");
+            if (text is { Length: 0 or > 2000 }) throw new AssistantException(400, "invalid_answer", "Answers are 1 to 2,000 characters.");
+            if (secret is not null && (secret.Length is 0 or > 4096 || !StackCatalog.Unquoted(secret)))
+                throw new AssistantException(400, "invalid_secret", "Lucia saves it unquoted: up to 4,096 letters, digits and . _ ~ + / = -");
+            return runs.AnswerQuestion(Owner(context), id, toolCallId, text is not null ? "answer" : secret is not null ? "secret" : null, text ?? secret)
+                ? Results.NoContent()
+                : throw new AssistantException(404, "question_not_found", "This question was already answered, or its chat has moved on.");
+        });
+        group.MapGet("/settings", async (HttpContext context, AssistantBroker broker, AssistantTools tools, CancellationToken ct) =>
+            Settings(await broker.SettingsAsync(Owner(context), ct), tools));
+        group.MapPut("/settings", async (HttpContext context, AssistantBroker broker, AssistantTools tools, CancellationToken ct) =>
+        {
+            var changeTools = tools.Create("owner", null).Where(tool => tool.Tier == ToolTier.Change).Select(tool => tool.Name).ToArray();
+            return Settings(await broker.SaveSettingsAsync(Owner(context), await Read<AssistantSettings>(context, ct), changeTools, ct), tools);
         });
         group.MapDelete("/sessions/{id}", async (string id, HttpContext context, AssistantRuns runs, CancellationToken ct) =>
         {
@@ -111,6 +148,14 @@ public static class AssistantEndpoints
         }
     }
 
+    /// <summary>The owner's settings with every tool, so the settings page can show what each tier covers.</summary>
+    private static object Settings(AssistantSettings settings, AssistantTools tools) => new
+    {
+        autoTools = settings.AutoTools,
+        hosts = settings.Hosts,
+        tools = tools.Create("owner", null).Select(tool => new { name = tool.Name, tier = tool.Tier, description = tool.Description }),
+    };
+
     /// <summary>A path-safe folder name per owner, stable across browser sign-ins.</summary>
     private static string Owner(HttpContext context)
     {
@@ -130,6 +175,11 @@ public static class AssistantEndpoints
             ?? throw new AssistantException(400, "invalid_request", "The request body is invalid.");
     }
 }
+
+public sealed record AssistantApproval(bool Approved, string? Reason, bool Always = false);
+
+/// <summary>The owner's reply to a question tool: exactly one of an answer, a secret for an app, or a decline.</summary>
+public sealed record AssistantAnswer(string? Answer, string? Secret, bool Declined = false);
 
 public sealed class AssistantException(int statusCode, string code, string message) : Exception(message)
 {

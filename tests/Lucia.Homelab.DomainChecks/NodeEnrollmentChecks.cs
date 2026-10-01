@@ -58,6 +58,9 @@ internal static class NodeEnrollmentChecks
             metrics with { CpuPercent = 101 },
             metrics with { GpuPercent = double.NaN },
             metrics with { CpuTemperatureCelsius = 400 },
+            metrics with { Features = ["Exec"] },
+            metrics with { Features = ["exec", null!] },
+            metrics with { Features = [.. Enumerable.Repeat("exec", 17)] },
         })
         {
             try { ManagedNodeEnrollment.ValidateHeartbeat(id, bad); throw new InvalidOperationException("Bad update status accepted"); }
@@ -65,6 +68,8 @@ internal static class NodeEnrollmentChecks
         }
         ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { CpuPercent = 12.5, CpuTemperatureCelsius = 54, GpuPercent = 0, GpuTemperatureCelsius = 38 });
         check(true, "Valid utilization was rejected.");
+        ManagedNodeEnrollment.ValidateHeartbeat(id, metrics with { Features = ["exec", "future-thing"] });
+        check(true, "Valid agent features were rejected.");
         var releaseFolder = Path.Combine(Path.GetTempPath(), "lucia-release-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(releaseFolder);
         try

@@ -397,6 +397,28 @@ internal static class StackChecks
             throw new InvalidOperationException("A container name with shell characters was accepted.");
         }
         catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Unsafe container name rejected."); }
+        var job = Guid.NewGuid();
+        var exec = requests.Exec(node, job, "nvidia-smi\nexit 3", "bash", 60, CancellationToken.None);
+        pending = await requests.Wait(node, CancellationToken.None);
+        check(pending is [{ Kind: "exec", Command: "nvidia-smi\nexit 3", Interpreter: "bash", Timeout: 60, Job: null }] && pending[0].RequestId == job,
+            "The node didn't receive the command under its job id.");
+        requests.Complete(node, new(job, true, "No devices were found", null, 3));
+        check(await exec is { Output: "No devices were found", ExitCode: 3, Running: false }, "The command's exit code was lost.");
+        var stop = requests.Follow(node, job, stop: true, CancellationToken.None);
+        pending = await requests.Wait(node, CancellationToken.None);
+        check(pending is [{ Kind: "exec-stop", Command: null }] && pending[0].Job == job && pending[0].RequestId != job, "A stop must name its job.");
+        requests.Complete(node, new(pending[0].RequestId, true, null, "Stopping it."));
+        await stop;
+        foreach (var (command, interpreter, seconds) in new[] { ("", "bash", 60), (new string('x', NodeRequests.MaxCommandChars + 1), "bash", 60),
+            ("a\0b", "bash", 60), ("ls", "zsh", 60), ("ls", "bash", 0), ("ls", "bash", NodeRequests.MaxCommandSeconds + 1) })
+        {
+            try
+            {
+                await requests.Exec(node, Guid.NewGuid(), command, interpreter, seconds, CancellationToken.None);
+                throw new InvalidOperationException($"The command ({interpreter}, {seconds} s, {command.Length} chars) was accepted.");
+            }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Unbounded command rejected."); }
+        }
 
         foreach (var bad in new[] { "gpus", "gpu.vram>=lots", "gpu.vendor", "memory=32G", "gpu.compute>=x", "gpu;rm" })
             Rejects(() => StackRequirements.Normalize([bad]), $"The requirement '{bad}' was accepted.");

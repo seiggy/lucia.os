@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ErrorInfo, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import type { DockLayout, DockSide } from './assistant'
 import type { AuthenticationSession } from './authentication'
@@ -40,12 +40,14 @@ type DockProps = {
   page: string
   open: boolean
   side: DockSide
+  waiting: number
   onToggle: () => void
   onClose: () => void
   onMove: () => void
+  onWaiting: (count: number) => void
 }
 
-export function AssistantDock({ session, refreshSession, page, open, side, onToggle, onClose, onMove }: DockProps) {
+export function AssistantDock({ session, refreshSession, page, open, side, waiting, onToggle, onClose, onMove, onWaiting }: DockProps) {
   const layout = useSyncExternalStore(subscribe, currentLayout)
   const pushed = open && layout === 'push'
   const dock = useRef<HTMLElement>(null)
@@ -55,11 +57,17 @@ export function AssistantDock({ session, refreshSession, page, open, side, onTog
   const [mounted, setMounted] = useState(open)
   const [opened, setOpened] = useState(open)
   const [focusToken, setFocusToken] = useState(0)
+  const [heard, setHeard] = useState('')
   if (open && !mounted) setMounted(true)
   if (open !== opened) {
     setOpened(open)
     if (open) setFocusToken(token => token + 1)
   }
+  // An open dock's conversation log reads new requests out itself; a closed one is hidden, so name them here.
+  const waitingChanged = useCallback((count: number, message?: string) => {
+    onWaiting(count)
+    if (message && !open) setHeard(message)
+  }, [onWaiting, open])
 
   useEffect(() => {
     const track = (event: FocusEvent) => {
@@ -123,16 +131,18 @@ export function AssistantDock({ session, refreshSession, page, open, side, onTog
 
   return <>
     {layout === 'sheet' && !open && <div className="assistant-bar">
-      <button type="button" onClick={onToggle} aria-expanded={false} aria-controls="assistant-dock" aria-keyshortcuts="Control+J Meta+J">
-        <Icon name="chat" /><span>Ask the assistant</span>
+      <button type="button" onClick={onToggle} aria-expanded={false} aria-controls="assistant-dock" aria-keyshortcuts="Control+J Meta+J"
+        aria-label={waiting ? `Ask the assistant, ${waiting} waiting for you` : undefined}>
+        <Icon name="chat" /><span>Ask the assistant</span>{waiting > 0 && <span className="assistant-waiting">{waiting} waiting</span>}
       </button>
     </div>}
+    <p className="visually-hidden" role="status">{heard}</p>
     <aside id="assistant-dock" ref={dock} className="assistant-dock assistant" data-side={side} data-layout={layout} hidden={!open}
       aria-label="Assistant" onKeyDown={escape}>
       {mounted && <PanelBoundary onClose={onClose}>
         <Suspense fallback={<p className="assistant-fallback" role="status">Loading the assistant…</p>}>
           <AssistantPanel session={session} refreshSession={refreshSession} page={page} side={side} layout={layout}
-            onMove={onMove} onClose={onClose} focusToken={focusToken} />
+            onMove={onMove} onClose={onClose} focusToken={focusToken} onWaiting={waitingChanged} />
         </Suspense>
       </PanelBoundary>}
     </aside>

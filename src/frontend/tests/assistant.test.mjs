@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { chatTitle, chooseModel, isChatId, isGitHubModel, messageText, newChatId, pageRoute, parseDock, parseGitHub, parseModels, parseSessions, parseTranscript,
-  settledText, signInModel } from '../.checks/assistant.js'
+import { approvalNote, chatTitle, chooseModel, grantText, isChatId, isDestructiveTool, isGitHubModel, isQuestionTool, messageText, newChatId, pageRoute,
+  parseDock, parseGitHub, parseModels, parseSessions, parseSettings, parseTranscript, questionOf, secretOf, settledText, signInModel, toolLabel, toolNote,
+  toolStatus, toolTitle, urlHost, waitingParts } from '../.checks/assistant.js'
 
 const id = newChatId()
 assert.ok(isChatId(id))
@@ -88,6 +89,113 @@ assert.equal(parseTranscript({ title: ' ', messages: [], running: true }).title,
 for (const broken of [null, { messages: [], running: 'no' }, { messages: [{ id: 'x', role: 'system', parts: [] }], running: false },
   { messages: [{ id: '', role: 'user', parts: [] }], running: false }])
   assert.throws(() => parseTranscript(broken))
+
+// Tool calls keep what the dock shows; a part it can't show is dropped, not guessed at.
+const call = { type: 'dynamic-tool', toolCallId: 'c1', toolName: 'get_app', state: 'output-available', input: { app: 'grafana' }, output: { name: 'grafana' }, extra: 1 }
+const refused = { type: 'dynamic-tool', toolCallId: 'c2', toolName: 'delete_app', state: 'output-denied', input: { app: 'grafana' },
+  approval: { id: 'a1', requestReason: 'This can remove data or interrupt your lab.', approved: false, reason: 'not today', isAutomatic: false, signature: 'x' } }
+const failed = { type: 'dynamic-tool', toolCallId: 'c3', toolName: 'read_logs', state: 'output-error', input: {}, errorText: 'No such container.', output: 'stale' }
+assert.deepEqual(parseTranscript({ title: 'Tools', running: false, messages: [{ id: 'a', role: 'assistant', parts: [call, refused, failed,
+  { ...refused, toolCallId: 'c4', approval: { approved: false } }, { ...failed, toolCallId: 'c5', errorText: null }, { ...call, toolCallId: 'x'.repeat(129) },
+  { ...call, toolCallId: 'c6', state: 'output-unknown' }, { ...call, toolCallId: 'c7', toolName: '' }] }] }).messages[0].parts, [
+  { type: 'dynamic-tool', toolCallId: 'c1', toolName: 'get_app', state: 'output-available', input: { app: 'grafana' }, output: { name: 'grafana' } },
+  { type: 'dynamic-tool', toolCallId: 'c2', toolName: 'delete_app', state: 'output-denied', input: { app: 'grafana' },
+    approval: { id: 'a1', requestReason: 'This can remove data or interrupt your lab.', approved: false, reason: 'not today' } },
+  { type: 'dynamic-tool', toolCallId: 'c3', toolName: 'read_logs', state: 'output-error', input: {}, errorText: 'No such container.' }])
+
+assert.equal(toolTitle('read_logs', { node: 'lucialab02', container: 'grafana', tail: 200 }), 'Read logs of grafana on lucialab02')
+assert.equal(toolTitle('app_action', { app: 'immich', action: 'restart' }), 'Restart immich')
+assert.equal(toolTitle('app_action', { app: 'immich', action: 'explode' }), 'app_action')
+assert.equal(toolTitle('node_action', { node: 'lucialab02', action: 'update-agent' }), 'Update Lucia’s agent on lucialab02')
+assert.equal(toolTitle('set_public_route', { app: 'immich', host: 'immich.lab', publicName: 'photos.example.com' }), 'Publish immich.lab as photos.example.com')
+assert.equal(toolTitle('set_public_route', { app: 'immich', host: 'immich.lab', publicName: null }), 'Take immich.lab off the internet')
+assert.equal(toolTitle('read_web_page', { url: 'https://docs.docker.com/compose/', start: 0 }), 'Read docs.docker.com')
+assert.equal(toolTitle('read_web_page', { url: 'not a url' }), 'read_web_page')
+assert.equal(toolTitle('request_secret', { app: 'plex', name: 'PLEX_CLAIM_TOKEN' }), 'plex needs PLEX_CLAIM_TOKEN')
+assert.equal(toolTitle('ask_owner', { question: '  Which\n  server?  ' }), 'Which server?')
+assert.equal(toolTitle('ask_owner', { question: 'q'.repeat(300) }), `${'q'.repeat(199)}…`)
+assert.equal(toolTitle('move_app', { app: 'immich' }), 'move_app')
+assert.equal(toolTitle('get_node', undefined), 'get_node')
+assert.equal(toolTitle('mystery', { app: 'x' }), 'mystery')
+assert.equal(urlHost('https://raw.githubusercontent.com/a/b'), 'raw.githubusercontent.com')
+assert.ok(isDestructiveTool('run_command') && !isDestructiveTool('app_action'))
+assert.ok(isQuestionTool('request_secret') && !isQuestionTool('read_web_page'))
+
+const tool = (state, extra = {}) => ({ type: 'dynamic-tool', toolCallId: 'c', toolName: 'delete_app', state, input: { app: 'immich' }, ...extra })
+const asking = { id: 'a', requestReason: 'This can remove data or interrupt your lab.' }
+const question = { ...tool('input-available'), toolName: 'ask_owner', input: { question: 'Which server?' } }
+const secret = { ...tool('input-available'), toolName: 'request_secret', input: { app: 'plex', name: 'PLEX_CLAIM_TOKEN' } }
+for (const [part, live, word, tone] of [
+  [tool('input-streaming'), true, 'Running…', 'busy'], [tool('input-available'), false, 'Not finished', 'muted'],
+  [tool('approval-requested', { approval: asking }), true, 'Needs your approval', 'waiting'],
+  [tool('approval-requested', { approval: asking }), false, 'Not answered', 'muted'],
+  [tool('approval-requested', { approval: { id: 'a', isAutomatic: true } }), true, 'Running…', 'busy'],
+  [tool('approval-responded', { approval: { ...asking, approved: true } }), true, 'Running…', 'busy'],
+  [tool('approval-responded', { approval: { ...asking, approved: false } }), true, 'Not run', 'muted'],
+  [tool('output-available', { output: {} }), false, 'Done', 'done'], [tool('output-error', { errorText: 'x' }), false, 'Failed', 'failed'],
+  [tool('output-error', { errorText: 'The run stopped before this finished.' }), false, 'Not finished', 'muted'],
+  [tool('output-denied', { approval: { ...asking, approved: false } }), false, 'Not run', 'muted'],
+  [question, true, 'Waiting for you', 'waiting'], [question, false, 'Not finished', 'muted'],
+  [{ ...question, state: 'output-available', output: { answer: 'lucialab02' } }, false, 'Answered', 'done'],
+  [{ ...question, state: 'output-available', output: 'The owner chose not to answer.' }, false, 'Skipped', 'muted'],
+  [{ ...secret, state: 'output-available', output: { saved: true, app: 'plex' } }, false, 'Saved', 'done'],
+  [{ ...secret, state: 'output-available', output: 'The owner chose not to give PLEX_CLAIM_TOKEN.' }, false, 'Not given', 'muted']])
+  assert.deepEqual(toolStatus(part, live), { word, tone }, `${part.toolName} ${part.state} ${live}`)
+
+const declined = approval => toolNote(tool('output-denied', { approval: { id: 'a', approved: false, ...approval } }))
+assert.deepEqual(declined({ reason: 'not today' }), { text: 'You declined: “not today”', tone: 'muted' })
+assert.equal(declined({}).text, 'You declined this.')
+assert.equal(declined({ reason: 'No answer within 30 minutes.' }).text, 'No answer within 30 minutes.')
+assert.equal(declined({ reason: 'The run stopped before you answered.' }).text, 'The run stopped before you answered.')
+assert.equal(declined({ isAutomatic: true, reason: 'Plan mode doesn\'t change anything.' }).text, 'Plan mode doesn\'t change anything.')
+assert.equal(declined({ isAutomatic: true }).text, 'Lucia’s policy doesn’t allow this.')
+assert.deepEqual(toolNote(tool('output-error', { errorText: 'No app is called immich.' })), { text: 'No app is called immich.', tone: 'failed' })
+assert.deepEqual(toolNote(tool('output-error', { errorText: 'The run stopped before this finished.' })),
+  { text: 'The run stopped before this finished.', tone: 'muted' })
+assert.equal(toolNote(tool('output-available', { output: {} })), undefined)
+assert.equal(toolNote(question), undefined)
+assert.equal(toolNote({ ...question, state: 'output-available', output: { answer: 'lucialab02' } }).text, 'You answered: lucialab02')
+assert.equal(toolNote({ ...question, state: 'output-available', output: 'The owner chose not to answer.' }).text, 'You skipped this question.')
+assert.equal(toolNote({ ...secret, state: 'output-available', output: { saved: true, app: 'plex' } }).text,
+  'Saved in plex’s settings. The assistant never sees it.')
+assert.equal(toolNote({ ...secret, state: 'output-available', output: 'Nothing was saved.' }).text, 'You chose not to give it. Nothing was saved.')
+assert.equal(approvalNote(tool('output-available', { output: {}, approval: { id: 'a', approved: true } })), 'You approved this.')
+assert.equal(approvalNote(tool('output-available', { output: {}, approval: { id: 'a', approved: true, isAutomatic: true,
+  reason: 'Runs automatically in your assistant settings.' } })), 'Runs automatically in your assistant settings.')
+assert.equal(approvalNote(tool('output-available', { output: {} })), undefined)
+
+// Only the newest answer, while it streams, can be waiting on the owner.
+const waiting = [{ role: 'user', parts: [{ type: 'text', text: 'Delete immich' }] }, { role: 'assistant', parts: [{ type: 'text', text: 'Asking first.' },
+  tool('approval-requested', { approval: asking }), tool('approval-requested', { toolCallId: 'auto', approval: { id: 'b', isAutomatic: true } }),
+  question, secret, { ...question, toolName: 'get_app' }, { ...question, state: 'output-available', output: { answer: 'x' } }] }]
+assert.deepEqual(waitingParts(waiting, true).map(part => part.toolName), ['delete_app', 'ask_owner', 'request_secret'])
+assert.deepEqual(waitingParts(waiting, false), [])
+assert.deepEqual(waitingParts([...waiting, { role: 'user', parts: [] }], true), [])
+assert.deepEqual(waitingParts([], true), [])
+
+const settings = { autoTools: ['app_action'], hosts: ['docs.docker.com'], tools: [{ name: 'app_action', tier: 'change', description: 'Starts an app.' },
+  { name: 'run_command', tier: 'destructive', description: 'Runs a command.' }] }
+assert.deepEqual(parseSettings(settings), settings)
+for (const broken of [null, { ...settings, hosts: 'docs.docker.com' }, { ...settings, autoTools: [3] }, { ...settings, tools: null },
+  { ...settings, tools: [{ name: 'x', tier: 'risky', description: '' }] }, { ...settings, tools: [{ name: '', tier: 'read', description: '' }] }])
+  assert.throws(() => parseSettings(broken))
+assert.equal(toolLabel(settings.tools[0]), 'Start, stop, restart and update apps')
+assert.equal(toolLabel({ name: 'new_tool', tier: 'change', description: 'Does a new thing.' }), 'Does a new thing.')
+assert.equal(grantText(tool('approval-requested', { toolName: 'app_action', input: { app: 'immich', action: 'restart' }, approval: asking })),
+  'Approve, and let it start, stop, restart and update apps for the rest of this chat')
+assert.equal(grantText(tool('approval-requested', { toolName: 'read_web_page', input: { url: 'https://docs.linuxserver.io/images/plex' }, approval: asking })),
+  'Approve, and let it read docs.linuxserver.io for the rest of this chat')
+assert.equal(grantText(tool('approval-requested', { toolName: 'read_web_page', input: { url: 'not a url' }, approval: asking })), undefined)
+assert.equal(grantText(tool('approval-requested', { approval: asking })), undefined)
+assert.equal(grantText(tool('approval-requested', { toolName: 'new_tool', approval: asking })), undefined)
+assert.deepEqual(questionOf({ question: '  Which server?  ', choices: ['spark', ' ', 'lab02 '], allowFreeform: false }),
+  { question: 'Which server?', choices: ['spark', 'lab02'], freeform: false })
+assert.deepEqual(questionOf({ question: 'Name it?', choices: [], allowFreeform: false }), { question: 'Name it?', choices: [], freeform: true })
+assert.deepEqual(questionOf({ question: 'Which?', choices: ['a', 3] }), { question: 'Which?', choices: [], freeform: true })
+assert.deepEqual(questionOf(null), { question: '', choices: [], freeform: true })
+assert.deepEqual(secretOf({ app: 'plex', name: 'PLEX_CLAIM_TOKEN', description: ' From plex.tv/claim. ' }),
+  { app: 'plex', name: 'PLEX_CLAIM_TOKEN', description: 'From plex.tv/claim.' })
+assert.deepEqual(secretOf('broken'), { app: '', name: '', description: '' })
 
 assert.deepEqual(parseDock({ open: true, side: 'left' }, true), { open: true, side: 'left' })
 assert.deepEqual(parseDock({ open: true, side: 'left' }, false), { open: false, side: 'left' })

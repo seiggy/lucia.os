@@ -63,7 +63,8 @@ public static class Extensions
                     .AddHttpClientInstrumentation()
                     .AddRuntimeInstrumentation()
                     .AddMeter(Lucia.Homelab.Server.Host.InferenceMetrics.MeterName)
-                    .AddMeter(Lucia.Homelab.Server.Assistant.AssistantRuntime.TelemetryName);
+                    .AddMeter(Lucia.Homelab.Server.Assistant.AssistantRuntime.TelemetryName)
+                    .AddMeter(Lucia.Homelab.Server.Assistant.AssistantBroker.GovernanceMeter);
             })
             .WithTracing(tracing =>
             {

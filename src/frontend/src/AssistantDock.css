@@ -18,6 +18,7 @@ body:has(.assistant-dock[data-layout=sheet]:not([hidden])) { overflow: hidden; }
 .assistant-bar button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--muted); font-size: 15px; text-align: left; }
 .assistant-bar button:hover { border-color: var(--accent-ink); color: var(--text); }
 .assistant-bar svg { width: 20px; height: 20px; color: var(--accent-ink); }
+.assistant-waiting { flex-shrink: 0; margin-left: auto; padding: 1px 8px; border-radius: 12px; background: var(--amber-bg); color: var(--amber-ink); font-size: 12px; font-weight: 650; line-height: 1.5; font-variant-numeric: tabular-nums; }
 .app-shell:has(> .assistant-bar) { padding-bottom: calc(61px + max(12px, env(safe-area-inset-bottom))); }
 html:has(.portal-workspace):has(.assistant-bar) { scroll-padding-block-end: 92px; }
 

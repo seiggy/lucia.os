@@ -2,7 +2,7 @@
 version: 1
 slug: "src-frontend-src-app-tsx"
 primary_target: "src/frontend/src/App.tsx"
-related_targets: ["src/frontend/src/PortalNavigation.tsx","src/frontend/src/PortalNavigation.css","src/frontend/src/navigation.ts","src/frontend/src/LocalAI.tsx","src/frontend/src/ModelManager.tsx","src/frontend/src/InferenceKeys.tsx","src/frontend/src/AssistantDock.tsx","src/frontend/src/AssistantDock.css"]
+related_targets: ["src/frontend/src/PortalNavigation.tsx","src/frontend/src/PortalNavigation.css","src/frontend/src/navigation.ts","src/frontend/src/LocalAI.tsx","src/frontend/src/ModelManager.tsx","src/frontend/src/InferenceKeys.tsx","src/frontend/src/AssistantDock.tsx","src/frontend/src/AssistantDock.css","src/frontend/src/AssistantPanel.tsx","src/frontend/src/assistant.css","src/frontend/src/AssistantSettings.tsx"]
 ---
 
 # Responsive workspace portal
@@ -29,7 +29,9 @@ related_targets: ["src/frontend/src/PortalNavigation.tsx","src/frontend/src/Port
 ## Assistant dock
 
 - Scope: AssistantDock beside every portal page, owners only. Visitor mode: Operate. User-confirmed entry: an Assistant button beside Find a tool plus Ctrl/Cmd+J; no reserved rail while closed.
-- Job: ask about the page in view, read a short answer beside it, stop a turn, return to saved chats. This version only advises; it cannot read or change the lab, and the copy says so.
+- Job: ask about the page in view, read a short answer beside it, see what the assistant checks, approve or decline each change before it runs, answer its questions, stop a turn, return to saved chats. It reads the lab on its own and asks in the chat before it changes anything; Plan mode changes nothing.
+- Tool calls (user-requested HITL, Phase 3): each call is a collapsed row in the reply, a plain-language title and a status word, that opens to its input, result and why it ran. A call that needs the owner stays open as a card: an approval (destructive ones say so, and their Approve reads as dangerous), a question with choices or a typed answer, or a secret request whose password field the model never sees. While one waits and the dock is closed, the header entry and the phone bar show a waiting count.
+- Settings > Assistant (owners): which change tools run without asking, and which sites it may read without asking. Destructive tools and server commands always ask, and the page says so.
 - Layout: right by default, left optional, remembered in localStorage. 1200px and wider pushes the page (page breakpoints are viewport-based, so content keeps at least 800px) and the page scrolls in its own column ending at the divider, keeping its reading position across open and close; 700-1199px overlays; below 700px a bottom bar expands to a full-height sheet, and main is padded so the bar never covers focus. This is the user-requested exception to "no fixed bottom bar".
 - Constraints: distinct from the Local AI Playground (local models, memory-only); never hides Models or API keys; transcripts live on the server, not in the browser.
 
@@ -37,9 +39,9 @@ related_targets: ["src/frontend/src/PortalNavigation.tsx","src/frontend/src/Port
 
 THESIS: A working companion beside the page, not a destination. It opens next to whatever tool the owner is using, knows which page that is, and leaves no rail when closed. It refuses the category default of a floating bubble launcher over a modal chat window.
 
-OWN-WORLD: The portal's own materials: a surface-colored column divided from the page by one 1px line, system type, 12/14/25 radii, choice-row pressed states. Accent only on send, the chosen mode, and focus. Assistant replies are unboxed prose; owner messages are accent-soft blocks. Amber marks stopped, failed marks errors. No gradients, glass, glow, or sparkle theatrics.
+OWN-WORLD: The portal's own materials: a surface-colored column divided from the page by one 1px line, system type, 12/14/25 radii, choice-row pressed states. Accent only on send, the chosen mode, and focus. Assistant replies are unboxed prose; owner messages are accent-soft blocks. Amber marks stopped and anything waiting for the owner; failed marks errors and a destructive Approve. No gradients, glass, glow, or sparkle theatrics.
 
-STORY: The owner asks about the page in front of them, reads a short answer beside it, stops it whenever they like, and reopens earlier chats. They understand it advises and does not act yet.
+STORY: The owner asks about the page in front of them, reads a short answer beside it, stops it whenever they like, and reopens earlier chats. They see each thing it checks, and it changes nothing they haven't approved, either in the chat or ahead of time in Settings.
 
 FIRST VIEWPORT: At 1440, a 400px full-height column on the right with the page reflowed beside it. Its 88px header shares the portal header's bottom rule: Assistant and the chat title, then New chat, History, Move to left, Close. The conversation fills the middle. The composer sits at the foot: textarea, a Plan/Execute pair and model select below it, and the accent send button at bottom right. Empty chats show an "On: <page>" chip and three honest starters.
 

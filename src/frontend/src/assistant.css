@@ -99,9 +99,47 @@
 .assistant [data-streamdown=code-block-actions] { padding: 0; border: 0; background: none; backdrop-filter: none; }
 .assistant [data-streamdown=code-block-copy-button] { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border-radius: 8px; color: var(--muted); }
 .assistant [data-streamdown=code-block-copy-button]:hover { background: var(--surface-subtle); color: var(--text); }
-.assistant [data-streamdown=code-block-body] { padding: 12px 14px; border: 0; border-radius: 0 0 11px 11px; background: transparent; }
+.assistant [data-streamdown=code-block-body] { padding: 12px 14px; border: 0; border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px); background: transparent; }
 .assistant [data-streamdown=table-wrapper] { gap: 0; padding: 0; border-color: var(--line); border-radius: 12px; background: var(--surface); }
-.assistant [data-streamdown=table-wrapper] > div { border: 0; border-radius: 11px; background: transparent; }
+.assistant [data-streamdown=table-wrapper] > div { border: 0; border-radius: calc(var(--radius) - 1px); background: transparent; }
+
+/* A tool call is one framed row. While it waits for the owner, its card opens under the title. */
+.assistant .assistant-tool { background: var(--surface); font-size: 14px; line-height: 1.5; }
+.assistant .assistant-tool[data-waiting] { border-color: var(--amber-line); }
+/* Its status drops under the title, so names in a long title stay whole. */
+.assistant .assistant-tool[data-waiting] [data-slot=tool-header] { flex-wrap: wrap; row-gap: 2px; }
+.assistant .assistant-tool[data-waiting] [data-slot=tool-status] { order: 1; flex-basis: 100%; padding-left: 24px; }
+.assistant .assistant-tool [data-slot=tool-header] { min-height: 44px; padding: 10px 12px; border-radius: inherit; }
+.assistant .assistant-tool [data-slot=tool-header]:hover > svg:last-child { color: var(--text); }
+.assistant .assistant-tool [data-slot=tool-title] { overflow-wrap: anywhere; }
+.assistant-tool-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.assistant-tool-status[data-tone=done] { color: var(--green-ink); }
+.assistant-tool-status[data-tone=failed] { color: var(--failed-ink); }
+.assistant-tool-status[data-tone=waiting] { color: var(--amber-ink); font-weight: 650; }
+.assistant-tool-note { padding: 0 12px 10px 36px; color: var(--muted); overflow-wrap: anywhere; }
+.assistant-tool-note[data-tone=failed] { color: var(--failed-ink); }
+.assistant .assistant-tool-details { padding-top: 12px; border-top: 1px solid var(--line); }
+.assistant .assistant-tool-details > p { color: var(--muted); }
+.assistant .assistant-tool :is([data-slot=tool-input] dd, [data-slot=tool-output] pre) { max-height: 16rem; overflow: auto; overflow-wrap: anywhere; }
+/* A script's lines are numbered, so a long line that wraps isn't read as two commands. */
+.assistant [data-slot=tool-input-lines] { counter-reset: line; }
+.assistant [data-slot=tool-input-lines] > li { display: grid; grid-template-columns: 4ch minmax(0, 1fr); counter-increment: line; }
+.assistant [data-slot=tool-input-lines] > li::before { content: counter(line); padding-right: 1ch; color: var(--muted); text-align: end; user-select: none; }
+.assistant .assistant-card { display: grid; gap: 12px; padding: 12px; border: 0; border-top: 1px solid var(--amber-line); border-radius: 0; }
+.assistant-card > p { overflow-wrap: anywhere; }
+.assistant-card-form { display: grid; gap: 12px; }
+.assistant-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.assistant .assistant-card .button { gap: 8px; min-height: 40px; padding: 8px 14px; border-radius: 12px; font-size: 14px; }
+.assistant .assistant-card .text-link { min-height: 32px; padding: 0; justify-content: flex-start; text-align: left; }
+.assistant .assistant-card [aria-disabled=true] { opacity: .65; cursor: default; }
+.assistant-choices { display: grid; gap: 8px; }
+.assistant-field { display: grid; gap: 6px; font-size: 14px; font-weight: 650; }
+.assistant .assistant-field :is(input, textarea) { width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); font-size: 15px; font-weight: 400; line-height: 1.5; resize: vertical; }
+.assistant[data-layout=sheet] .assistant-field :is(input, textarea) { font-size: 16px; }
+.assistant .assistant-field :is(input, textarea):focus-visible { outline-width: 2px; }
+.assistant .assistant-field [aria-invalid=true] { border-color: var(--failed-ink); }
+.assistant-hint { margin-top: -6px; color: var(--muted); font-size: 14px; }
+.assistant-field:has([aria-invalid=true]) + .assistant-hint { color: var(--failed-ink); }
 
 .assistant-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--muted); font-size: 14px; }
 .assistant-failed { display: flex; align-items: flex-start; gap: 8px; color: var(--failed-ink); font-size: 14px; line-height: 1.5; }

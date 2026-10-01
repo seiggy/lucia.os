@@ -17,7 +17,8 @@ public sealed record NodeSignedSubmission(string CertificatePem, SignedDiscovery
 public sealed record NodeHeartbeat(Guid NodeId, string Hostname, string OsVersion, double UptimeSeconds,
     double? LoadAverage, long MemoryTotalBytes, long MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
     NodeRuntime? Runtime = null, NodeUpdateStatus? Updates = null, string? AgentRelease = null,
-    double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null);
+    double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null,
+    string[]? Features = null);
 /// <summary>One heartbeat's utilization, kept for the node's last hour. Percents are 0–100; temperatures are °C.</summary>
 public sealed record NodeUsageSample(DateTimeOffset At, double? Cpu, double Memory, double? Gpu, double? CpuTemperature, double? GpuTemperature);
 /// <summary>A pending Debian package upgrade, from <c>apt-get -s upgrade</c>.</summary>
@@ -414,6 +415,10 @@ public sealed class ManagedNodeEnrollment(
         static bool Celsius(double? value) => value is null || double.IsFinite(value.Value) && value > -40 && value < 150;
         HardwareInventoryValidation.Require(Percent(report.CpuPercent) && Percent(report.GpuPercent)
             && Celsius(report.CpuTemperatureCelsius) && Celsius(report.GpuTemperatureCelsius), "Managed-node utilization is invalid.");
+        // What the agent can do beyond the basics, such as "exec" for commands the owner approves in the assistant.
+        HardwareInventoryValidation.Require(report.Features is null || report.Features.Length <= 16 && report.Features.All(feature =>
+            feature is not null && System.Text.RegularExpressions.Regex.IsMatch(feature, @"\A[a-z][a-z0-9-]{0,31}\z")),
+            "Managed-node features are invalid.");
     }
 
     /// <summary>

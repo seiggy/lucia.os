@@ -12,7 +12,7 @@ public sealed record AssistantTranscript(List<UiMessage> Messages);
 
 /// <summary>Runs chat turns in the background so they survive disconnects, and keeps each owner's chats as JSON files.</summary>
 public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<AssistantOptions> options,
-    IHostApplicationLifetime lifetime, ILogger<AssistantRuns> logger) : IAsyncDisposable
+    IHostApplicationLifetime lifetime, ILogger<AssistantRuns> logger, AssistantBroker broker, AssistantTools? tools = null) : IAsyncDisposable
 {
     private const long TranscriptLimit = 16 * 1024 * 1024;
     private readonly ConcurrentDictionary<string, AssistantRun> _runs = new();
@@ -27,7 +27,17 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         if (Find(owner, id) is { Done: false } run) run.Stop.Cancel();
     }
 
-    public async Task<AssistantRun> StartAsync(string owner, AssistantChatRequest request, CancellationToken ct)
+    /// <summary>Answers a tool call waiting for the owner. False when nothing in this chat waits on it.</summary>
+    public bool Respond(string owner, string id, string approvalId, bool approved, string? reason, bool always) =>
+        broker.Respond(Key(owner, SessionId(id)), approvalId, approved, reason, always);
+
+    /// <summary>Answers a question tool waiting in this chat, or declines it when <paramref name="kind"/> is null.</summary>
+    public bool AnswerQuestion(string owner, string id, string toolCallId, string? kind, string? value) =>
+        broker.Answer(Key(owner, SessionId(id)), toolCallId, kind, value);
+
+    /// <param name="actor">Who Lucia's history credits with the assistant's changes.</param>
+    /// <param name="user">The signed-in Lucia user, for the SSH login the assistant suggests.</param>
+    public async Task<AssistantRun> StartAsync(string owner, AssistantChatRequest request, string actor, string? user, CancellationToken ct)
     {
         var id = SessionId(request.SessionId);
         if (request.MessageId is null || !MessageIdPattern().IsMatch(request.MessageId) || request.Mode is not ("plan" or "execute")
@@ -60,7 +70,8 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             _runs[key] = run;
             var route = request.Route is { } page && RoutePattern().IsMatch(page) ? page : "unknown";
             var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}\n</lucia-context>\n\n{request.Text}";
-            run.Completion = Task.Run(() => ExecuteAsync(key, folder, run, new(owner, key, prompt, request.Model), transcript, info));
+            run.Completion = Task.Run(() => ExecuteAsync(key, folder, run,
+                new(owner, key, prompt, request.Model, request.Mode, actor, user), transcript, info));
             return run;
         }
         finally { _gate.Release(); }
@@ -103,6 +114,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             if (_runs.TryGetValue(key, out var run) && !run.Done)
                 throw new AssistantException(409, "run_active", "Stop this chat before deleting it.");
             _runs.TryRemove(key, out _);
+            broker.Forget(key);
             var folder = Path.Combine(Root, "users", owner, id);
             if (Directory.Exists(folder))
             {
@@ -121,13 +133,15 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         run.Publish(stream.Start());
         try
         {
-            await foreach (var update in runtime.RunAsync(turn, run.Stop.Token))
-                run.Publish(stream.Map(update));
-            run.Publish(stream.Finish());
+            var kit = tools is null ? null
+                : broker.Kit(turn, await broker.SettingsAsync(turn.Owner, run.Stop.Token), tools.Create(turn.Actor, turn.User), stream, run);
+            await foreach (var update in runtime.RunAsync(turn, kit, run.Stop.Token))
+                lock (stream) run.Publish(stream.Map(update));
+            lock (stream) run.Publish(stream.Finish());
         }
         catch (OperationCanceledException) when (run.Stop.IsCancellationRequested)
         {
-            run.Publish(stream.Abort());
+            lock (stream) run.Publish(stream.Abort());
             if (!lifetime.ApplicationStopping.IsCancellationRequested) await runtime.AbortAsync(turn.Owner, key, turn.Model);
         }
         catch (Exception e)
@@ -135,11 +149,12 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             logger.LogWarning("An assistant turn failed ({ErrorType}).", e.GetType().Name);
             logger.LogDebug(e, "Assistant turn failure.");
             var explained = e as AssistantException ?? await runtime.ExplainAsync(turn.Owner, e);
-            run.Publish(stream.Fail(explained?.Message));
+            lock (stream) run.Publish(stream.Fail(explained?.Message));
         }
         try
         {
-            var message = stream.Message;
+            UiMessage message;
+            lock (stream) message = stream.Message;
             if (message.Parts.Count > 0 || stream.Interrupted) transcript.Messages.Add(message);
             await SaveAsync(folder, transcript, info with { Updated = DateTimeOffset.UtcNow });
         }

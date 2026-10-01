@@ -1,8 +1,11 @@
+// The SDK marks permission decisions as evaluation-only; the broker checks inspect them.
+#pragma warning disable GHCP001
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using System.Web;
 using GitHub.Copilot;
@@ -12,8 +15,12 @@ using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ApproveOnce = GitHub.Copilot.Rpc.PermissionDecisionApproveOnce;
+using PermissionDecision = GitHub.Copilot.Rpc.PermissionDecision;
+using Rejected = GitHub.Copilot.Rpc.PermissionDecisionReject;
 
 // Disposable check data stays within the project, never in an OS temporary directory.
 var storage = Path.GetFullPath(Path.Combine("tests", "Lucia.Homelab.AssistantChecks", ".checks-" + Guid.NewGuid().ToString("N")));
@@ -26,16 +33,29 @@ void Check(bool condition, string reason)
     checks++;
 }
 
-async Task Reject(Func<Task> action, int status, string code, string reason)
+async Task<AssistantException> Reject(Func<Task> action, int status, string code, string reason)
 {
     try { await action(); }
     catch (AssistantException e)
     {
         Check(e.StatusCode == status && e.Code == code, $"{reason} (got {e.StatusCode} {e.Code})");
-        return;
+        return e;
     }
     throw new InvalidOperationException(reason + " (it was accepted)");
 }
+
+static Func<Task> Throws(Action action) => () =>
+{
+    action();
+    return Task.CompletedTask;
+};
+
+static string Verdict(PermissionDecision decision) => decision switch
+{
+    ApproveOnce => "approve",
+    Rejected rejected => "reject: " + rejected.Feedback,
+    _ => decision.GetType().Name,
+};
 
 static JsonNode Node(object value) => JsonSerializer.SerializeToNode(value, AssistantStream.Json)!;
 
@@ -155,6 +175,116 @@ try
         run.Stop.Dispose();
     }
 
+    // Redaction: secret-looking text, every app's secret values, and tool arguments as the owner sees them.
+    var redJwt = string.Join('.', "eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJsdWNpYSJ9", "c2lnbmF0dXJlLXZhbHVl");
+    foreach (var (redIn, redOut) in new (string In, string? Out)[]
+    {
+        ("DB_PASSWORD=hunter2hunter2", "DB_PASSWORD=[redacted]"),
+        ("""{"password": "correct horse battery"}""", """{"password": "[redacted]"}"""),
+        ("Authorization: Basic dXNlcjpwYXNz", "Authorization: [redacted]"),
+        ("postgres://lucia:pa55word@db:5432/app", "postgres://lucia:[redacted]@db:5432/app"),
+        ("jwt " + redJwt, "jwt [redacted]"),
+        // References, flags, numbers, paths, URLs and structure are left alone.
+        ("DB_PASSWORD=${DB_PASSWORD}", null),
+        ("require_password: false", null),
+        ("token_ttl: 3600", null),
+        ("secret_file: /run/secrets/db", null),
+        ("api_key_url = https://example.com/key", null),
+        ("""ports: ["8080:80"]""", null),
+    })
+    {
+        var redGot = AssistantTools.Patterns(redIn);
+        Check(redGot == (redOut ?? redIn), $"'{redIn}' becomes '{redOut ?? redIn}' (got '{redGot}').");
+    }
+    var redGitHub = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+    Check(!AssistantTools.Patterns($"found {redGitHub} in the log").Contains(redGitHub), "AGT's credential redactor runs too, catching provider tokens.");
+
+    var redGuid = Guid.NewGuid().ToString("N");
+    var redToken = string.Concat(Enumerable.Repeat("aB3_", 10)) + "zZ";
+    Dictionary<string, string> redEnv = new()
+    {
+        ["DB_PASSWORD"] = "\"s3cret-Value!\"", ["APP_SECRET"] = @"back\slash-Secret9", ["SHORT_SECRET"] = "abc123",
+        ["PORT"] = "8080", ["INSTANCE_ID"] = redGuid, ["UPSTREAM"] = redToken,
+    };
+    Check(AssistantTools.Scrub($$"""login s3cret-Value! raw back\slash-Secret9 json "{{JsonEncodedText.Encode(@"back\slash-Secret9")}}" {{redToken}}""", redEnv)
+        == """login [redacted] raw [redacted] json "[redacted]" [redacted]""", "Apps' secret values are hidden wherever they appear, raw or JSON-escaped.");
+    Check(AssistantTools.Scrub($"abc123 on 8080 as {redGuid}", redEnv) == $"abc123 on 8080 as {redGuid}", "Short values, settings and ids stay readable.");
+
+    var redArgs = JsonNode.Parse("""
+        {"name":"db","env":{"DB_PASSWORD":"hunter2hunter2","PORT":"5432"},"secrets":["a","b"],"token":"","apiKey":{"value":"xyz","n":3,"on":true},
+         "compose":"environment:\n  POSTGRES_PASSWORD: s3cretpass99\n"}
+        """);
+    Check(JsonNode.DeepEquals(AssistantTools.Mask(redArgs), JsonNode.Parse("""
+        {"name":"db","env":{"DB_PASSWORD":"••••••","PORT":"5432"},"secrets":["••••••","••••••"],"token":"","apiKey":{"value":"••••••","n":3,"on":true},
+         "compose":"environment:\n  POSTGRES_PASSWORD: [redacted]\n"}
+        """)) && (string)redArgs!["env"]!["DB_PASSWORD"]! == "hunter2hunter2" && AssistantTools.Mask(null) is null,
+        "The owner sees a copy of the tool's arguments with secret fields masked and secret-looking text redacted.");
+
+    // Environment edits for custom apps: comments and order survive, and secrets are generated, never written by the model.
+    var (toolEnv, toolGenerated) = AssistantTools.EditEnv("# Database\r\nDB_HOST=db\nDB_PASSWORD=old\nDB_HOST=dup\n\nPORT=80\n",
+        new Dictionary<string, string> { ["DB_HOST"] = "postgres", ["NEW_KEY"] = "a b" }, ["PORT"], ["DB_PASSWORD", "JWT_SECRET"]);
+    var toolMatch = Regex.Match(toolEnv, @"\A# Database\nDB_HOST=postgres\nDB_PASSWORD=([A-Za-z0-9_-]{43})\n\nNEW_KEY=a b\nJWT_SECRET=([A-Za-z0-9_-]{43})\n\z");
+    Check(toolMatch.Success && toolMatch.Groups[1].Value != toolMatch.Groups[2].Value && toolGenerated.SequenceEqual(["DB_PASSWORD", "JWT_SECRET"]),
+        $"Edits keep comments and order, drop duplicates, append new names and replace weak secrets (got '{toolEnv}').");
+    var toolKept = new string('k', 40);
+    Check(AssistantTools.EditEnv($"JWT_SECRET={toolKept}\n", null, null, ["JWT_SECRET"]).Env == $"JWT_SECRET={toolKept}\n"
+        && AssistantTools.EditEnv("A=1\r\n", null, [], null) is ("A=1\r\n", []), "A strong saved secret is kept, and no edits leave the file as it was.");
+    await Reject(Throws(() => AssistantTools.EditEnv("", new Dictionary<string, string> { ["1BAD"] = "x" }, null, null)), 400, "invalid_env_name",
+        "Variable names are checked.");
+    await Reject(Throws(() => AssistantTools.EditEnv("", new Dictionary<string, string> { ["A"] = "x\ny" }, null, null)), 400, "invalid_env_value",
+        "A value cannot add lines.");
+    await Reject(Throws(() => AssistantTools.EditEnv("", null, ["A"], ["A"])), 400, "env_conflict", "A name is set, removed or generated, not two of those.");
+
+    // Every tool answers in redacted text capped at 48 KB, and only Lucia's own errors reach the model.
+    AssistantTool ToolOf(Func<object?> body, string tier = ToolTier.Read) => new(AIFunctionFactory.Create(body, new AIFunctionFactoryOptions
+    {
+        Name = "probe", MarshalResult = static (result, _, _) => new ValueTask<object?>(result),
+    }), tier, (text, _) => Task.FromResult(AssistantTools.Patterns(text)), NullLogger.Instance);
+    async Task<string> ToolText(AssistantTool tool) => ((TextContent)(await tool.InvokeAsync(new AIFunctionArguments()))!).Text;
+    Check(await ToolText(ToolOf(() => null)) == "Done."
+        && await ToolText(ToolOf(() => new { Url = "postgres://lucia:pa55word@db/app", Count = 2 })) == """{"url":"postgres://lucia:[redacted]@db/app","count":2}"""
+        && (await ToolText(ToolOf(() => new string('x', 60_000)))).StartsWith(new string('x', AssistantTool.MaxOutput) + "\n[Cut at 48 KB.")
+        && ToolOf(() => null, ToolTier.Change).Tier == ToolTier.Change, "Tool results are JSON text, redacted and cut at 48 KB.");
+    var toolError = await Reject(() => ToolText(ToolOf(() => throw new ArgumentException("Bad value DB_PASSWORD=hunter2hunter2"))), 400, "tool_error",
+        "Lucia's own errors reach the model.");
+    var toolCrash = await Reject(() => ToolText(ToolOf(() => throw new InvalidOperationException("db at 10.0.0.5 said pa55word"))), 500, "tool_failed",
+        "Unexpected errors don't.");
+    Check(toolError.Message == "Bad value DB_PASSWORD=[redacted]" && toolCrash.Message == "The tool failed unexpectedly.",
+        $"Error text is redacted, and an unexpected error says nothing more (got '{toolError.Message}').");
+    var toolCancelled = false;
+    try { await ToolText(ToolOf(() => throw new OperationCanceledException())); }
+    catch (OperationCanceledException) { toolCancelled = true; }
+    Check(toolCancelled, "Cancellation reaches the runtime instead of becoming a tool error.");
+
+    var toolSet = new AssistantTools(null!, null!, null!, null!, null!, null!, null!, NullLogger<AssistantTools>.Instance).Create("tester via assistant", "tester");
+    JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
+    static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
+    Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:13,web:1,secret:1,change:7,destructive:5"
+        && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
+            && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
+        "The assistant has 13 read, 1 web, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+    var toolWeb = ToolSchema("read_web_page");
+    Check(Required(toolWeb).SequenceEqual(["url"]) && (int)toolWeb["properties"]!["start"]!["default"]! == 0,
+        $"read_web_page needs a URL, and starts at the top of the page (got {toolWeb.ToJsonString()}).");
+    var toolRun = ToolSchema("run_command");
+    Check(Required(toolRun).SequenceEqual(["node", "command"])
+        && (string)toolRun["properties"]!["interpreter"]!["default"]! == "bash" && (int)toolRun["properties"]!["timeoutSeconds"]!["default"]! == 120,
+        $"run_command needs a node and a command, and defaults to bash for two minutes (got {toolRun.ToJsonString()}).");
+    var toolAsk = ToolSchema("ask_owner");
+    Check(Required(toolAsk).SequenceEqual(["question"]) && (bool)toolAsk["properties"]!["allowFreeform"]!["default"]!
+        && Required(ToolSchema("request_secret")).SequenceEqual(["app", "name", "description"]),
+        $"ask_owner needs only a question, and request_secret an app, a variable name and a description (got {toolAsk.ToJsonString()}).");
+    Check(StackCatalog.Unquoted("ghp_A1b2.C3~d4+E5/f6=g-7") && !StackCatalog.Unquoted("pa$$word") && !StackCatalog.Unquoted("abc #def")
+        && !StackCatalog.Unquoted("\"quoted\"") && !StackCatalog.Unquoted("two words"),
+        "Secrets are saved unquoted, so only characters compose reads literally are accepted: it would expand $, cut at #, and strip quotes.");
+    var toolLogs = ToolSchema("read_logs");
+    var toolSave = ToolSchema("save_custom_app")["properties"]!;
+    Check(toolLogs["required"]!.AsArray().Select(item => (string)item!).SequenceEqual(["node", "container"])
+        && toolSave["edits"]!["items"]!["properties"]!.AsObject().Select(pair => pair.Key).SequenceEqual(["find", "replace"])
+        && toolSave["routes"]!["items"]!["properties"]!.AsObject().Select(pair => pair.Key).SequenceEqual(["host", "port", "grpcPort"]),
+        $"Tool schemas use the names their descriptions mention (got {toolLogs.ToJsonString()} and {toolSave.ToJsonString()}).");
+
     // GitHub sign-in against a scripted GitHub: synthetic tokens and no network. Checks for the code fire at once; the 10-minute linger never does.
     var directory = Path.Combine(storage, "assistant");
     var options = Options.Create(new AssistantOptions { Directory = directory });
@@ -189,21 +319,22 @@ try
     // Runs and chat files. Shutdown is already underway, so each turn stops before the Copilot runtime starts:
     // turns run end to end without a CLI, a real token or network.
     await using var runtime = new AssistantRuntime(options, signIn, providers, NullLoggerFactory.Instance);
-    await using var runs = new AssistantRuns(runtime, options, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance);
+    using var broker = new AssistantBroker(options, NullLogger<AssistantBroker>.Instance);
+    await using var runs = new AssistantRuns(runtime, options, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance, broker);
     const string owner = "0123456789abcdef", stranger = "fedcba9876543210";
     var chat = Guid.NewGuid().ToString("N");
     AssistantChatRequest Ask(string text, string messageId = "m1", string mode = "execute", string? model = null, string? session = null) =>
         new(session ?? chat, messageId, text, mode, model, "/apps");
 
     foreach (var bad in new[] { "", "abc", Guid.NewGuid().ToString("D"), "0123456789ABCDEF0123456789ABCDEF", "..\\" + chat })
-        await Reject(() => runs.StartAsync(owner, Ask("Hi", session: bad), default), 400, "invalid_session", $"Chat id '{bad}' is rejected.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi", mode: "auto"), default), 400, "invalid_request", "Unknown modes are rejected.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: "bad id"), default), 400, "invalid_request", "Message ids are validated.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: null!), default), 400, "invalid_request", "A missing message id is rejected.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi", model: "gpt 5; rm"), default), 400, "invalid_request", "Model ids are validated.");
-    await Reject(() => runs.StartAsync(owner, Ask(" \n "), default), 400, "invalid_message", "Blank messages are rejected.");
-    await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi"), default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
+        await Reject(() => runs.StartAsync(owner, Ask("Hi", session: bad), "tester via assistant", null, default), 400, "invalid_session", $"Chat id '{bad}' is rejected.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi", mode: "auto"), "tester via assistant", null, default), 400, "invalid_request", "Unknown modes are rejected.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: "bad id"), "tester via assistant", null, default), 400, "invalid_request", "Message ids are validated.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: null!), "tester via assistant", null, default), 400, "invalid_request", "A missing message id is rejected.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi", model: "gpt 5; rm"), "tester via assistant", null, default), 400, "invalid_request", "Model ids are validated.");
+    await Reject(() => runs.StartAsync(owner, Ask(" \n "), "tester via assistant", null, default), 400, "invalid_message", "Blank messages are rejected.");
+    await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), "tester via assistant", null, default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi"), "tester via assistant", null, default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
     Check(!Directory.Exists(Path.Combine(directory, "users")), "Rejected requests write nothing.");
     var listed = Node(await runtime.ModelsAsync(owner, default));
     var sources = listed["sources"]!.AsArray();
@@ -249,7 +380,7 @@ try
         && (string)sources[2]!["reason"]! == "No chat model is loaded on the Spark. Load one on the AI page.",
         "Without LiteLLM or a Spark model, the picker says what to do and lists what's left.");
     await Reject(() => providers.ResolveAsync(owner, "local:qwen3-spark", default), 503, "assistant_source_unavailable", "An unloaded Spark model says why.");
-    var local = await runs.StartAsync("00000000000000aa", Ask("Hi", model: "local:ai/qwen3", session: Guid.NewGuid().ToString("N")), default);
+    var local = await runs.StartAsync("00000000000000aa", Ask("Hi", model: "local:ai/qwen3", session: Guid.NewGuid().ToString("N")), "tester via assistant", null, default);
     await local.Completion;
     Check(local.Done, "Local models answer without a GitHub sign-in.");
 
@@ -300,7 +431,7 @@ try
         && File.Exists(saved), "Copilot refusing a working GitHub sign-in names the account to check.");
 
     const string question = "  Why is grafana down?\nIt was fine yesterday.";
-    var first = await runs.StartAsync(owner, Ask(question), default);
+    var first = await runs.StartAsync(owner, Ask(question), "tester via assistant", null, default);
     await first.Completion;
     var replay = first.Read(0);
     Check(replay.Done && replay.Chunks.SequenceEqual([$"{{\"type\":\"start\",\"messageId\":\"{first.MessageId}\"}}",
@@ -318,13 +449,13 @@ try
         && messages[1]!["parts"]!.AsArray().Count == 0 && (bool)messages[1]!["metadata"]!["stopped"]!,
         "The question and the stopped answer are saved.");
 
-    var retry = await runs.StartAsync(owner, Ask(question), default);
+    var retry = await runs.StartAsync(owner, Ask(question), "tester via assistant", null, default);
     await retry.Completion;
     messages = Node(await runs.GetAsync(owner, chat, default))["messages"]!.AsArray();
     Check(messages.Count == 2 && (string)messages[0]!["id"]! == "m1" && (string)messages[1]!["id"]! == retry.MessageId && retry.MessageId != first.MessageId,
         "Trying again keeps one copy of the question and replaces the old answer.");
 
-    var next = await runs.StartAsync(owner, Ask("Restart it.", messageId: "m2", mode: "plan", model: "gpt-5.1"), default);
+    var next = await runs.StartAsync(owner, Ask("Restart it.", messageId: "m2", mode: "plan", model: "gpt-5.1"), "tester via assistant", null, default);
     await next.Completion;
     view = Node(await runs.GetAsync(owner, chat, default));
     messages = view["messages"]!.AsArray();
@@ -333,9 +464,9 @@ try
         "A new message is appended and the chat keeps its title.");
 
     var longChat = Guid.NewGuid().ToString("N");
-    await (await runs.StartAsync(owner, Ask("\r\n " + new string('a', 100) + "\r\nsecond line", session: longChat), default)).Completion;
+    await (await runs.StartAsync(owner, Ask("\r\n " + new string('a', 100) + "\r\nsecond line", session: longChat), "tester via assistant", null, default)).Completion;
     var shortChat = Guid.NewGuid().ToString("N");
-    await (await runs.StartAsync(owner, Ask("Short title\r\nMore detail", session: shortChat), default)).Completion;
+    await (await runs.StartAsync(owner, Ask("Short title\r\nMore detail", session: shortChat), "tester via assistant", null, default)).Completion;
     var sessions = Node(runs.List(owner))["sessions"]!.AsArray();
     Check(sessions.Count == 3 && (string)sessions[0]!["id"]! == shortChat && (string)sessions[0]!["title"]! == "Short title"
         && (string)sessions[1]!["title"]! == new string('a', 79) + "…" && (string)sessions[2]!["id"]! == chat
@@ -358,11 +489,395 @@ try
     Directory.CreateDirectory(Path.Combine(owned, huge));
     using (var file = File.Create(Path.Combine(owned, huge, "transcript.json"))) file.SetLength(16 * 1024 * 1024 + 1);
     await Reject(() => runs.GetAsync(owner, huge, default), 409, "session_too_large", "Oversized chats are refused, not loaded.");
-    await Reject(() => runs.StartAsync(owner, Ask("Hi", session: huge), default), 409, "session_too_large", "Oversized chats cannot take new messages.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi", session: huge), "tester via assistant", null, default), 409, "session_too_large", "Oversized chats cannot take new messages.");
 
     github.UserStatus = 401;
     Check(await signIn.ExplainAsync(owner, refused) is { Code: "github_signed_out" } && signIn.Status(owner).State == "disconnected" && !File.Exists(saved),
         "When GitHub no longer accepts the sign-in, the owner is signed out.");
+
+    // The approval broker: Lucia's policy runs reads, asks before changes and refuses what Plan mode can't do. An asked call
+    // waits for the owner's answer in the chat, and "always" lasts for the chat.
+    AssistantTool GovTool(string name, string tier) => new(AIFunctionFactory.Create((Func<string>)(() => "ok"), new AIFunctionFactoryOptions { Name = name }),
+        tier, (value, _) => Task.FromResult(value), NullLogger.Instance);
+    AssistantTool[] govTools = [GovTool("peek", ToolTier.Read), GovTool("tweak", ToolTier.Change), GovTool("nudge", ToolTier.Change),
+        GovTool("wipe", ToolTier.Destructive), GovTool("fetch", ToolTier.Web), GovTool("vault", ToolTier.Secret), GovTool("run_command", ToolTier.Destructive)];
+    var govSettings = new AssistantSettings(["nudge"], ["docs.docker.com"]);
+    var govKey = owner + "-" + chat;
+    var govCalls = 0;
+    var govSeen = new Dictionary<AssistantRun, int>();
+    (AssistantStream Stream, AssistantRun Run, AssistantKit Kit) GovTurn(string turnMode = "execute")
+    {
+        var turnStream = new AssistantStream("m-gov", null);
+        var turnRun = new AssistantRun("m-gov", default);
+        return (turnStream, turnRun, broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, turnMode), govSettings, govTools, turnStream, turnRun));
+    }
+    Task<PermissionDecision> GovCall(AssistantKit kit, string tool, object? callArgs = null) => kit.Permission(new PermissionRequestCustomTool
+    {
+        ToolName = tool, ToolDescription = "", ToolCallId = $"call-{++govCalls}",
+        Args = callArgs is null ? null : JsonSerializer.SerializeToElement(callArgs),
+    }, null!);
+    List<JsonNode> GovNew(AssistantRun target)
+    {
+        var (fresh, _, _) = target.Read(govSeen.GetValueOrDefault(target));
+        govSeen[target] = govSeen.GetValueOrDefault(target) + fresh.Count;
+        return [.. fresh.Select(chunk => JsonNode.Parse(chunk)!)];
+    }
+    const string govOwn = "reject: Lucia's assistant can only use its own tools.";
+    const string govPlan = "reject: Refused: the chat is in Plan mode, which changes nothing. Put this step in your plan; the owner can switch to Execute to run it.";
+
+    var (govStream, govRun, govKit) = GovTurn();
+    Check(Verdict(await GovCall(govKit, "peek")) == "approve" && GovNew(govRun).Count == 0, "Reads run without asking, and add nothing to the chat.");
+    Check(Verdict(await GovCall(govKit, "vault", new { app = "grafana", name = "GRAFANA_TOKEN" })) == "approve" && GovNew(govRun).Count == 0,
+        "Asking the owner for a secret needs no approval: the secret card is their consent.");
+    Check(Verdict(await GovCall(govKit, "shell")) == govOwn && Verdict(await govKit.Permission(new PermissionRequest { Kind = "shell" }, null!)) == govOwn
+        && GovNew(govRun).Count == 0, "The runtime's own shell, file and URL tools, and unknown tools, are refused.");
+
+    Check(Verdict(await GovCall(govKit, "nudge", new { app = "grafana" })) == "approve", "A change the owner set to run automatically runs.");
+    var govChunks = GovNew(govRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request,tool-approval-response"
+        && (string)govChunks[0]["toolName"]! == "nudge" && (string)govChunks[0]["input"]!["app"]! == "grafana"
+        && (string)govChunks[1]["toolCallId"]! == (string)govChunks[0]["toolCallId"]! && (bool)govChunks[1]["isAutomatic"]! && govChunks[1]["reason"] is null
+        && (bool)govChunks[2]["approved"]! && (string)govChunks[2]["reason"]! == "Runs automatically in your assistant settings.",
+        "The chat shows that it ran on its own, and why.");
+
+    var govAsk = GovCall(govKit, "tweak", new { app = "grafana", setEnv = new Dictionary<string, string> { ["DB_PASSWORD"] = "hunter2hunter2" } });
+    govChunks = GovNew(govRun);
+    var govApproval = (string)govChunks[1]["approvalId"]!;
+    Check(!govAsk.IsCompleted && Types(govChunks) == "tool-input-available,tool-approval-request"
+        && (string)govChunks[0]["input"]!["setEnv"]!["DB_PASSWORD"]! == "••••••" && (string)govChunks[1]["reason"]! == "This changes your lab."
+        && govChunks[1]["isAutomatic"] is null, "Other changes wait for the owner, who sees their arguments with secrets masked.");
+    Check(!runs.Respond(stranger, chat, govApproval, true, null, true) && !govAsk.IsCompleted, "Another owner cannot answer it.");
+    Check(runs.Respond(owner, chat, govApproval, true, null, always: true) && Verdict(await govAsk) == "approve"
+        && !runs.Respond(owner, chat, govApproval, false, null, false), "The owner approves it, once.");
+    govChunks = GovNew(govRun);
+    Check(Types(govChunks) == "tool-approval-response" && (bool)govChunks[0]["approved"]! && (string)govChunks[0]["approvalId"]! == govApproval,
+        "The chat records the answer.");
+    Check(Verdict(await GovCall(govKit, "tweak", new { app = "grafana" })) == "approve", "After 'always', the tool runs without asking in this chat.");
+    govChunks = GovNew(govRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request,tool-approval-response" && (bool)govChunks[1]["isAutomatic"]!
+        && (string)govChunks[2]["reason"]! == "You allowed this for this chat.", "The chat says the owner allowed it.");
+
+    var govWipe = GovCall(govKit, "wipe", new { app = "grafana" });
+    govChunks = GovNew(govRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request" && (string)govChunks[1]["reason"]! == "This can remove data or interrupt your lab."
+        && runs.Respond(owner, chat, (string)govChunks[1]["approvalId"]!, false, "not today", false)
+        && Verdict(await govWipe) == "reject: The owner declined this tool call: not today",
+        "Destructive calls ask, and a refusal reaches the model with the owner's reason.");
+    govChunks = GovNew(govRun);
+    Check(Types(govChunks) == "tool-approval-response,tool-output-denied" && !(bool)govChunks[0]["approved"]! && (string)govChunks[0]["reason"]! == "not today",
+        "A refused call ends as denied.");
+    govWipe = GovCall(govKit, "wipe", new { app = "grafana" });
+    Check(runs.Respond(owner, chat, (string)GovNew(govRun)[1]["approvalId"]!, true, null, always: true) && Verdict(await govWipe) == "approve"
+        && Types(GovNew(govRun)) == "tool-approval-response", "The owner can approve a destructive call…");
+    govWipe = GovCall(govKit, "wipe", new { app = "grafana" });
+    govChunks = GovNew(govRun);
+    Check(!govWipe.IsCompleted && Types(govChunks) == "tool-input-available,tool-approval-request", "…but 'always' never covers one: the next asks again.");
+    govRun.Stop.Cancel();
+    Check(Verdict(await govWipe) == "reject: The owner stopped this turn." && GovNew(govRun).Count == 0
+        && !runs.Respond(owner, chat, (string)govChunks[1]["approvalId"]!, true, null, false),
+        "Stopping the turn refuses the waiting call, which can no longer be answered.");
+    var govEnd = govStream.Abort().Select(Node).ToList();
+    Check(Types(govEnd) == "tool-approval-response,tool-output-denied,tool-output-error,tool-output-error,tool-output-error,tool-output-error,message-metadata,abort"
+        && (string)govEnd[0]["reason"]! == "The run stopped before you answered." && govStream.Message.Parts[^1].State == "output-denied"
+        && govStream.Message.Parts.Count(part => part.State == "output-error") == 4,
+        "When the turn ends, its unanswered approval is refused and approved calls that never finished are marked unfinished.");
+
+    // Each destructive approval says what it puts at risk. Names come from the model, so only short plain ones are repeated.
+    var (_, warnRun, warnKit) = GovTurn();
+    var warnAsk = GovCall(warnKit, "run_command", new { node = "lucialab02", command = "nvidia-smi" });
+    govChunks = GovNew(warnRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request"
+        && (string)govChunks[1]["reason"]! == "This runs the command below as root on lucialab02. It can change anything there."
+        && runs.Respond(owner, chat, (string)govChunks[1]["approvalId"]!, false, null, false) && Verdict(await warnAsk) == "reject: The owner declined this tool call.",
+        "A destructive approval names what it risks.");
+    foreach (var (warnTool, warnInput, warnText) in new (string, object?, string)[]
+    {
+        ("delete_app", new { app = "whoami" }, "Lucia stops whoami and removes it from its server. Its data directory stays there."),
+        ("restore_backup", new { app = "grafana", snapshot = "a1b2c3" }, "The backup replaces grafana's data. Anything changed since it was taken is lost."),
+        ("set_public_route", new { app = "whoami", host = "whoami.lab.example", publicName = "whoami.example.com" },
+            "Anyone on the internet will be able to reach whoami.example.com."),
+        ("set_public_route", new { app = "whoami", host = "whoami.lab.example" }, "Anyone using whoami.lab.example from outside your network loses access."),
+        ("set_public_route", new { app = "whoami", host = "whoami.lab.example", publicName = "" },
+            "Anyone using whoami.lab.example from outside your network loses access."),
+        ("node_action", new { node = "lucialab02", action = "install-updates" }, "Apps on lucialab02 may restart briefly while the updates install."),
+        ("node_action", new { node = "lucialab02", action = "restart" }, "Every app on lucialab02 is offline for a few minutes while it restarts."),
+        ("node_action", new { node = "lucialab02", action = "update-agent" }, "Lucia loses touch with lucialab02 for about a minute while its agent updates."),
+        ("node_action", new { node = "lucialab02", action = "check-updates" }, "This can remove data or interrupt your lab."),
+        ("run_command", new { node = "lab02; reboot", command = "id" }, "This runs the command below as root on this server. It can change anything there."),
+        ("delete_app", new { app = new string('a', 101) }, "Lucia stops this app and removes it from its server. Its data directory stays there."),
+        ("delete_app", new { app = 5 }, "Lucia stops this app and removes it from its server. Its data directory stays there."),
+        ("delete_app", new[] { "whoami" }, "Lucia stops this app and removes it from its server. Its data directory stays there."),
+        ("restore_backup", null, "The backup replaces this app's data. Anything changed since it was taken is lost."),
+    })
+        Check(AssistantTools.Warning(warnTool, JsonSerializer.SerializeToNode(warnInput)) == warnText,
+            $"{warnTool} {JsonSerializer.Serialize(warnInput)} warns '{warnText}' (got '{AssistantTools.Warning(warnTool, JsonSerializer.SerializeToNode(warnInput))}').");
+
+    var (_, webRun, webKit) = GovTurn();
+    Check(Verdict(await GovCall(webKit, "fetch", new { url = "https://docs.docker.com/compose/" })) == "approve", "Reading an allowed site runs.");
+    govChunks = GovNew(webRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request,tool-approval-response"
+        && (string)govChunks[2]["reason"]! == "docs.docker.com is on the assistant's allowed sites.", "The chat says the site is allowed.");
+    foreach (var webBad in new object?[] { new { url = "ftp://docs.docker.com/" }, new { url = "/compose" }, null, new { url = 5 } })
+        Check(Verdict(await GovCall(webKit, "fetch", webBad)) == "reject: Give an absolute http or https URL.",
+            $"Web reads need an absolute http or https URL ({JsonSerializer.Serialize(webBad)}).");
+    Check(GovNew(webRun).Count == 0, "Malformed web reads add nothing to the chat.");
+    var webAsk = GovCall(webKit, "fetch", new { url = "https://example.com/" });
+    govChunks = GovNew(webRun);
+    Check(Types(govChunks) == "tool-input-available,tool-approval-request" && (string)govChunks[1]["reason"]! == "example.com isn't on the assistant's allowed sites."
+        && runs.Respond(owner, chat, (string)govChunks[1]["approvalId"]!, true, null, always: true) && Verdict(await webAsk) == "approve",
+        "Other sites ask first.");
+    GovNew(webRun);
+    Check(Verdict(await GovCall(webKit, "fetch", new { url = "https://EXAMPLE.com./x" })) == "approve"
+        && (string)GovNew(webRun)[2]["reason"]! == "You allowed this for this chat.", "Allowing a site for the chat covers any spelling of its name.");
+
+    var (_, planRun, planKit) = GovTurn("plan");
+    Check(Verdict(await GovCall(planKit, "peek")) == "approve" && GovNew(planRun).Count == 0, "Plan mode still reads.");
+    foreach (var planTool in new[] { "nudge", "tweak", "wipe", "vault" })
+    {
+        var planVerdict = Verdict(await GovCall(planKit, planTool, new { app = "grafana" }));
+        var planChunks = GovNew(planRun);
+        Check(planVerdict == govPlan && Types(planChunks) == "tool-input-available,tool-approval-request,tool-approval-response,tool-output-denied"
+            && (string)planChunks[2]["reason"]! == "Plan mode doesn't change anything. Switch to Execute to run it.",
+            $"Plan mode refuses {planTool}, even when it would run on its own, and says so in the chat (got '{planVerdict}').");
+    }
+    Check(Verdict(await GovCall(planKit, "fetch", new { url = "https://docs.docker.com/" })) == "approve", "Plan mode still reads allowed sites.");
+
+    var (_, _, limitKit) = GovTurn();
+    var limitVerdicts = new List<string>();
+    for (var limitCall = 0; limitCall <= AssistantBroker.MaxCallsPerTurn; limitCall++) limitVerdicts.Add(Verdict(await GovCall(limitKit, "peek")));
+    Check(limitVerdicts.Count(verdict => verdict == "approve") == AssistantBroker.MaxCallsPerTurn
+        && limitVerdicts[^1] == "reject: This turn has used its 50 tool calls. Summarize what you found and ask the owner how to go on.",
+        $"A turn makes up to 50 tool calls (got {string.Join(" | ", limitVerdicts.Distinct())}).");
+
+    broker.Forget(govKey);
+    var (_, forgotRun, forgotKit) = GovTurn();
+    var forgotCall = GovCall(forgotKit, "tweak", new { app = "grafana" });
+    var forgotChunks = GovNew(forgotRun);
+    Check(Types(forgotChunks) == "tool-input-available,tool-approval-request" && runs.Respond(owner, chat, (string)forgotChunks[1]["approvalId"]!, false, null, false)
+        && Verdict(await forgotCall) == "reject: The owner declined this tool call.", "Deleting the chat forgets what the owner allowed in it.");
+    Check(!runs.Respond(owner, chat, "approval-x", true, null, false), "Unknown approvals cannot be answered.");
+    await Reject(Throws(() => runs.Respond(owner, "abc", "approval-x", true, null, false)), 400, "invalid_session", "Answers check the chat id.");
+
+    // Questions: a tool call waits for the owner's answer, or a secret they type, on its card in the chat. Only the chat's owner
+    // answers, a secret never answers a question whose answer the model reads, and stopping the turn ends the wait.
+    var pendingAnswer = broker.AskAsync(govKey, "call-q1", "answer", default);
+    Check(!pendingAnswer.IsCompleted && !runs.AnswerQuestion(stranger, chat, "call-q1", "answer", "yes")
+        && !runs.AnswerQuestion(owner, chat, "call-q1", "secret", "hunter2hunter2") && !pendingAnswer.IsCompleted,
+        "Only the chat's owner answers a question, and never with a secret.");
+    Check(runs.AnswerQuestion(owner, chat, "call-q1", "answer", "Port 8080") && await pendingAnswer == "Port 8080"
+        && !runs.AnswerQuestion(owner, chat, "call-q1", "answer", "again"), "The owner answers a question once.");
+    var pendingSecret = broker.AskAsync(govKey, "call-q2", "secret", default);
+    await Reject(() => broker.AskAsync(govKey, "call-q2", "secret", default), 409, "question_pending", "A tool call asks once.");
+    Check(!runs.AnswerQuestion(owner, chat, "call-q2", "answer", "hunter2hunter2") && runs.AnswerQuestion(owner, chat, "call-q2", null, null)
+        && await pendingSecret is null, "A secret card takes only a secret, and the owner can decline it.");
+    using var pendingStop = new CancellationTokenSource();
+    var pendingStopped = broker.AskAsync(govKey, "call-q3", "answer", pendingStop.Token);
+    await pendingStop.CancelAsync();
+    var pendingCancelled = false;
+    try { await pendingStopped; }
+    catch (OperationCanceledException) { pendingCancelled = true; }
+    Check(pendingCancelled && !runs.AnswerQuestion(owner, chat, "call-q3", "answer", "late"),
+        "Stopping the turn ends the wait, and the question can no longer be answered.");
+
+    // The question tools over a lab with one custom app and one catalog app: what the model gets back, and what it can't ask for.
+    var labProtection = new EphemeralDataProtectionProvider();
+    var labEnv = labProtection.CreateProtector("Lucia.Homelab.StackEnvironment.v1").Protect("GF_ADMIN_PASSWORD=Xk3vN9qL2mP7wR4t\n");
+    StoredStack LabApp(string name, StackTemplate? template) => new(name, "services: {}\n", labEnv,
+        new StackManifest(1, new StackPlacement("lucialab01"), template), "Running", 1, 0, 0, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "tester");
+    Directory.CreateDirectory(Path.Combine(storage, "lab", "stacks"));
+    File.WriteAllText(Path.Combine(storage, "lab", "stacks", "stacks.json"), JsonSerializer.Serialize(
+        new StackFile(1, [LabApp("grafana", null), LabApp("jellyfin", new StackTemplate("jellyfin", 1))]), Lucia.Homelab.Server.Domains.DomainOnboardingStore.Json));
+    var labStacks = new StackStore(Options.Create(new Lucia.Homelab.Server.Onboarding.HardwareOnboardingOptions { StateDirectory = Path.Combine(storage, "lab", "state") }),
+        labProtection, null!, null!, null!, null!, TimeProvider.System, null!);
+    var labTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance)
+        .Create("tester via assistant", "tester");
+    AIFunctionArguments InChat(string callId, Dictionary<string, object?> values) => new(values)
+    {
+        Context = new Dictionary<object, object?> { [typeof(ToolInvocation)] = new ToolInvocation { SessionId = govKey, ToolCallId = callId, ToolName = "tool" } },
+    };
+    async Task<string> LabCall(string tool, AIFunctionArguments callArgs) =>
+        ((TextContent)(await labTools.Single(item => item.Name == tool).InvokeAsync(callArgs))!).Text;
+    async Task<string> Answered(string tool, string callId, Dictionary<string, object?> values, string? kind, string? value)
+    {
+        var call = LabCall(tool, InChat(callId, values));
+        for (var i = 0; i < 500 && !call.IsCompleted && !runs.AnswerQuestion(owner, chat, callId, kind, value); i++) await Task.Delay(10);
+        return await call;
+    }
+    async Task LabRefuses(string tool, AIFunctionArguments callArgs, string message)
+    {
+        var refusal = await Reject(() => LabCall(tool, callArgs), 400, "tool_error", $"{tool} refuses: {message}");
+        Check(refusal.Message == message, $"{tool} explains its refusal (got '{refusal.Message}').");
+    }
+    Dictionary<string, object?> SecretAsk(string name, string app = "grafana", string description = "The admin token, from Grafana's settings.") =>
+        new() { ["app"] = app, ["name"] = name, ["description"] = description };
+
+    Check(await Answered("ask_owner", "call-q4", new() { ["question"] = "Which port should Grafana use?", ["choices"] = new[] { "3000", "8080" } },
+        "answer", "8080") == """{"answer":"8080"}""", "ask_owner hands the model the owner's answer.");
+    Check((await Answered("ask_owner", "call-q5", new() { ["question"] = "Restart Grafana now?" }, null, null)).StartsWith("The owner chose not to answer."),
+        "…or tells it they chose not to.");
+    await LabRefuses("ask_owner", new AIFunctionArguments(new Dictionary<string, object?> { ["question"] = "Restart Grafana now?" }), "This tool only works in a chat.");
+    await LabRefuses("ask_owner", InChat("call-q6", new() { ["question"] = "Restart Grafana now?", ["allowFreeform"] = false }),
+        "Offer choices, or let the owner type an answer.");
+    await LabRefuses("ask_owner", InChat("call-q6", new() { ["question"] = "Which port?", ["choices"] = Enumerable.Range(1, 9).Select(n => $"Port {n}").ToArray() }),
+        "Offer up to 8 choices of up to 200 characters each.");
+
+    var secretCall = LabCall("request_secret", InChat("call-s1", SecretAsk("GRAFANA_TOKEN")));
+    var secretAsAnswer = runs.AnswerQuestion(owner, chat, "call-s1", "answer", "Xk3vN9qL2mP7wR4t");
+    for (var i = 0; i < 500 && !secretCall.IsCompleted && !runs.AnswerQuestion(owner, chat, "call-s1", null, null); i++) await Task.Delay(10);
+    Check(!secretAsAnswer && await secretCall == "The owner chose not to give GRAFANA_TOKEN. Nothing was saved.",
+        "A secret card can't be answered as a question, and declining it saves nothing.");
+    await LabRefuses("request_secret", InChat("call-s2", SecretAsk("1TOKEN")), "\"1TOKEN\" isn't an environment variable name.");
+    await LabRefuses("request_secret", InChat("call-s2", SecretAsk("GRAFANA_URL")),
+        "Lucia only hides variables named as secrets. Save it as GRAFANA_URL_TOKEN or GRAFANA_URL_PASSWORD, and pass that to the container in the compose.");
+    await LabRefuses("request_secret", InChat("call-s2", SecretAsk("GRAFANA_TOKEN", description: " ")), "Describe the value in up to 500 characters.");
+    await LabRefuses("request_secret", InChat("call-s2", SecretAsk("GRAFANA_TOKEN", "loki")), "There's no app named loki. Create it with save_custom_app first.");
+    await LabRefuses("request_secret", InChat("call-s2", SecretAsk("JELLYFIN_API_KEY", "jellyfin")),
+        "jellyfin is the catalog app jellyfin: the owner types its secrets on the Apps page.");
+    await LabRefuses("request_secret", new AIFunctionArguments(SecretAsk("GRAFANA_TOKEN")), "This tool only works in a chat.");
+
+    // The owner's assistant settings: change tools that run on their own, and sites it reads without asking.
+    Check(ReferenceEquals(await broker.SettingsAsync(owner, default), AssistantSettings.Default), "Without saved settings, the defaults apply.");
+    string[] govChange = ["tweak", "nudge"];
+    var govSaved = await broker.SaveSettingsAsync(owner, new AssistantSettings(["nudge"], ["Docs.Docker.com.", "bücher.example", "docs.docker.com"]), govChange, default);
+    var govLoaded = await broker.SettingsAsync(owner, default);
+    Check(govSaved.Hosts.SequenceEqual(["docs.docker.com", "xn--bcher-kva.example"]) && govLoaded.AutoTools.SequenceEqual(["nudge"])
+        && govLoaded.Hosts.SequenceEqual(govSaved.Hosts), $"Sites are saved once each, as lower-case punycode names (got {string.Join(",", govSaved.Hosts)}).");
+    const string govSiteHelp = " Add sites by name, like docs.docker.com.";
+    foreach (var (govBadTools, govBadHosts, govCode, govMessage) in new (string[], string[], string, string)[]
+    {
+        (["peek"], [], "invalid_settings", "Automatic tools must be the assistant's change tools, each listed once."),
+        (["nudge", "nudge"], [], "invalid_settings", "Automatic tools must be the assistant's change tools, each listed once."),
+        ([], ["docs.docker.com", "10.0.0.5."], "invalid_sites", "10.0.0.5. is an address, not a site name." + govSiteHelp),
+        ([], ["[fd00::1]"], "invalid_sites", "[fd00::1] is an address, not a site name." + govSiteHelp),
+        ([], ["https://docs.docker.com/"], "invalid_sites", "https://docs.docker.com/ isn't a site name." + govSiteHelp),
+        ([], [.. Enumerable.Range(0, 51).Select(number => $"site{number}.example")], "invalid_sites", "Add at most 50 sites."),
+        ([], ["exa mple.com"], "invalid_sites", "exa mple.com isn't a site name." + govSiteHelp),
+        ([], [new string('a', 70) + " b"], "invalid_sites", new string('a', 59) + "… isn't a site name." + govSiteHelp),
+        ([], [""], "invalid_sites", "Each site needs a name, like docs.docker.com."),
+    })
+    {
+        var govError = await Reject(() => broker.SaveSettingsAsync(owner, new AssistantSettings(govBadTools, govBadHosts), govChange, default), 400, govCode,
+            $"Settings with tools [{string.Join(",", govBadTools)}] and {govBadHosts.Length} sites like '{govBadHosts.LastOrDefault()}' are refused.");
+        Check(govError.Message == govMessage, $"The refusal names the problem: '{govMessage}' (got '{govError.Message}').");
+    }
+    File.WriteAllText(Path.Combine(directory, "users", owner, "settings.json"), "{ not json");
+    Check(ReferenceEquals(await broker.SettingsAsync(owner, default), AssistantSettings.Default), "Unreadable settings fall back to the defaults.");
+
+    // read_web_page reads public sites only. The guard checks every connection after DNS, so names that resolve into the lab are refused too.
+    foreach (var (webAddress, webPublic) in new (string, bool)[]
+    {
+        ("1.1.1.1", true), ("8.8.8.8", true), ("2606:4700::1111", true), ("::ffff:8.8.8.8", true), ("10.1.2.3", false), ("127.0.0.1", false),
+        ("169.254.169.254", false), ("172.16.5.4", false), ("192.168.0.222", false), ("100.100.100.100", false), ("0.0.0.0", false),
+        ("224.0.0.1", false), ("255.255.255.255", false), ("::1", false), ("::", false), ("fe80::1", false), ("fd00::1", false),
+        ("::ffff:192.168.0.1", false), ("2001:db8::1", false), ("2002:c0a8:1::1", false), ("64:ff9b::808:808", false),
+    })
+        Check(AssistantWeb.Public(IPAddress.Parse(webAddress)) == webPublic, $"{webAddress} is {(webPublic ? "" : "not ")}a public address.");
+    var webDoc = new Uri("https://docs.example.com/guide/start");
+    var webText = AssistantWeb.Text("""
+        <!doctype html><html><head><title>Getting &amp; started</title><style>p { color: red }</style></head>
+        <body><nav><a href="/">Home</a></nav>
+        <main><h1>Install</h1><p>Run   <code>lucia up</code> and
+        read <a href="../faq#ports">the FAQ</a>, or <a href="#top">go back</a>.<a href="https://github.com/x"><img src="logo.png"></a></p>
+        <script>alert("x")</script>
+        <ul><li>One</li><li>Two</li></ul>
+        <pre><code>services:
+          app:
+            command: echo "a &lt; b"
+        </code></pre>
+        <p>Done.</p></main><footer>&copy; Example</footer></body></html>
+        """, webDoc);
+    Check(webText == """
+        # Getting & started
+
+        # Install
+
+        Run `lucia up` and read [the FAQ](https://docs.example.com/faq#ports), or go back.
+
+        - One
+        - Two
+
+        ```
+        services:
+          app:
+            command: echo "a < b"
+        ```
+
+        Done.
+        """.ReplaceLineEndings("\n"), $"A page becomes Markdown-like text without its scripts, menus and footer (got '{webText}').");
+    Check(AssistantWeb.Text("<p>a &#xE000;9&#xE001; b</p>", webDoc) == "a  b", "A page can't spell Lucia's code-block marker.");
+
+    // A loopback site stands in for the web. The guard is checked first: once it is swapped out, pooled connections would skip it.
+    var webDigits = string.Concat(Enumerable.Repeat("0123456789", 5_000));
+    var webEmoji = new string('a', 19_999) + "\U0001F600b";
+    var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateSlimBuilder();
+    webBuilder.Logging.ClearProviders();
+    await using var webSite = webBuilder.Build();
+    webSite.Urls.Add("http://127.0.0.1:0");
+    var webHits = 0;
+    webSite.Use(_ => async context =>
+    {
+        Interlocked.Increment(ref webHits);
+        (int Status, string? Type, string Body, string? Location) reply = context.Request.Path.Value switch
+        {
+            "/page" => (200, "text/html; charset=utf-8",
+                "<html><head><title>Lab notes</title></head><body><main><h2>Ports</h2><p>See <a href=\"/docs\">the docs</a>.</p></main></body></html>", null),
+            "/move" => (302, null, "", "/page"),
+            "/away" => (302, null, "", "http://example.com/x"),
+            "/loop" => (302, null, "", "/loop"),
+            "/image" => (200, "image/png", "PNG", null),
+            "/long" => (200, "text/plain", webDigits, null),
+            "/emoji" => (200, "text/plain; charset=utf-8", webEmoji, null),
+            _ => (404, "text/plain", "Not here.", null),
+        };
+        context.Response.StatusCode = reply.Status;
+        if (reply.Type is not null) context.Response.ContentType = reply.Type;
+        if (reply.Location is not null) context.Response.Headers.Location = reply.Location;
+        await context.Response.Body.WriteAsync(System.Text.Encoding.UTF8.GetBytes(reply.Body));
+    });
+    await webSite.StartAsync();
+    var webBase = webSite.Urls.Single().TrimEnd('/');
+    try
+    {
+        const string webPrivate = " is on a private or reserved network. read_web_page reads public sites only; use the lab tools for the owner's network.";
+        var webRefused = await Reject(() => AssistantWeb.Read(webBase + "/page", 0, default), 403, "private_address", "A loopback address is refused.");
+        var webNamed = await Reject(() => AssistantWeb.Read(webBase.Replace("127.0.0.1", "localhost") + "/page", 0, default), 403, "private_address",
+            "A name that resolves to loopback is refused.");
+        Check(webRefused.Message == "127.0.0.1" + webPrivate && webNamed.Message == "localhost" + webPrivate,
+            $"The refusal names the host and points to the lab tools (got '{webRefused.Message}').");
+        await LabRefuses("read_web_page", new AIFunctionArguments(new Dictionary<string, object?> { ["url"] = webBase + "/page" }), "127.0.0.1" + webPrivate);
+        Check(webHits == 0, $"The guard refuses before a request is sent (the site saw {webHits}).");
+        foreach (var webBad in new[] { "ftp://example.com/", "/relative/page", "not a url", "https://example.com/" + new string('a', AssistantWeb.MaxUrl) })
+            await Reject(() => AssistantWeb.Read(webBad, 0, default), 400, "invalid_url", $"'{webBad[..Math.Min(webBad.Length, 30)]}' isn't read.");
+        await Reject(() => AssistantWeb.Read("https://example.com/", -1, default), 400, "invalid_start", "A negative start is refused.");
+
+        AssistantWeb.Reachable = _ => true;
+        var webPage = await AssistantWeb.Read(webBase + "/page", 0, default);
+        Check(webPage == $"URL: {webBase}/page\n\n# Lab notes\n\n## Ports\n\nSee [the docs]({webBase}/docs).", $"A page reads as text (got '{webPage}').");
+        Check(await AssistantWeb.Read(webBase + "/move", 0, default) == webPage, "A redirect within the site is followed, and the text names where it landed.");
+        Check(await AssistantWeb.Read(webBase + "/away", 0, default)
+            == $"{webBase}/away moved to http://example.com/x, which is another site. Read it with read_web_page if you still need it.",
+            "A redirect to another site stops, so the owner's allowed sites decide on that site too.");
+        await Reject(() => AssistantWeb.Read(webBase + "/loop", 0, default), 502, "too_many_redirects", "A redirect loop stops.");
+        var webImage = await Reject(() => AssistantWeb.Read(webBase + "/image", 0, default), 415, "not_text", "An image isn't read.");
+        var webMissing = await Reject(() => AssistantWeb.Read(webBase + "/missing", 0, default), 502, "page_error", "An error page is reported.");
+        Check(webImage.Message == $"{webBase}/image is image/png, not a page or a text file." && webMissing.Message == $"{webBase}/missing answered HTTP 404.",
+            $"Refusals say what the site sent (got '{webImage.Message}' and '{webMissing.Message}').");
+        Check(await AssistantWeb.Read(webBase + "/long", 0, default)
+                == $"URL: {webBase}/long\n\n{webDigits[..20_000]}\n\n[Characters 0 to 20000 of 50000. Read on with start 20000.]"
+            && await AssistantWeb.Read(webBase + "/long", 40_000, default) == $"URL: {webBase}/long\n\n{webDigits[40_000..]}",
+            "A long page is read 20,000 characters at a time, and the note says where to go on.");
+        await Reject(() => AssistantWeb.Read(webBase + "/long", 50_000, default), 400, "past_end", "Starting past the end is refused.");
+        Check(await AssistantWeb.Read(webBase + "/emoji", 0, default)
+                == $"URL: {webBase}/emoji\n\n{webEmoji[..19_999]}\n\n[Characters 0 to 19999 of 20002. Read on with start 19999.]"
+            && await AssistantWeb.Read(webBase + "/emoji", 20_000, default) == $"URL: {webBase}/emoji\n\n\U0001F600b",
+            "A read never splits an emoji in two.");
+        Check(webHits == 17, $"Each read is one request per hop (the site saw {webHits}).");
+    }
+    finally
+    {
+        AssistantWeb.Reachable = AssistantWeb.Public;
+        await webSite.StopAsync();
+    }
 
     Console.WriteLine($"Assistant checks passed ({checks} assertions). No Copilot runtime, GitHub token or network used.");
 }

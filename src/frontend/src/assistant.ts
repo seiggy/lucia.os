@@ -1,7 +1,11 @@
+import type { DynamicToolUIPart } from 'ai'
+
 export type AssistantMode = 'plan' | 'execute'
+export type AssistantToolPart = DynamicToolUIPart
 export type AssistantPart =
   | { type: 'text'; text: string; state?: 'streaming' | 'done' }
   | { type: 'reasoning'; text: string; state?: 'streaming' | 'done' }
+  | AssistantToolPart
 export type AssistantMetadata = {
   model?: string
   usage?: { inputTokens?: number; outputTokens?: number }
@@ -19,6 +23,11 @@ export type GitHubStatus = { state: GitHubState; login?: string; userCode?: stri
 export type DockSide = 'left' | 'right'
 export type DockState = { open: boolean; side: DockSide }
 export type DockLayout = 'push' | 'overlay' | 'sheet'
+export type ToolTier = 'read' | 'web' | 'change' | 'destructive' | 'secret'
+export type AssistantTool = { name: string; tier: ToolTier; description: string }
+export type AssistantSettings = { autoTools: string[]; hosts: string[]; tools: AssistantTool[] }
+export type ToolTone = 'busy' | 'done' | 'failed' | 'waiting' | 'muted'
+export type ToolStatus = { word: string; tone: ToolTone }
 
 export const maxMessageLength = 32768
 const chatIdPattern = /^[a-f0-9]{32}$/
@@ -137,8 +146,9 @@ export function parseTranscript(value: unknown): Transcript {
   const messages = value.messages.flatMap((item): AssistantMessage[] => {
     if (!record(item) || typeof item.id !== 'string' || !item.id || (item.role !== 'user' && item.role !== 'assistant')
       || !Array.isArray(item.parts)) throw unexpected()
-    const parts = item.parts.flatMap((part): AssistantPart[] => record(part) && (part.type === 'text' || part.type === 'reasoning')
-      && typeof part.text === 'string' ? [{ type: part.type, text: part.text, state: 'done' }] : [])
+    const parts = item.parts.flatMap((part): AssistantPart[] => !record(part) ? []
+      : part.type === 'dynamic-tool' ? parseToolPart(part)
+      : (part.type === 'text' || part.type === 'reasoning') && typeof part.text === 'string' ? [{ type: part.type, text: part.text, state: 'done' }] : [])
     const metadata = parseMetadata(item.metadata)
     if (item.role === 'user' ? !messageText({ parts }) : !parts.length && !metadata) return []
     return [{ id: item.id, role: item.role, parts, ...(metadata ? { metadata } : {}) }]
@@ -158,3 +168,201 @@ export function parseDock(value: unknown, wide: boolean): DockState {
   const saved = record(value) ? value : {}
   return { open: wide && saved.open === true, side: saved.side === 'left' ? 'left' : 'right' }
 }
+
+const toolStates: readonly string[] = ['input-streaming', 'input-available', 'approval-requested', 'approval-responded',
+  'output-available', 'output-error', 'output-denied']
+const questionTools: readonly string[] = ['ask_owner', 'request_secret']
+// Mirrors the host's destructive tier, which always asks and can't be allowed for a whole chat.
+const destructiveTools: readonly string[] = ['delete_app', 'restore_backup', 'set_public_route', 'node_action', 'run_command']
+// The host gives these reasons for denials of its own, in the field that otherwise carries the owner's reason for declining.
+const systemDenials: readonly string[] = ['No answer within 30 minutes.', 'The run stopped before you answered.']
+// The host fails calls still running when their turn ends with this; the call itself didn't fail.
+const cutShort = 'The run stopped before this finished.'
+
+export const isQuestionTool = (name: string) => questionTools.includes(name)
+export const isDestructiveTool = (name: string) => destructiveTools.includes(name)
+
+function parseToolPart(part: Record<string, unknown>): AssistantToolPart[] {
+  const { toolCallId, toolName, state } = part
+  if (typeof toolCallId !== 'string' || !toolCallId || toolCallId.length > 128 || typeof toolName !== 'string' || !toolName
+    || typeof state !== 'string' || !toolStates.includes(state)) return []
+  const saved = record(part.approval) && typeof part.approval.id === 'string' ? part.approval : undefined
+  const approval = saved && {
+    id: saved.id,
+    ...(typeof saved.requestReason === 'string' ? { requestReason: saved.requestReason } : {}),
+    ...(saved.isAutomatic === true ? { isAutomatic: true } : {}),
+    ...(typeof saved.approved === 'boolean' ? { approved: saved.approved } : {}),
+    ...(typeof saved.reason === 'string' ? { reason: saved.reason } : {}),
+  }
+  if ((state.startsWith('approval-') || state === 'output-denied') && !approval) return []
+  if (state === 'output-error' && typeof part.errorText !== 'string') return []
+  return [{
+    type: 'dynamic-tool', toolCallId, toolName, state, input: part.input,
+    ...(state === 'output-available' ? { output: part.output } : {}),
+    ...(state === 'output-error' ? { errorText: part.errorText } : {}),
+    ...(approval ? { approval } : {}),
+  } as unknown as AssistantToolPart]
+}
+
+// A question or an approval the owner can answer now. An automatic approval settles on its own a moment later.
+export const waitingPart = (part: AssistantToolPart) => part.state === 'approval-requested' ? !part.approval.isAutomatic
+  : part.state === 'input-available' && isQuestionTool(part.toolName)
+
+export function waitingParts(messages: readonly { role: string; parts: readonly { type: string }[] }[], live: boolean): AssistantToolPart[] {
+  const last = messages.at(-1)
+  return live && last?.role === 'assistant'
+    ? last.parts.filter((part): part is AssistantToolPart => part.type === 'dynamic-tool' && waitingPart(part as AssistantToolPart)) : []
+}
+
+const toolTitles = new Map([
+  ['list_nodes', 'List servers'],
+  ['get_node', 'Check server {node}'],
+  ['list_containers', 'List containers on {node}'],
+  ['read_logs', 'Read logs of {container} on {node}'],
+  ['list_apps', 'List apps'],
+  ['get_app', 'Check app {app}'],
+  ['list_catalog', 'Browse the app catalog'],
+  ['get_catalog_app', 'Look up {app} in the catalog'],
+  ['list_storage', 'Check storage'],
+  ['list_backups', 'List backups'],
+  ['dns_lookup', 'Look up {name} in DNS'],
+  ['list_network_clients', 'List network clients'],
+  ['ask_owner', '{question}'],
+  ['read_web_page', 'Read {url}'],
+  ['request_secret', '{app} needs {name}'],
+  ['save_custom_app', 'Save app {app}'],
+  ['install_catalog_app', 'Install {app}'],
+  ['app_action:start', 'Start {app}'],
+  ['app_action:stop', 'Stop {app}'],
+  ['app_action:restart', 'Restart {app}'],
+  ['app_action:update', 'Update {app}'],
+  ['app_action:cancel-move', 'Cancel moving {app}'],
+  ['app_action:cancel-restore', 'Cancel restoring {app}'],
+  ['move_app', 'Move {app} to {node}'],
+  ['run_backup', 'Back up {app}'],
+  ['upgrade_app_images', 'Upgrade images of {app}'],
+  ['check_node_updates', 'Check {node} for updates'],
+  ['delete_app', 'Delete {app}'],
+  ['restore_backup', 'Restore {app} from a backup'],
+  ['set_public_route:on', 'Publish {host} as {publicName}'],
+  ['set_public_route:off', 'Take {host} off the internet'],
+  ['node_action:install-updates', 'Install updates on {node}'],
+  ['node_action:restart', 'Restart server {node}'],
+  ['node_action:update-agent', 'Update Lucia’s agent on {node}'],
+  ['run_command', 'Run a command on {node}'],
+])
+
+export function urlHost(url: unknown): string | undefined {
+  try { return typeof url === 'string' ? new URL(url).host || undefined : undefined } catch { return undefined }
+}
+
+// Names the call from its input; the bare tool name stands in until the input is complete.
+export function toolTitle(name: string, input: unknown): string {
+  const values = record(input) ? input : {}
+  const key = name === 'app_action' || name === 'node_action' ? `${name}:${String(values.action)}`
+    : name === 'set_public_route' ? `${name}:${values.publicName ? 'on' : 'off'}` : name
+  let missing = false
+  const title = toolTitles.get(key)?.replace(/\{(\w+)\}/g, (_, field: string) => {
+    const value = values[field]
+    const text = (field === 'url' ? urlHost(value) ?? '' : typeof value === 'string' || typeof value === 'number' ? String(value) : '')
+      .replace(/\s+/g, ' ').trim()
+    if (!text) missing = true
+    return text.length > 200 ? `${text.slice(0, 199).trimEnd()}…` : text
+  })
+  return title && !missing ? title : name
+}
+
+const answered = (output: unknown): output is { answer: string } => record(output) && typeof output.answer === 'string'
+const secretSaved = (output: unknown) => record(output) && output.saved === true
+
+export function toolStatus(part: AssistantToolPart, live: boolean): ToolStatus {
+  const running: ToolStatus = live ? { word: 'Running…', tone: 'busy' } : { word: 'Not finished', tone: 'muted' }
+  switch (part.state) {
+    case 'input-streaming':
+    case 'input-available':
+      return live && part.state === 'input-available' && isQuestionTool(part.toolName) ? { word: 'Waiting for you', tone: 'waiting' } : running
+    case 'approval-requested':
+      return part.approval.isAutomatic ? running : live ? { word: 'Needs your approval', tone: 'waiting' } : { word: 'Not answered', tone: 'muted' }
+    case 'approval-responded':
+      return part.approval.approved ? running : { word: 'Not run', tone: 'muted' }
+    case 'output-available':
+      if (part.toolName === 'ask_owner') return answered(part.output) ? { word: 'Answered', tone: 'done' } : { word: 'Skipped', tone: 'muted' }
+      if (part.toolName === 'request_secret') return secretSaved(part.output) ? { word: 'Saved', tone: 'done' } : { word: 'Not given', tone: 'muted' }
+      return { word: 'Done', tone: 'done' }
+    case 'output-error':
+      return part.errorText === cutShort ? { word: 'Not finished', tone: 'muted' } : { word: 'Failed', tone: 'failed' }
+    case 'output-denied':
+      return { word: 'Not run', tone: 'muted' }
+  }
+}
+
+// The one line under a settled call's title: why it didn't run, how it failed, or what the owner answered.
+export function toolNote(part: AssistantToolPart): { text: string; tone: ToolTone } | undefined {
+  if (part.state === 'output-denied') {
+    const { isAutomatic, reason } = part.approval
+    return { tone: 'muted', text: isAutomatic ? reason || 'Lucia’s policy doesn’t allow this.'
+      : reason && systemDenials.includes(reason) ? reason : reason ? `You declined: “${reason}”` : 'You declined this.' }
+  }
+  if (part.state === 'output-error') return { text: part.errorText, tone: part.errorText === cutShort ? 'muted' : 'failed' }
+  if (part.state !== 'output-available') return undefined
+  if (part.toolName === 'ask_owner')
+    return { tone: 'muted', text: answered(part.output) ? `You answered: ${part.output.answer}` : 'You skipped this question.' }
+  if (part.toolName === 'request_secret') {
+    const app = record(part.output) && typeof part.output.app === 'string' ? part.output.app : 'the app'
+    return { tone: 'muted', text: secretSaved(part.output) ? `Saved in ${app}’s settings. The assistant never sees it.`
+      : 'You chose not to give it. Nothing was saved.' }
+  }
+  return undefined
+}
+
+// Why an approved call ran, for its details.
+export function approvalNote(part: AssistantToolPart): string | undefined {
+  const approval = part.approval
+  return approval?.approved ? approval.isAutomatic ? approval.reason : 'You approved this.' : undefined
+}
+
+const tiers: readonly string[] = ['read', 'web', 'change', 'destructive', 'secret']
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string')
+
+export function parseSettings(value: unknown): AssistantSettings {
+  if (!record(value) || !strings(value.autoTools) || !strings(value.hosts) || !Array.isArray(value.tools)) throw unexpected()
+  const tools = value.tools.map((tool): AssistantTool => {
+    if (!record(tool) || typeof tool.name !== 'string' || !tool.name || typeof tool.tier !== 'string' || !tiers.includes(tool.tier)
+      || typeof tool.description !== 'string') throw unexpected()
+    return { name: tool.name, tier: tool.tier as ToolTier, description: tool.description }
+  })
+  return { autoTools: value.autoTools, hosts: value.hosts, tools }
+}
+
+// The host's descriptions are written for the model; the settings page names what each change tool lets the assistant do.
+const changeLabels = new Map([
+  ['save_custom_app', 'Create and change custom apps'],
+  ['install_catalog_app', 'Install catalog apps and change their settings'],
+  ['app_action', 'Start, stop, restart and update apps'],
+  ['move_app', 'Move apps between servers'],
+  ['run_backup', 'Back up apps'],
+  ['upgrade_app_images', 'Upgrade app images'],
+  ['check_node_updates', 'Check servers for updates'],
+])
+
+export const toolLabel = (tool: AssistantTool) => changeLabels.get(tool.name) ?? tool.description
+
+// "Approve for the rest of this chat" grants the whole change tool, or the whole site for a web read; destructive calls always ask.
+export function grantText(part: AssistantToolPart): string | undefined {
+  const host = part.toolName === 'read_web_page' && record(part.input) ? urlHost(part.input.url) : undefined
+  const label = changeLabels.get(part.toolName)
+  const scope = host ? `read ${host}` : label && label[0].toLowerCase() + label.slice(1)
+  return scope && `Approve, and let it ${scope} for the rest of this chat`
+}
+
+function inputText(input: unknown, field: string) {
+  const value = record(input) ? input[field] : undefined
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function questionOf(input: unknown) {
+  const choices = record(input) && strings(input.choices) ? input.choices.map(choice => choice.trim()).filter(Boolean) : []
+  return { question: inputText(input, 'question'), choices, freeform: !choices.length || (record(input) && input.allowFreeform !== false) }
+}
+
+export const secretOf = (input: unknown) => ({ app: inputText(input, 'app'), name: inputText(input, 'name'), description: inputText(input, 'description') })

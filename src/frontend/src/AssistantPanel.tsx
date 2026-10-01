@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode, RefObject } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, ReactNode, RefObject } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import type { UIMessage } from 'ai'
@@ -13,9 +13,15 @@ import {
 } from './components/ai-elements/prompt-input'
 import type { PromptInputMessage } from './components/ai-elements/prompt-input'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './components/ai-elements/reasoning'
+import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationTitle } from './components/ai-elements/confirmation'
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool'
 import { SelectGroup, SelectLabel } from './components/ui/select'
-import { chatTitle, chooseModel, isChatId, isGitHubModel, maxMessageLength, messageText, newChatId, pageRoute, parseGitHub, parseModels, parseSessions, parseTranscript, settledText, signInModel } from './assistant'
-import type { AssistantMetadata, AssistantMode, AssistantModels, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
+import {
+  approvalNote, chatTitle, chooseModel, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, pageRoute,
+  parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
+  waitingPart, waitingParts,
+} from './assistant'
+import type { AssistantMetadata, AssistantMode, AssistantModels, AssistantToolPart, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import { ownerRequest, responseError } from './managementApi'
@@ -62,11 +68,151 @@ function Alert({ children, action, onAction }: { children: ReactNode; action?: s
 const thinkingLabel = (streaming: boolean, duration?: number) =>
   <span>{streaming ? 'Thinking…' : duration ? `Thought for ${duration} second${duration === 1 ? '' : 's'}` : 'Reasoning'}</span>
 
-function ChatBubble({ message, streaming, onRetry }: { message: ChatMessage; streaming: boolean; onRetry?: () => void }) {
+type Answer = (path: string, body: object) => Promise<unknown>
+type CardProps = { part: AssistantToolPart; title: string; onAnswer: Answer; onDone: () => void }
+const secretPattern = /^[A-Za-z0-9._~+/=-]+$/
+
+// A sent answer leaves its card busy: the host's next chunk settles the call, which removes the card.
+function useAnswer(onAnswer: Answer, onDone: () => void) {
+  const [working, setWorking] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  async function run(path: string, body: object) {
+    if (working) return false
+    setWorking(true)
+    setFailure(null)
+    try {
+      await onAnswer(path, body)
+      onDone()
+      return true
+    } catch (error) {
+      setWorking(false)
+      setFailure(error instanceof TypeError ? 'Lucia could not reach the host. Check your connection and try again.'
+        : failureMessage(error, 'Lucia could not send your answer.'))
+      return false
+    }
+  }
+  return { working, failure, run }
+}
+
+const CardFailure = ({ children }: { children: string }) => <p className="assistant-failed" role="alert"><Icon name="attention" /><span>{children}</span></p>
+
+function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
+  const { working, failure, run } = useAnswer(onAnswer, onDone)
+  // False after Back, so Decline… takes focus again when it returns.
+  const [declining, setDeclining] = useState<boolean>()
+  const [reason, setReason] = useState('')
+  const form = useRef<HTMLFormElement>(null)
+  // Focusing the reason only reveals the field; bring its buttons into view too.
+  useEffect(() => { if (declining) form.current?.scrollIntoView({ block: 'nearest' }) }, [declining])
+  if (part.state !== 'approval-requested') return null
+  const path = `approvals/${encodeURIComponent(part.approval.id)}`
+  const grant = grantText(part)
+  function decline(event: FormEvent) {
+    event.preventDefault()
+    void run(path, { approved: false, reason: reason.trim() || undefined })
+  }
+  return <Confirmation className="assistant-card" approval={part.approval} state={part.state} aria-label={`Approve: ${title}`}>
+    <ConfirmationTitle>{part.approval.requestReason || 'This changes your lab.'}</ConfirmationTitle>
+    <ToolInput input={part.input} />
+    {declining ? <form ref={form} className="assistant-card-form" onSubmit={decline}>
+      <label className="assistant-field">Tell the assistant why (optional)
+        <textarea value={reason} rows={2} maxLength={500} autoFocus onChange={event => setReason(event.target.value)} /></label>
+      <div className="assistant-card-actions">
+        <button type="submit" className="button secondary" aria-disabled={working}>Decline</button>
+        <button type="button" className="text-link" onClick={() => setDeclining(false)}>Back</button>
+      </div>
+    </form> : <ConfirmationActions className="assistant-card-actions">
+      <ConfirmationAction className={`button secondary${isDestructiveTool(part.toolName) ? ' assistant-danger' : ''}`} aria-disabled={working}
+        onClick={() => void run(path, { approved: true })}>Approve</ConfirmationAction>
+      <ConfirmationAction className="button secondary" aria-disabled={working} autoFocus={declining === false}
+        onClick={() => working || setDeclining(true)}>Decline…</ConfirmationAction>
+      {grant && <button type="button" className="text-link" aria-disabled={working} onClick={() => void run(path, { approved: true, always: true })}>{grant}</button>}
+    </ConfirmationActions>}
+    {failure && <CardFailure>{failure}</CardFailure>}
+  </Confirmation>
+}
+
+function QuestionCard({ part, title, onAnswer, onDone }: CardProps) {
+  const { working, failure, run } = useAnswer(onAnswer, onDone)
+  const [text, setText] = useState('')
+  const { question, choices, freeform } = questionOf(part.input)
+  const path = `answers/${encodeURIComponent(part.toolCallId)}`
+  function send(event?: FormEvent) {
+    event?.preventDefault()
+    if (text.trim()) void run(path, { answer: text.trim() })
+  }
+  return <div className="assistant-card" role="group" aria-label="Question from the assistant">
+    {question && question.replace(/\s+/g, ' ') !== title && <p className="assistant-question">{question}</p>}
+    {choices.length > 0 && <div className="assistant-choices">{choices.map((choice, index) => <button key={index} type="button"
+      className="assistant-starter" aria-disabled={working} onClick={() => void run(path, { answer: choice })}>{choice}</button>)}</div>}
+    <form className="assistant-card-form" onSubmit={send}>
+      {freeform && <label className="assistant-field">{choices.length ? 'Or type your answer' : 'Your answer'}
+        <textarea value={text} rows={2} maxLength={2000} onChange={event => setText(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) send(event) }} /></label>}
+      <div className="assistant-card-actions">
+        {freeform && <button type="submit" className="button secondary" aria-disabled={working || !text.trim()}>Send answer</button>}
+        <button type="button" className="text-link" aria-disabled={working} onClick={() => void run(path, { declined: true })}>Skip question</button>
+      </div>
+    </form>
+    {failure && <CardFailure>{failure}</CardFailure>}
+  </div>
+}
+
+function SecretCard({ part, onAnswer, onDone }: CardProps) {
+  const { working, failure, run } = useAnswer(onAnswer, onDone)
+  const [value, setValue] = useState('')
+  const hint = useId()
+  const { app, name, description } = secretOf(part.input)
+  const path = `answers/${encodeURIComponent(part.toolCallId)}`
+  const invalid = !!value && !secretPattern.test(value)
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    if (value && !invalid && await run(path, { secret: value })) setValue('')
+  }
+  return <form className="assistant-card" aria-label={`${name} for ${app}`} onSubmit={event => void save(event)}>
+    {description && <p>{description}</p>}
+    <label className="assistant-field">{name} for {app}
+      <input type="password" value={value} autoComplete="off" spellCheck={false} maxLength={4096} aria-invalid={invalid}
+        aria-describedby={hint} onChange={event => setValue(event.target.value)} /></label>
+    <p id={hint} className="assistant-hint">Lucia saves it in {app}’s settings; the assistant never sees it. Use letters, digits and . _ ~ + / = - only.</p>
+    <div className="assistant-card-actions">
+      <button type="submit" className="button secondary" aria-disabled={working || !value || invalid}>Save secret</button>
+      <button type="button" className="text-link" aria-disabled={working} onClick={() => void run(path, { declined: true })}>Decline</button>
+    </div>
+    {failure && <CardFailure>{failure}</CardFailure>}
+  </form>
+}
+
+function ToolCall({ part, live, onAnswer }: { part: AssistantToolPart; live: boolean; onAnswer: Answer }) {
+  const header = useRef<HTMLButtonElement>(null)
+  const title = toolTitle(part.toolName, part.input)
+  const { word, tone } = toolStatus(part, live)
+  const note = toolNote(part)
+  const why = approvalNote(part)
+  // An answered card unmounts, so its focus moves to the call it answered.
+  const card = live && waitingPart(part) ? { part, title, onAnswer, onDone: () => header.current?.focus() } : undefined
+  const icon = part.toolName === 'ask_owner' ? 'chat' : part.toolName === 'request_secret' ? 'shield' : undefined
+  return <Tool className="assistant-tool" data-waiting={card ? '' : undefined}>
+    <ToolHeader ref={header} title={title} state={part.state} toolName={part.toolName}
+      icon={icon && <Icon name={icon} className="size-4 text-muted-foreground" />}
+      status={<span className="assistant-tool-status" data-tone={tone}>{tone === 'busy' && <Loader2Icon className="size-4 animate-spin" />}{word}</span>} />
+    {note && <p className="assistant-tool-note" data-tone={note.tone}>{note.text}</p>}
+    {card && (part.state === 'approval-requested' ? <ApprovalCard {...card} />
+      : part.toolName === 'ask_owner' ? <QuestionCard {...card} /> : <SecretCard {...card} />)}
+    <ToolContent className="assistant-tool-details">
+      <ToolInput input={part.input} />
+      <ToolOutput output={part.output} errorText={undefined} />
+      {why && <p>{why}</p>}
+    </ToolContent>
+  </Tool>
+}
+
+function ChatBubble({ message, streaming, onRetry, onAnswer }: { message: ChatMessage; streaming: boolean; onRetry?: () => void; onAnswer: Answer }) {
   if (message.role === 'user')
     return <Message from="user"><MessageContent className="assistant-bubble">{messageText(message)}</MessageContent></Message>
   const { stopped, error } = message.metadata ?? {}
   const content = message.parts.map((part, index) => {
+    if (part.type === 'dynamic-tool') return <ToolCall key={`tool:${part.toolCallId}`} part={part} live={streaming} onAnswer={onAnswer} />
     if (part.type === 'reasoning' && part.text)
       return <Reasoning key={index} className="assistant-reasoning" isStreaming={streaming && part.state === 'streaming'}>
         <ReasoningTrigger className="assistant-reasoning-trigger" getThinkingMessage={thinkingLabel} />
@@ -270,9 +416,10 @@ type ChatViewProps = {
   onTitle: (title: string) => void
   onReload: () => void
   onFailed: () => void
+  onWaiting: (count: number, message?: string) => void
 }
 
-function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed }: ChatViewProps) {
+function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed, onWaiting }: ChatViewProps) {
   const draft = usePromptInputController()
   const input = useRef<HTMLTextAreaElement>(null)
   const composer = useRef<HTMLDivElement>(null)
@@ -339,6 +486,8 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     if (status === 'error') onFailed()
   }, [status, onFailed])
   const focusInput = useCallback(() => input.current?.focus(), [])
+  const answer = useCallback((path: string, body: object) => ownerRequest(auth.current.session, auth.current.refreshSession,
+    `/api/assistant/sessions/${id}/${path}`, 'POST', body), [auth, id])
 
   const busy = status === 'submitted' || status === 'streaming' || phase === 'resuming'
   // Only Copilot's models need the GitHub sign-in; LiteLLM and Local AI answer without it.
@@ -347,7 +496,23 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
   const ready = phase === 'ready' && !loadError
   const canAsk = ready && connected && !busy
   const last = messages.at(-1)
-  const answering = busy && !(last?.role === 'assistant' && last.parts.some(part => (part.type === 'text' || part.type === 'reasoning') && part.text))
+  // "Answering…" fills the gaps: before the first words, and while the model reads what a call returned.
+  let progress = false
+  for (const part of last?.role === 'assistant' ? last.parts : []) {
+    if (part.type === 'dynamic-tool') progress = !part.state.startsWith('output-')
+    else if ((part.type === 'text' || part.type === 'reasoning') && part.text) progress = true
+  }
+  const answering = busy && !progress
+  const waiting = useMemo(() => waitingParts(messages, busy), [messages, busy])
+  const announced = useRef(new Set<string>())
+  // Counts what waits on the owner and names each new request once. It runs per chunk, so it never resets the count to zero in between.
+  useEffect(() => {
+    const next = waiting.find(part => !announced.current.has(part.toolCallId))
+    waiting.forEach(part => announced.current.add(part.toolCallId))
+    const kind = next?.state === 'approval-requested' ? 'Approval needed' : next?.toolName === 'ask_owner' ? 'Question from the assistant' : 'Secret needed'
+    onWaiting(waiting.length, next && `${kind}: ${toolTitle(next.toolName, next.input)}`)
+  }, [waiting, onWaiting])
+  useEffect(() => () => onWaiting(0), [onWaiting])
   const request = () => ({
     body: { mode, model: model === signInModel ? undefined : model, route: pageRoute(location.hash) },
     headers: { 'X-CSRF-TOKEN': auth.current.session.csrfToken ?? '' },
@@ -413,12 +578,12 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
         {loadError && <Alert action={failureCode(loadError) === 'session_too_large' ? undefined : 'Reload chat'} onAction={onReload}>{loadError.message}</Alert>}
         {ready && !messages.length && <div className="assistant-empty">
           <p className="assistant-page">On: <strong>{page}</strong></p>
-          <p className="assistant-intro">Ask about this page or how Lucia works. For now the assistant only gives advice: it can’t read or change anything in your lab.</p>
+          <p className="assistant-intro">Ask about this page or your lab. The assistant can check servers, apps and logs, and asks before changing anything unless you’ve allowed it in settings.</p>
           <div className="assistant-starters">{starters.map(text => <button key={text} type="button" className="assistant-starter"
             disabled={!canAsk} onClick={() => send(text)}><span>{text}</span><Icon name="arrow" /></button>)}</div>
         </div>}
         {messages.map((message, index) => <ChatBubble key={message.id} message={message} streaming={busy && index === messages.length - 1}
-          onRetry={canAsk && index === messages.length - 1 ? retry : undefined} />)}
+          onRetry={canAsk && index === messages.length - 1 ? retry : undefined} onAnswer={answer} />)}
         {answering && <p className="assistant-working"><Loader2Icon className="animate-spin" />Answering…</p>}
         {notice}
       </ConversationContent>
@@ -434,8 +599,8 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
         <PromptInputFooter className="assistant-footer">
           <PromptInputTools>
             <div className="assistant-mode" role="group" aria-label="Answer mode">
-              <button type="button" aria-pressed={mode === 'plan'} title="Get a short plan to review first" onClick={() => onMode('plan')}>Plan</button>
-              <button type="button" aria-pressed={mode === 'execute'} title="Get a direct answer" onClick={() => onMode('execute')}>Execute</button>
+              <button type="button" aria-pressed={mode === 'plan'} title="Look things up and plan without changing anything" onClick={() => onMode('plan')}>Plan</button>
+              <button type="button" aria-pressed={mode === 'execute'} title="Carry out changes, asking first unless you’ve allowed them" onClick={() => onMode('execute')}>Execute</button>
             </div>
             {model && models && <PromptInputSelect value={model} onValueChange={pick}>
               <PromptInputSelectTrigger className="assistant-model" aria-label="Model" title={models.models.find(item => item.id === model)?.name}>
@@ -575,6 +740,7 @@ type PanelProps = {
   onMove: () => void
   onClose: () => void
   focusToken: number
+  onWaiting: (count: number, message?: string) => void
 }
 
 function savedChat() {
@@ -582,7 +748,7 @@ function savedChat() {
   return isChatId(id) ? { id, fresh: false, nonce: 0 } : { id: newChatId(), fresh: true, nonce: 0 }
 }
 
-export default function AssistantPanel({ session, refreshSession, page, side, layout, onMove, onClose, focusToken }: PanelProps) {
+export default function AssistantPanel({ session, refreshSession, page, side, layout, onMove, onClose, focusToken, onWaiting }: PanelProps) {
   const auth = useRef<Auth>({ session, refreshSession })
   useLayoutEffect(() => { auth.current = { session, refreshSession } }, [session, refreshSession])
   const [chat, setChat] = useState(savedChat)
@@ -673,7 +839,7 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
       </header>
       <ChatView key={`${chat.id}:${chat.nonce}`} id={chat.id} fresh={chat.fresh} hidden={view === 'history'} auth={auth} page={page}
         github={github} models={models} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
-        focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} />
+        focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} onWaiting={onWaiting} />
       {view === 'history' && <ChatHistory auth={auth} current={chat.id} focusKey={focusToken} onOpen={openChat}
         onForget={id => { if (id === chat.id) startChat() }} />}
       {view === 'history' && <GitHubAccount github={github} />}

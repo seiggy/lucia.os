@@ -624,6 +624,30 @@ internal static class InstallationChecks
         var refused = await NodeRequests.AnswerAsync(new(Guid.NewGuid(), "exec", "plex", 10), CancellationToken.None);
         var unsafeName = await NodeRequests.AnswerAsync(new(Guid.NewGuid(), "logs", "-f", 10), CancellationToken.None);
         Check(refused is { Success: false } && unsafeName is { Success: false }, "The node accepted a request outside the allowlist.");
+        static NodeRequest Exec(string? command = "uptime", string? interpreter = "bash", int? timeout = 60) =>
+            new(Guid.NewGuid(), "exec", "", 0, command, interpreter, timeout);
+        NodeRequest[] unsafeExec = [Exec(""), Exec(null), Exec("a\0b"), Exec(new string('x', NodeExec.MaxScript + 1)), Exec(interpreter: "zsh"),
+            Exec(interpreter: null), Exec(timeout: 0), Exec(timeout: NodeExec.MaxSeconds + 1), Exec(timeout: null),
+            new(Guid.NewGuid(), "exec-stop", "", 0), new(Guid.NewGuid(), "exec-shell", "", 0, "ls", "bash", 60)];
+        Check(NodeExec.Refusal(Exec()) is null && NodeExec.Refusal(Exec("print(1)", "python3", NodeExec.MaxSeconds)) is null
+            && NodeExec.Refusal(new(Guid.NewGuid(), "exec-status", "", 0, Job: Guid.NewGuid())) is null
+            && unsafeExec.All(request => NodeExec.Refusal(request) is not null), "Commands must be bounded, use a known interpreter and name their job.");
+        const string unit = "Running as unit: lucia-exec-1.service; invocation ID: 51d17d01c7214cb298f2063a8b982565\n";
+        Check(NodeExec.Outcome(0, "\n" + unit + "Finished with result: success\nMain processes terminated with: code=exited/status=0\nService runtime: 2s\n", 60) == (0, null)
+            && NodeExec.Outcome(3, "\n" + unit + "Finished with result: exit-code\nMain processes terminated with: code=exited/status=3\n", 60) == (3, null)
+            && NodeExec.Outcome(0, unit + "Finished with result: success\nMain processes terminated with: code=killed/status=TERM\n", 60) == (null, "It was killed by SIGTERM.")
+            && NodeExec.Outcome(1, unit + "Finished with result: timeout\nMain processes terminated with: code=killed/status=TERM\n", 90)
+                == (null, "It hit its 90-second limit and was stopped.")
+            && NodeExec.Outcome(1, unit + "Finished with result: oom-kill\nMain processes terminated with: code=killed/status=KILL\n", 60)
+                == (null, "It ran out of memory and was killed.")
+            && NodeExec.Outcome(1, "\nFailed to start transient service unit: Unit lucia-exec-1.service already exists.\n \n", 60)
+                == (null, "Failed to start transient service unit: Unit lucia-exec-1.service already exists.")
+            && NodeExec.Outcome(1, "\n", 60) == (null, "systemd-run exited with code 1."),
+            "systemd-run's report must give the exit code only when the command ended by itself.");
+        var execTail = NodeExec.Tail(string.Join('\n', Enumerable.Range(0, 5000).Select(i => $"line {i:D5} \u001b[1mbold\u001b[0m")) + "\n\n");
+        Check(NodeExec.Tail("a\u001b[31mred\u001b[0m\r\nb\u0007\n\n") == "ared\nb"
+            && execTail.StartsWith("[Earlier output cut.]\nline ", StringComparison.Ordinal) && execTail.EndsWith("\nline 04999 bold", StringComparison.Ordinal)
+            && execTail.Length <= NodeExec.MaxOutput + 22 && !execTail.Contains('\u001b'), "Command output must keep its newest whole lines without terminal escapes.");
 
         if (OperatingSystem.IsLinux())
             count += await DiskChecksAsync(fixture, report, plan, credentials, grant, challenge, identity);

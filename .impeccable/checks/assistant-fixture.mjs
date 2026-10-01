@@ -30,15 +30,56 @@ const seedReply = `## Check the failing service first
 
 A stack that keeps restarting usually has **one service** exiting. Open **Stacks**, pick the app, and read the newest lines of that service's log before restarting anything.`
 
+// Mode 'tools' runs these the way the host's broker does: reads at once, the policy settles some calls, the rest wait in the chat.
+const toolTurn = [
+  { name: 'list_apps', input: {}, output: { apps: [{ name: 'media', node: 'lucialab02', state: 'restarting' }, { name: 'whoami', node: 'spark', state: 'running' }] } },
+  { name: 'read_logs', input: { node: 'lucialab02', container: 'jellyfin' }, error: 'jellyfin isn\'t running on lucialab02, so it has no live log.' },
+  { name: 'app_action', tier: 'change', input: { app: 'whoami', action: 'restart' }, output: { app: 'whoami', state: 'running' } },
+  { name: 'read_web_page', tier: 'web', input: { url: 'https://docs.linuxserver.io/images/docker-jellyfin/' },
+    output: { title: 'jellyfin - LinuxServer.io', text: 'Hardware acceleration needs the container in the render group.' } },
+  { name: 'delete_app', tier: 'destructive', input: { app: 'whoami' }, output: { deleted: 'whoami' } },
+  { name: 'ask_owner', input: { question: 'Which server should run Jellyfin?', choices: ['lucialab01', 'lucialab02'] } },
+  { name: 'request_secret', tier: 'secret', input: { app: 'media', name: 'PLEX_CLAIM_TOKEN',
+    description: 'A claim token from plex.tv/claim links this server to your Plex account. It expires after 4 minutes.' } },
+]
+const toolReply = 'Jellyfin moves to **lucialab02** once Plex is claimed. I kept whoami, as you asked.'
+// Mode 'danger' asks for the two calls whose warnings matter most: going public, and a script run as root.
+const gpuCheck = 'set -e\nlspci -nn | grep -i nvidia\nnvidia-smi --query-gpu=name,driver_version --format=csv,noheader'
+const dangerTurn = [
+  { name: 'set_public_route', tier: 'destructive', input: { app: 'whoami', host: 'whoami.lab.example', publicName: 'whoami.example.com' },
+    output: { app: 'whoami', routes: [{ host: 'whoami.lab.example', public: 'whoami.example.com' }] } },
+  { name: 'run_command', tier: 'destructive', input: { node: 'lucialab02', command: gpuCheck },
+    output: { exitCode: 0, output: '01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA102 [GeForce RTX 3090] [10de:2204]\nNVIDIA GeForce RTX 3090, 550.120' } },
+]
+const dangerReply = 'whoami answers at **whoami.example.com**, and lucialab02 sees its RTX 3090 with driver 550.120.'
+// Mirrors AssistantTools.Warning for the destructive calls these turns make.
+const warning = (name, { app, node, host, publicName }) => ({
+  delete_app: `Lucia stops ${app} and removes it from its server. Its data directory stays there.`,
+  set_public_route: publicName ? `Anyone on the internet will be able to reach ${publicName}.` : `Anyone using ${host} from outside your network loses access.`,
+  run_command: `This runs the command below as root on ${node}. It can change anything there.`,
+})[name]
+const planReply = 'The plan: restart **whoami**, then delete it. Switch to Execute when you want me to run it.'
+const tools = [
+  ['list_apps', 'read', 'Lists the lab\'s apps.'], ['read_web_page', 'web', 'Reads a public web page.'],
+  ['request_secret', 'secret', 'Asks the owner to type a secret for a custom app.'], ['save_custom_app', 'change', 'Creates or changes a custom app.'],
+  ['install_catalog_app', 'change', 'Installs a catalog app.'], ['app_action', 'change', 'Starts, stops, restarts or updates an app.'],
+  ['move_app', 'change', 'Moves an app to another server.'], ['run_backup', 'change', 'Backs up an app.'],
+  ['upgrade_app_images', 'change', 'Upgrades an app\'s images.'], ['check_node_updates', 'change', 'Checks a server for updates.'],
+  ['delete_app', 'destructive', 'Deletes an app.'],
+].map(([name, tier, description]) => ({ name, tier, description }))
+const defaultHosts = ['docs.docker.com', 'hub.docker.com', 'github.com', 'raw.githubusercontent.com']
+
 let mode = 'ready'
 let sessions = new Map()
 let github = {}
+let settings = {}
 const runs = new Map()
 const signedIn = { state: 'connected', login: 'octocat' }
 
 export function resetAssistantFixture(value) {
   mode = value
   github = value === 'disconnected' || value === 'byok' ? { state: 'disconnected' } : signedIn
+  settings = { autoTools: ['app_action'], hosts: [...defaultHosts] }
   runs.clear()
   sessions = new Map([[seedId, {
     id: seedId, title: 'Why does my media stack keep restarting?', updated: '2026-09-24T18:30:00Z', model: 'gpt-5-mini',
@@ -54,8 +95,89 @@ resetAssistantFixture('ready')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const running = id => runs.get(id)?.done === false
 const title = text => { const line = text.trim().split(/[\r\n]/)[0]; return line.length > 80 ? line.slice(0, 79).trimEnd() + '…' : line }
+async function readJson(request) {
+  let text = ''
+  for await (const chunk of request) text += chunk
+  try { return JSON.parse(text) } catch { return undefined }
+}
 
-async function produce(session, run, messageId) {
+// The host's answer to an approval: a refusal ends the call as denied.
+function respond(send, part, approved, reason) {
+  part.approval = { ...part.approval, approved, ...(reason ? { reason } : {}) }
+  part.state = approved ? 'approval-responded' : 'output-denied'
+  send({ type: 'tool-approval-response', approvalId: part.approval.id, approved, ...(reason ? { reason } : {}) })
+  if (!approved) send({ type: 'tool-output-denied', toolCallId: part.toolCallId })
+}
+
+function result(send, part, output, errorText) {
+  Object.assign(part, errorText ? { state: 'output-error', errorText } : { state: 'output-available', output })
+  send(errorText ? { type: 'tool-output-error', toolCallId: part.toolCallId, errorText, dynamic: true }
+    : { type: 'tool-output-available', toolCallId: part.toolCallId, output, dynamic: true })
+}
+
+// Like the host's end of a turn: unanswered approvals are refused and unfinished calls fail, so a saved chat never waits.
+function settle(send, parts) {
+  for (const part of parts.filter(part => part.type === 'dynamic-tool')) {
+    if (part.state === 'approval-requested') respond(send, part, false, 'The run stopped before you answered.')
+    else if (part.state === 'input-available' || part.state === 'approval-responded') result(send, part, undefined, 'The run stopped before this finished.')
+  }
+}
+
+// Resolves with the owner's answer to an approval (keyed by its id) or a question (by its call); undefined when the turn stops first.
+const answerOf = (run, key, kind) => new Promise(resolve => run.waits.set(key, { kind, resolve }))
+
+async function useTools(session, run, send, parts, plan, steps) {
+  const grants = session.grants ??= new Set()
+  for (const step of steps) {
+    const tier = step.tier ?? 'read'
+    if (run.stopped) return
+    if (plan && !['list_apps', 'app_action', 'delete_app'].includes(step.name)) continue
+    const toolCallId = 'call_' + randomUUID().replaceAll('-', '').slice(0, 24)
+    const part = { type: 'dynamic-tool', toolCallId, toolName: step.name, state: 'input-available', input: step.input }
+    parts.push(part)
+    send({ type: 'tool-input-available', toolCallId, toolName: step.name, input: step.input, dynamic: true })
+    // The broker's verdict: plan mode refuses changes, destructive calls always ask, the owner's settings and grants skip asking.
+    const host = tier === 'web' ? new URL(step.input.url).host : undefined
+    const grant = tier === 'change' ? 'tool:' + step.name : host && 'host:' + host
+    const granted = grants.has(grant)
+    const ask = { destructive: warning(step.name, step.input), web: `${host} isn't on the assistant's allowed sites.`, change: 'This changes your lab.' }[tier]
+    const denied = plan && ['change', 'destructive', 'secret'].includes(tier)
+    const allowed = !denied && tier !== 'destructive' && (settings.autoTools.includes(step.name) || granted || settings.hosts.includes(host))
+    const approvalId = 'approval-' + randomUUID().replaceAll('-', '')
+    if (denied || (ask && allowed)) {
+      part.state = 'approval-requested'
+      part.approval = { id: approvalId, isAutomatic: true }
+      send({ type: 'tool-approval-request', approvalId, toolCallId, isAutomatic: true })
+      respond(send, part, !denied, denied ? 'Plan mode doesn\'t change anything. Switch to Execute to run it.' : granted ? 'You allowed this for this chat.'
+        : host ? `${host} is on the assistant's allowed sites.` : 'Runs automatically in your assistant settings.')
+      if (denied) continue
+    } else if (ask) {
+      part.state = 'approval-requested'
+      part.approval = { id: approvalId, requestReason: ask }
+      send({ type: 'tool-approval-request', approvalId, toolCallId, reason: ask })
+      const answer = await answerOf(run, approvalId, 'approval')
+      if (!answer) return
+      if (answer.approved && answer.always && grant) grants.add(grant)
+      respond(send, part, answer.approved, answer.reason)
+      if (!answer.approved) continue
+    }
+    await sleep(150)
+    if (run.stopped) return
+    let output = step.output
+    if (step.name === 'ask_owner' || step.name === 'request_secret') {
+      const reply = await answerOf(run, toolCallId, step.name === 'ask_owner' ? 'answer' : 'secret')
+      if (!reply) return
+      const { app, name } = step.input
+      output = step.name === 'ask_owner'
+        ? reply.value != null ? { answer: reply.value } : 'The owner chose not to answer. Go on without it if you can; otherwise say what you need and stop.'
+        : reply.value != null ? { saved: true, app, name, note: 'Lucia delivers it within a minute; check get_app or list_apps, and read_logs if it fails.' }
+        : `The owner chose not to give ${name}. Nothing was saved.`
+    }
+    result(send, part, output, step.error)
+  }
+}
+
+async function produce(session, run, messageId, plan) {
   const send = chunk => { run.chunks.push(JSON.stringify(chunk)); run.events.emit('change') }
   const slow = mode === 'slow'
   const parts = []
@@ -67,8 +189,9 @@ async function produce(session, run, messageId) {
     send({ type: 'reasoning-end', id: 'r0' })
     parts.push({ type: 'reasoning', text: thinking, state: 'done' })
   }
+  if (mode === 'tools' || mode === 'danger') await useTools(session, run, send, parts, plan, mode === 'danger' ? dangerTurn : toolTurn)
   let text = ''
-  for (const word of answer.split(/(?<=\s)/)) {
+  for (const word of (mode === 'danger' ? dangerReply : mode !== 'tools' ? answer : plan ? planReply : toolReply).split(/(?<=\s)/)) {
     if (run.stopped || (mode === 'failing' && text.length > 80)) break
     if (!text) send({ type: 'text-start', id: 't1' })
     text += word
@@ -79,6 +202,7 @@ async function produce(session, run, messageId) {
     send({ type: 'text-end', id: 't1' })
     parts.push({ type: 'text', text, state: 'done' })
   }
+  settle(send, parts)
   const metadata = { model: session.model ?? 'gpt-5-mini', usage: { inputTokens: 640, outputTokens: text.split(/\s+/).length } }
   if (run.stopped) {
     metadata.stopped = true
@@ -174,18 +298,73 @@ export async function assistantFixture(request, response, path, sessionMode, jso
     const retried = session.messages.findLastIndex(message => message.role === 'user')
     if (retried >= 0 && session.messages[retried].id === body.messageId) session.messages.splice(retried + 1)
     else session.messages.push({ id: body.messageId, role: 'user', parts: [{ type: 'text', text: body.text }] })
-    const run = { chunks: [], done: false, stopped: false, events: new EventEmitter() }
+    const run = { chunks: [], done: false, stopped: false, events: new EventEmitter(), waits: new Map() }
     runs.set(session.id, run)
-    void produce(session, run, randomUUID().replaceAll('-', ''))
+    void produce(session, run, randomUUID().replaceAll('-', ''), body.mode === 'plan')
     await follow(response, run)
     return true
   }
-  const match = path.match(/^\/api\/assistant\/sessions\/([a-f0-9]{32})(\/stream|\/stop)?$/)
+  if (path === '/api/assistant/settings') {
+    if (request.method === 'PUT') {
+      const body = await readJson(request)
+      const change = tools.filter(tool => tool.tier === 'change').map(tool => tool.name)
+      const auto = body?.autoTools ?? []
+      if (!Array.isArray(auto) || new Set(auto).size !== auto.length || auto.some(name => !change.includes(name)))
+        return fail(400, 'invalid_settings', 'Automatic tools must be the assistant\'s change tools, each listed once.')
+      const entries = Array.isArray(body?.hosts) ? body.hosts : []
+      const hosts = entries.map(host => typeof host === 'string' ? host.trim().replace(/\.$/, '').toLowerCase() : '')
+      if (hosts.length > 50) return fail(400, 'invalid_sites', 'Add at most 50 sites.')
+      const bad = hosts.findIndex(host => !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(host) || /^[\d.]+$/.test(host))
+      if (bad >= 0) {
+        const entry = typeof entries[bad] === 'string' ? entries[bad].trim() : ''
+        return fail(400, 'invalid_sites', !entry ? 'Each site needs a name, like docs.docker.com.'
+          : `${entry} ${/^[\d.]+$|:.*:/.test(entry) ? 'is an address, not a site name' : 'isn\'t a site name'}. Add sites by name, like docs.docker.com.`)
+      }
+      settings = { autoTools: auto, hosts: [...new Set(hosts)] }
+    } else if (request.method !== 'GET') return fail(405, 'method_not_allowed', 'Method not allowed.')
+    return json({ ...settings, tools }), true
+  }
+  const match = path.match(/^\/api\/assistant\/sessions\/([a-f0-9]{32})(\/stream|\/stop|\/approvals\/[^/]+|\/answers\/[^/]+)?$/)
   if (!match) return fail(404, 'not_found', 'Not found.')
   const [, id, action] = match
   if (action === '/stream' && request.method === 'GET') return running(id) ? (await follow(response, runs.get(id)), true) : empty()
   if (action === '/stop' && request.method === 'POST') {
-    if (running(id)) runs.get(id).stopped = true
+    const run = running(id) && runs.get(id)
+    if (run) {
+      run.stopped = true
+      for (const { resolve } of run.waits.values()) resolve(undefined)
+      run.waits.clear()
+    }
+    return empty()
+  }
+  // The owner's answers to the cards in the chat, validated like the host's.
+  if (action?.startsWith('/approvals/') && request.method === 'POST') {
+    const body = await readJson(request)
+    if (typeof body?.approved !== 'boolean') return fail(400, 'invalid_request', 'The request body is invalid.')
+    if (typeof body.reason === 'string' && body.reason.length > 500) return fail(400, 'invalid_reason', 'Keep the reason under 500 characters.')
+    const key = action.slice('/approvals/'.length)
+    const waiting = running(id) && runs.get(id).waits.get(key)
+    if (waiting?.kind !== 'approval') return fail(404, 'approval_not_found', 'This request was already answered, or its chat has moved on.')
+    runs.get(id).waits.delete(key)
+    waiting.resolve({ approved: body.approved, reason: typeof body.reason === 'string' ? body.reason.trim() || undefined : undefined, always: body.always === true })
+    return empty()
+  }
+  if (action?.startsWith('/answers/') && request.method === 'POST') {
+    const body = await readJson(request)
+    const text = typeof body?.answer === 'string' ? body.answer.trim() : undefined
+    const secret = typeof body?.secret === 'string' ? body.secret.trim() : undefined
+    const key = action.slice('/answers/'.length)
+    if ((text !== undefined) + (secret !== undefined) + (body?.declined === true) !== 1 || key.length > 128)
+      return fail(400, 'invalid_request', 'Send an answer, a secret or a decline.')
+    if (text !== undefined && (!text || text.length > 2000)) return fail(400, 'invalid_answer', 'Answers are 1 to 2,000 characters.')
+    if (secret !== undefined && !/^[A-Za-z0-9._~+/=-]{1,4096}$/.test(secret))
+      return fail(400, 'invalid_secret', 'Lucia saves it unquoted: up to 4,096 letters, digits and . _ ~ + / = -')
+    const kind = text !== undefined ? 'answer' : secret !== undefined ? 'secret' : undefined
+    const waiting = running(id) && runs.get(id).waits.get(key)
+    if (!waiting || waiting.kind === 'approval' || (kind && waiting.kind !== kind))
+      return fail(404, 'question_not_found', 'This question was already answered, or its chat has moved on.')
+    runs.get(id).waits.delete(key)
+    waiting.resolve({ value: text ?? secret ?? null })
     return empty()
   }
   if (!action && request.method === 'DELETE') {

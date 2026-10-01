@@ -241,6 +241,43 @@ components:
     rounded: "{rounded.field}"
     width: "36px"
     height: "36px"
+  assistant-tool:
+    backgroundColor: "var(--surface)"
+    textColor: "var(--text)"
+    rounded: "{rounded.field}"
+    padding: "10px 12px"
+  assistant-tool-status:
+    textColor: "var(--muted)"
+  assistant-tool-status-waiting:
+    textColor: "var(--amber-ink)"
+  assistant-tool-line-number:
+    textColor: "var(--muted)"
+    width: "4ch"
+  assistant-card:
+    padding: "12px"
+  assistant-card-action:
+    backgroundColor: "var(--surface)"
+    textColor: "var(--text)"
+    rounded: "{rounded.field}"
+    padding: "8px 14px"
+  assistant-card-action-danger:
+    textColor: "var(--failed-ink)"
+  assistant-card-field:
+    backgroundColor: "var(--surface)"
+    textColor: "var(--text)"
+    rounded: "{rounded.field}"
+    padding: "8px 12px"
+    width: "100%"
+  assistant-entry-waiting:
+    backgroundColor: "var(--amber-bg)"
+    textColor: "var(--amber-ink)"
+    rounded: "{rounded.field}"
+    padding: "1px 7px"
+  assistant-bar-waiting:
+    backgroundColor: "var(--amber-bg)"
+    textColor: "var(--amber-ink)"
+    rounded: "{rounded.field}"
+    padding: "1px 8px"
 ---
 
 # Design System: Lucia portal
@@ -472,9 +509,9 @@ Not canonized or repaired for this extension: missing generated FORM-seed proven
 
 ### Assistant dock — scoped extension
 
-The Owner-only assistant extends **"A simple check-in"** as a working companion beside the page, not a destination. It answers questions about the current page and how Lucia works; for now it only advises and cannot read or change anything in the lab. It is separate from the Playground's local-model conversation. This is a code-led local extension without an approved comp; no generated concept seed or FORM selection is claimed.
+The Owner-only assistant extends **"A simple check-in"** as a working companion beside the page, not a destination. It answers questions about the current page and how Lucia works, and reads the lab on its own: servers, apps, logs, storage, backups, DNS, and UniFi clients. It reads public web pages on the Owner's allowed sites and asks before reading any other site. It changes the lab only after the Owner approves in the chat, or automatically for the change tools the Owner allows in **Settings > Assistant**; destructive tools always ask, and Plan mode refuses every change. It is separate from the Playground's local-model conversation. This is a code-led local extension without an approved comp; no generated concept seed or FORM selection is claimed.
 
-Source of truth: `src/frontend/src/AssistantDock.tsx` and `AssistantDock.css` (layouts, entry, focus, and motion), `AssistantPanel.tsx` and `assistant.css` (header, conversation, composer, states, and history), the header entry in `PortalNavigation.tsx`/`PortalNavigation.css`, and the model select in `components/ui/select.tsx`. The **Assistant dock** and **Direction contract** sections of `.impeccable/surfaces/src-frontend-src-app-tsx.md` own surface strategy. A theme layer scoped to the dock maps the chat components' background, primary, muted, destructive, border, and ring roles onto the existing surface, accent/on-accent, surface-subtle/muted, failed-ink, line, and accent-ink properties, so custom accents and dark appearance carry through. The dock adds no color token; its corners use the field (12px) and control (14px) radii.
+Source of truth: `src/frontend/src/AssistantDock.tsx` and `AssistantDock.css` (layouts, entry, focus, motion, and the phone bar's waiting count), `AssistantPanel.tsx` and `assistant.css` (header, conversation, composer, states, history, tool rows, and approval, question, and secret cards), `assistant.ts` (tool titles, status words, notes, and the destructive tools), `components/ai-elements/tool.tsx` and `confirmation.tsx` (the adapted tool row and approval), the header entry and its waiting count in `PortalNavigation.tsx`/`PortalNavigation.css`, the model select in `components/ui/select.tsx`, and **Settings > Assistant** in `AssistantSettings.tsx` with `NetworkSettings.css`. The **Assistant dock** and **Direction contract** sections of `.impeccable/surfaces/src-frontend-src-app-tsx.md` own surface strategy. A theme layer scoped to the dock maps the chat components' background, primary, muted, destructive, border, and ring roles onto the existing surface, accent/on-accent, surface-subtle/muted, failed-ink, line, and accent-ink properties, so custom accents and dark appearance carry through. The dock and its settings page add no color token: waiting uses the amber roles, done green-ink, and failure and danger failed-ink. Corners use the field (12px) and control (14px) radii.
 
 #### Layout and motion
 
@@ -498,15 +535,30 @@ Solid accent appears only on send. Accent-soft or accent-ink marks owner message
 #### Entry, states, and history
 
 - **Header entry:** **Assistant** reuses the **Find a tool** button (44px minimum, field radius, muted 14px) with a chat icon and a **⌘ / Ctrl J** hint in the shortcut-keycap style. When open, it uses accent-soft with accent-ink. The hint hides at the portal-compact width and while pushed at or below 1400px.
-- **Empty chat:** an **On:** chip naming the current page (field radius, surface-subtle, muted 14px with the page name in text color), a muted introduction stating the advice-only limit, and three starter prompts: 49px-minimum, field-radius, line-bordered 14px/600 buttons with an accent-ink arrow. Hover accents the border.
+- **Empty chat:** an **On:** chip naming the current page (field radius, surface-subtle, muted 14px with the page name in text color), a muted introduction saying the assistant checks servers, apps, and logs and asks before changing anything the Owner hasn't allowed in settings, and three starter prompts: 49px-minimum, field-radius, line-bordered 14px/600 buttons with an accent-ink arrow. Hover accents the border.
 - **States:** a stopped answer uses the amber status treatment with a stop icon and **Stopped**. A failed turn is a failed-ink line (**The model stopped responding.**) with a **Try again** text link. A chat already answering elsewhere shows a muted note with **Reload chat**. When GitHub is not signed in, an amber note above the composer offers a 40px secondary **Sign in with GitHub** button (**Get a new code** or **Try again** after an expired or declined code; a failed-bg/failed-ink note if the sign-in fails), the starters disable, and the model select hides. Signing in swaps it for a field-radius surface-subtle card: **Enter this code at github.com/login/device**, the code at 22px/700 with .1em tracking and a copy icon button, a secondary **Copy code and open GitHub** link button, a **Cancel** text link, and a muted **Waiting for GitHub…** spinner line. If Copilot refuses the account, the amber note names it with **Sign in again**. Request errors use a failed-bg/failed-ink notice with the field radius; a working answer shows a muted **Answering…** line with a spinner.
 - **History:** **Your chats** lists 56px-minimum field-radius rows with a 14px/600 title and a 12px muted date or **Answering now**; hover is surface-subtle and the current chat accent-soft. Deleting confirms inline (**Delete this chat from your host? This can't be undone.**) with a failed-ink secondary **Delete chat** button and a **Cancel** text link. The empty list says chats are kept on the host. A footer below the list reads **Signed in to GitHub as @login** with a **Disconnect** text link that confirms inline (Lucia forgets the sign-in; GitHub keeps the authorization until it is revoked under **Authorized GitHub Apps**) with a failed-ink secondary **Disconnect GitHub** button and a **Cancel** text link.
 
+#### Tools, approvals, and questions
+
+- **Tool rows:** each call is one line-bordered, field-radius surface row in 14px/1.5 text, collapsed by default. Its 44px header (10px/12px padding) holds a muted 16px icon (a wrench; a chat bubble for a question, a shield for a secret), a plain-language 14px/600 title such as **Read logs of jellyfin on lucialab02** that wraps anywhere rather than truncating, a status word, and a chevron that turns text-colored on hover. **Done**, **Answered**, and **Saved** use green-ink; **Failed** uses failed-ink; **Needs your approval** and **Waiting for you** use amber-ink at 650; **Running…** (with a spinner), **Not run**, **Not answered**, **Skipped**, **Not given**, and **Not finished** stay muted. A settled call adds one note aligned under the title: the failure sentence in failed-ink, or a muted **You declined: “…”**, **You answered: …**, a secret's outcome, or the reason it didn't run.
+- **Details:** expanding adds a line-ruled area with the inputs as muted labels over monospace values, the **Result**, and why an approved call ran (**You approved this.**, **Runs automatically in your assistant settings.**). Values and results scroll after 16rem. A multi-line value shows numbered lines: a 4ch muted, right-aligned, unselectable number column beside the text. A wrapped line continues under its text without a number, so it can't pass for a new command.
+- **Waiting rows:** while a call waits for the Owner, its border turns amber-line and its card appears inside the row under the title; the details stay collapsed. The status drops to its own line under the title, aligned with it, so host names in a long title stay whole; settled rows keep the inline status. The card has no fill or corners of its own: 12px padding and gap under an amber-line top rule. Its buttons are 40px-minimum, field-radius, 14px secondary buttons with 8px/14px padding; its text links are 32px minimum and left-aligned; unavailable actions show at .65 opacity. A failed answer adds a failed-ink alert line with an attention icon. Answering removes the card and moves focus to the row's header.
+- **Approvals:** the card opens with the host's sentence, then the inputs, then **Approve** and **Decline…**. A destructive call (deleting an app, restoring a backup, publishing or unpublishing an app, a server action, or a command) names what it puts at risk—**Anyone on the internet will be able to reach whoami.example.com.**; **This runs the command below as root on lucialab02. It can change anything there.**—and its **Approve** takes the failed-ink secondary treatment of **Delete chat**. A web read says why it asks (**docs.linuxserver.io isn't on the assistant's allowed sites.**); any other change says **This changes your lab.** Web reads and change tools add a text link that approves for the rest of the chat (**Approve, and let it read docs.linuxserver.io for the rest of this chat**); destructive calls never offer one. **Decline…** opens **Tell the assistant why (optional)** with **Decline** and a **Back** link. In Plan mode no card appears: the change shows **Not run** with **Plan mode doesn't change anything. Switch to Execute to run it.**
+- **Questions and secrets:** a question card offers its choices as starter-prompt buttons and, when free text is allowed, an **Or type your answer** field with **Send answer** and a **Skip question** link. A secret card is a password field labelled with the variable and app, and a muted hint that Lucia saves it in the app's settings and the assistant never sees it; an unsupported character sets `aria-invalid`, turning the field border and hint failed-ink. **Save secret** and a **Decline** link follow.
+- **Waiting counts:** while the dock is closed, the header entry shows a 22px-minimum amber-bg/amber-ink count (12px/650, tabular figures, field radius) between **Assistant** and its shortcut hint, labelled **Assistant, N waiting for you**. The phone bar shows **N waiting** at its far end in the same treatment. A hidden status line names each new request once (**Approval needed: …**, **Question from the assistant: …**, **Secret needed: …**).
+
+**The Named Risk Rule.** A destructive approval names what it puts at risk in one plain sentence before its inputs and buttons; it always asks, never offers to skip asking for the rest of the chat, and marks Approve in failed ink.
+
+#### Settings > Assistant
+
+The Owner-only page follows the network-settings pattern: the page intro, then surface sections. **Changes it may make without asking** lists only the change tools, as 14px checkbox rows 14px apart with 18px accent checkboxes, between two muted notes: one says unchecked changes wait for approval and Plan mode changes nothing; the other lists what always asks. **Sites it may read without asking** holds **Allowed sites**, the management field in 14px/1.5 monospace (96px minimum, five rows), one host name per line; a pasted link keeps only its host name. **Save settings** is the primary button; the refusal alert or the muted **Saved. The assistant follows these from your next message.** appears on its own line just below it, not at the top of the page, because the page outgrows a laptop screen. Editing clears the saved notice. A refused site is named in the alert (**192.168.0.10 is an address, not a site name. Add sites by name, like docs.docker.com.**); the field takes `aria-invalid` with a failed-ink border, its description adds the alert to the hint, and focus returns to it.
+
 **The Beside-the-Page Rule.** The assistant opens beside the page it is about and pushes that page aside wherever there is room; it never becomes a floating bubble launcher, and it reserves no desktop rail while closed.
 
-Evidence is bounded: review captures in `.impeccable/review/assistant-*.png` (light and dark push, left side, overlay, phone bar and sheet, model menu, history, and stopped, failed, busy, and disconnected states) are fixture captures with synthetic data—a fixture Owner and a synthetic model—not real transcripts, model output, or hardware readings. Finish review round 1 returned eight fixes, all applied; the verdict pass returned ship with nothing remaining. This pass checked shipped source and captures only.
+Evidence is bounded: review captures in `.impeccable/review/assistant-*.png` are fixture captures with synthetic data—a fixture Owner and a synthetic model—not real transcripts, model output, or hardware readings. The dock captures cover light and dark push, left side, overlay, phone bar and sheet, model menu, history, and stopped, failed, busy, and disconnected states; the dock's finish review round 1 returned eight fixes, all applied, and its verdict pass returned ship with nothing remaining. The tools captures (`assistant-tools-*.png` and `assistant-settings*.png`) come from `.impeccable/checks/assistant-tools.js` at 1440×900 and 390×844 in light and dark: web-read, delete, publish, and command approvals, a decline, a question, a secret, settled calls and their details, Plan mode, waiting counts, a stopped question, and the settings page loaded, saved, and refusing a site. The tools finish review round 1 returned three material fixes—a specific warning for each destructive approval, approval cards proven fully in view before capture, and allowed-sites errors that name the entry, with `aria-invalid`, `aria-describedby`, and focus—all applied, plus two found while reviewing captures: a waiting row's status moves under its title so host names stay whole, and multi-line inputs show numbered lines so a wrapped line can't pass for a new command. The verdict pass returned ship with nothing remaining; it covered those fixes, not a fresh review of the whole surface. This pass checked shipped source and captures only.
 
-Not canonized or repaired for this extension: the opening fade departs from the brief's slide-only intent; it is recorded as shipped, not as a pattern for navigation panels, which stay under the Opaque Navigation Rule. The brief's 25px radius does not appear in the dock; the column is square-edged. The dock's 2px focus offset, 32px mode/model/reasoning/text-link targets, button-based reasoning disclosure, 8px copy-button and menu-option corners, and the scroll-to-latest button's library hairline shadow are dock-scoped; they do not replace the portal's 4px offset, 44px text actions, native disclosures, swatch-scoped 8px radius, or Quiet Depth vocabulary. The overlay column's backdrop-free navigation-overlay shadow and the model menu's shadow are limited to those floating dock surfaces; Quiet Depth still governs structure elsewhere. No source edits are part of this pass.
+Not canonized or repaired for this extension: the opening fade departs from the brief's slide-only intent; it is recorded as shipped, not as a pattern for navigation panels, which stay under the Opaque Navigation Rule. The brief's 25px radius does not appear in the dock; the column is square-edged. The dock's 2px focus offset, 32px mode/model/reasoning/text-link targets, button-based reasoning disclosure, 8px copy-button and menu-option corners, and the scroll-to-latest button's library hairline shadow are dock-scoped; they do not replace the portal's 4px offset, 44px text actions, native disclosures, swatch-scoped 8px radius, or Quiet Depth vocabulary. The overlay column's backdrop-free navigation-overlay shadow and the model menu's shadow are limited to those floating dock surfaces; Quiet Depth still governs structure elsewhere. The tool cards' 40px buttons and 32px left-aligned text links are dock-scoped in the same way, and the amber border marks only a row waiting on the Owner. No source edits are part of this pass.
 
 ## Do's and Don'ts
 

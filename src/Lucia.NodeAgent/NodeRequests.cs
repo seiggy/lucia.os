@@ -3,12 +3,14 @@ using System.Text.RegularExpressions;
 
 namespace Lucia.NodeAgent;
 
-internal sealed record NodeRequest(Guid RequestId, string Kind, string Container, int Tail);
-internal sealed record NodeRequestResult(Guid RequestId, bool Success, string? Output, string? Message);
+/// <param name="Command">For <c>exec</c>: the script <see cref="NodeExec"/> runs. <paramref name="Job"/> names the exec a status or stop is for.</param>
+internal sealed record NodeRequest(Guid RequestId, string Kind, string Container, int Tail, string? Command = null, string? Interpreter = null,
+    int? Timeout = null, Guid? Job = null);
+internal sealed record NodeRequestResult(Guid RequestId, bool Success, string? Output, string? Message, int? ExitCode = null, bool Running = false);
 
 /// <summary>
-/// Answers Lucia's requests over a long-poll. Only allowlisted kinds with validated arguments run, as fixed argument
-/// arrays: container logs, and the owner's machine actions in <see cref="NodeUpdates"/>. The server can't send commands.
+/// Answers Lucia's requests over a long-poll. Only allowlisted kinds with validated arguments run: container logs, the
+/// owner's machine actions in <see cref="NodeUpdates"/>, and commands the owner approved in the assistant (<see cref="NodeExec"/>).
 /// </summary>
 internal static partial class NodeRequests
 {
@@ -28,6 +30,7 @@ internal static partial class NodeRequests
                         try
                         {
                             var answer = request.Kind == "logs" ? await AnswerAsync(request, token)
+                                : request.Kind.StartsWith("exec", StringComparison.Ordinal) ? await NodeExec.AnswerAsync(request, token)
                                 : NodeUpdates.Start(request, ct => AgentRelease.UpdateAsync(client, node, certificate(), key, ct), token);
                             await client.AnswerAsync(node, certificate(), answer, key, token);
                         }
@@ -83,7 +86,7 @@ internal static partial class NodeRequests
         return match.Success ? match.Groups[1].Value + "." + match.Groups[2].Value.PadRight(9, '0') : "";
     }
 
-    private static string Clean(string line)
+    internal static string Clean(string line)
     {
         var text = AnsiPattern().Replace(line, "");
         var clean = new StringBuilder(text.Length);

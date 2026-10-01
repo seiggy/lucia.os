@@ -14,6 +14,7 @@ import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
 import { StorageSettings } from './StorageSettings'
 import { SshKeySettings } from './SshKeySettings'
+import { AssistantSettings } from './AssistantSettings'
 import { People } from './People'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
@@ -125,6 +126,7 @@ function App() {
   const [route, setRoute] = useState(() => parseRoute(location.hash))
   const [playgroundVisited, setPlaygroundVisited] = useState(false)
   const [dock, setDock] = useState(loadDock)
+  const [assistantWaiting, setAssistantWaiting] = useState(0)
   const main = useRef<HTMLElement>(null)
   const firstRoute = useRef(true)
   const scheme = preferences.appearance === 'system' ? (systemDark ? 'dark' : 'light') : preferences.appearance
@@ -191,7 +193,7 @@ function App() {
           <div className="custom-color"><div><label htmlFor="custom-accent">Or choose your own color</label><p>Button text adjusts to stay readable.</p></div><input id="custom-accent" type="color" value={preferences.customAccent} onChange={event => updatePreferences({ ...preferences, theme: 'custom', customAccent: event.target.value })} /></div>
           <div className="theme-example"><span className="icon-tile tone-accent"><Icon name="home" /></span><div><strong>{preferences.theme === 'custom' ? 'Your custom theme' : themes.find(theme => theme.id === preferences.theme)?.name}</strong><p>Same simple home. Your own feel.</p></div><span className="sample-button" aria-label="Theme color sample">Aa</span></div>
         </section>
-        <section className="connection-note"><Icon name="shield" /><div><h2>Your account and connection.</h2><p>{authentication.session?.enabled ? `Signed in through Authentik as ${authentication.session.displayName || authentication.session.username}. Permissions are enforced by your host.` : 'This is a development session. Managed deployments use Authentik sign-in.'}</p><p className="section-note">Appearance and assistant preferences are saved on this browser. Assistant chats are saved on your host. Account credentials and Playground chats are not stored here.</p></div></section>
+        <section className="connection-note"><Icon name="shield" /><div><h2>Your account and connection.</h2><p>{authentication.session?.enabled ? `Signed in through Authentik as ${authentication.session.displayName || authentication.session.username}. Permissions are enforced by your host.` : 'This is a development session. Managed deployments use Authentik sign-in.'}</p><p className="section-note">Appearance and assistant preferences are saved on this browser. Assistant chats and permissions are saved on your host. Account credentials and Playground chats are not stored here.</p></div></section>
       </div>
     </>
   }
@@ -210,6 +212,7 @@ function App() {
         : route.page === 'storage-settings' ? <StorageSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'assistant-settings' ? <AssistantSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'people-settings' ? <People session={session} refreshSession={authentication.refresh} view={route.view} />
           : route.page === 'domain-settings' ? <DomainOnboarding session={session} refreshSession={authentication.refresh} />
         : route.page === 'ai' ? null
@@ -219,7 +222,7 @@ function App() {
   return <div className="app-shell portal-workspace">
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
     {!session.enabled && <div className="development-note"><strong>Development mode</strong><span>Browser sign-in is disabled on this development host.</span></div>}
-    <PortalNavigation route={route} session={session} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock } : undefined} />
+    <PortalNavigation route={route} session={session} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock, waiting: assistantWaiting } : undefined} />
     {storageNotice && <div className="storage-notice" role="alert"><Icon name="attention" /><p>{storageNotice}</p><button className="icon-button" aria-label="Dismiss appearance notice" onClick={() => setStorageNotice(null)}><Icon name="close" /></button></div>}
     <main id="main-content" ref={main} tabIndex={-1}>
       {content}
@@ -229,7 +232,7 @@ function App() {
     </main>
     <footer className="app-footer"><span>{session.enabled ? 'Connected through Authentik' : 'Trusted-network development connection'}</span><a className="text-link" href="#/ai">Local AI <Icon name="arrow" /></a></footer>
     {assistantAvailable && <AssistantDock session={session} refreshSession={authentication.refresh} page={routeDestination(route)?.label ?? 'Page not found'}
-      open={dock.open} side={dock.side} onToggle={toggleDock} onClose={closeDock} onMove={moveDock} />}
+      open={dock.open} side={dock.side} waiting={assistantWaiting} onToggle={toggleDock} onClose={closeDock} onMove={moveDock} onWaiting={setAssistantWaiting} />}
   </div>
 }
 

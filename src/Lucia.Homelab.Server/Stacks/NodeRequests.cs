@@ -5,18 +5,22 @@ using Lucia.Homelab.Server.Onboarding;
 
 namespace Lucia.Homelab.Server.Stacks;
 
-public sealed record NodeRequest(Guid RequestId, string Kind, string Container, int Tail);
-public sealed record NodeRequestResult(Guid RequestId, bool Success, string? Output, string? Message);
+/// <param name="Command">For <c>exec</c>: the script the node runs as root. <paramref name="Job"/> names the exec a status or stop is for.</param>
+public sealed record NodeRequest(Guid RequestId, string Kind, string Container, int Tail, string? Command = null, string? Interpreter = null,
+    int? Timeout = null, Guid? Job = null);
+/// <param name="ExitCode">An exec's exit code once it has finished; null while <paramref name="Running"/> or when it was stopped.</param>
+public sealed record NodeRequestResult(Guid RequestId, bool Success, string? Output, string? Message, int? ExitCode = null, bool Running = false);
 
 /// <summary>
 /// Requests for a node, delivered over the node's long-poll so answers come back in about a second. The agent accepts
-/// only the kinds it knows with validated arguments: container logs, and the owner's machine actions (check or install
-/// Debian updates, restart, update the agent). Nothing here carries a command.
+/// only the kinds it knows with validated arguments: container logs, the owner's machine actions (check or install
+/// Debian updates, restart, update the agent), and commands the owner approved in the assistant (<see cref="Exec"/>).
 /// </summary>
 public sealed partial class NodeRequests
 {
-    public const int MaxTail = 5000, MaxOutputChars = 128 * 1024;
+    public const int MaxTail = 5000, MaxOutputChars = 128 * 1024, MaxCommandChars = 16 * 1024, MaxCommandSeconds = 1800;
     public static readonly string[] Actions = ["check-updates", "install-updates", "restart", "update-agent"];
+    public static readonly string[] Interpreters = ["bash", "sh", "python3"];
     private static readonly TimeSpan AnswerTimeout = TimeSpan.FromSeconds(20), PollHold = TimeSpan.FromSeconds(25);
     private readonly ConcurrentDictionary<Guid, Channel<NodeRequest>> _queues = new();
     private readonly ConcurrentDictionary<Guid, (Guid Node, TaskCompletionSource<NodeRequestResult> Answer)> _pending = new();
@@ -36,6 +40,25 @@ public sealed partial class NodeRequests
         return result.Success ? new { message = result.Message }
             : throw new HardwareOnboardingException(409, "action_refused", result.Message ?? "The server refused that action.");
     }
+
+    /// <summary>
+    /// Runs a command as root on the node, in its own systemd unit with a hard time limit. The node answers within about ten
+    /// seconds, finished or still <see cref="NodeRequestResult.Running"/>; <see cref="Follow"/> waits for more under the same job.
+    /// </summary>
+    public Task<NodeRequestResult> Exec(Guid node, Guid job, string command, string interpreter, int seconds, CancellationToken ct)
+    {
+        if (command.Length is < 1 or > MaxCommandChars || command.Contains('\0'))
+            throw new HardwareOnboardingException(400, "invalid_command", $"Commands are 1–{MaxCommandChars} characters.");
+        if (!Interpreters.Contains(interpreter))
+            throw new HardwareOnboardingException(400, "invalid_interpreter", "Run commands with bash, sh or python3.");
+        if (seconds is < 1 or > MaxCommandSeconds)
+            throw new HardwareOnboardingException(400, "invalid_timeout", $"Give a command 1–{MaxCommandSeconds} seconds.");
+        return Ask(node, new(job, "exec", "", 0, command, interpreter, seconds), ct);
+    }
+
+    /// <summary>Waits about ten seconds more for an exec and returns its output so far, or stops it.</summary>
+    public Task<NodeRequestResult> Follow(Guid node, Guid job, bool stop, CancellationToken ct) =>
+        Ask(node, new(Guid.NewGuid(), stop ? "exec-stop" : "exec-status", "", 0, Job: job), ct);
 
     private async Task<NodeRequestResult> Ask(Guid node, NodeRequest request, CancellationToken ct)
     {

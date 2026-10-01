@@ -27,6 +27,7 @@ export type Route =
   | { page: 'storage-settings' }
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
+  | { page: 'assistant-settings' }
   | { page: 'people-settings'; view: 'people' | 'groups' | 'apps' }
   | { page: 'apps'; view: 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups' | 'spark'; name?: string; node?: string }
   | { page: 'ai' }
@@ -43,6 +44,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'storage') return { page: 'storage-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'domains') return { page: 'domain-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'ssh-keys') return { page: 'ssh-key-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'assistant') return { page: 'assistant-settings' }
   if (parts[0] === 'settings' && parts[1] === 'people' && parts.length <= 3) {
     if (parts.length === 2) return { page: 'people-settings', view: 'people' }
     if (parts[2] === 'groups' || parts[2] === 'apps') return { page: 'people-settings', view: parts[2] }

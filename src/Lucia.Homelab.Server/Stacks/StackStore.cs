@@ -107,6 +107,14 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             zone = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Domain, publicAccess = publicZone is not null, publicUrls };
     }
 
+    /// <summary>A stack as stored, with its environment in plain text, for the assistant to edit. Null when there's no such stack.</summary>
+    internal async Task<(StoredStack Stack, string Env)?> Definition(string name, CancellationToken ct) =>
+        (await Read(ct)).FirstOrDefault(stack => stack.Name == name) is { } stack ? (stack, _protector.Unprotect(stack.ProtectedEnv)) : null;
+
+    /// <summary>Every stack's environment entries, so the assistant can scrub their secret values from what it reads.</summary>
+    internal async Task<KeyValuePair<string, string>[]> Secrets(CancellationToken ct) =>
+        [.. (await Read(ct)).SelectMany(stack => StackCatalog.ReadEnv(_protector.Unprotect(stack.ProtectedEnv)))];
+
     /// <summary>Saves a server's GPU choices. Changing the CUDA line is refused while an app on (or moving to) the server requires the old one.</summary>
     public async Task<NodeGpuSettings> SaveNodeGpu(Guid id, SaveNodeGpuRequest request, CancellationToken ct)
     {

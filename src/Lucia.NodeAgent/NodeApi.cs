@@ -103,9 +103,10 @@ public sealed partial class DiscoveryClient
         Deserialize<DesiredStacks>(await BoundAsync(node, certificate, "stacks", $"/api/nodes/{node:D}/stacks", report, key,
             TimeSpan.FromSeconds(30), 4 * 1024 * 1024, token));
 
+    // Exec requests carry scripts of up to 16K characters, which JSON escaping can grow several times over.
     internal async Task<NodeRequest[]> RequestsAsync(Guid node, string certificate, ECDsa key, CancellationToken token) =>
         Deserialize<PendingRequests>(await BoundAsync(node, certificate, "requests", $"/api/nodes/{node:D}/requests", new { }, key,
-            TimeSpan.FromSeconds(40), ResponseLimit, token)).Requests ?? [];
+            TimeSpan.FromSeconds(40), 1024 * 1024, token)).Requests ?? [];
 
     internal async Task AnswerAsync(Guid node, string certificate, NodeRequestResult result, ECDsa key, CancellationToken token) =>
         await BoundAsync(node, certificate, "request-result", $"/api/nodes/{node:D}/requests/{result.RequestId:D}", result, key,

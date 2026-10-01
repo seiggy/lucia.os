@@ -837,6 +837,9 @@ Send `Authorization: Bearer <token>`. Owner credentials are required for
 | `DELETE /api/host/models/{id}` | Delete an unloaded, inactive model |
 | `POST /api/assistant/chat` | Send an assistant message; streams AI SDK UI message chunks |
 | `GET /api/assistant/sessions` | The owner's saved assistant chats |
+| `POST /api/assistant/sessions/{id}/approvals/{approvalId}` | Approve or decline a waiting tool call; body `{"approved":true}`, optional `reason` and `always` (allow for this chat) |
+| `POST /api/assistant/sessions/{id}/answers/{toolCallId}` | Answer the assistant's question or type the secret it asked for: `{"answer":…}`, `{"secret":…}` or `{"declined":true}` |
+| `GET\|PUT /api/assistant/settings` | Change tools that run without asking, and sites the assistant may read without asking (host names, not addresses or URLs; at most 50). A refused site returns 400 `invalid_sites` with a message naming it |
 | `GET /v1/models` | List loaded chat and embedding models |
 | `POST /v1/chat/completions` | TensorSharp chat, including streaming |
 | `POST /v1/responses` | TensorSharp Responses, including streaming |
@@ -864,9 +867,9 @@ Queued cancellations take effect immediately. If a model-state write fails
 cleanup operations available rather than stopping the host.
 
 The assistant runs Microsoft Agent Framework over the GitHub Copilot runtime,
-which the server starts as a child process with no built-in tools, files, shell,
-or ambient configuration. This first slice only answers questions; it cannot
-inspect or change the lab. Each owner signs in to GitHub from the chat bar
+which the server starts as a child process with none of its built-in tools,
+files, shell, or ambient configuration; the model gets only Lucia's tools,
+described below. Each owner signs in to GitHub from the chat bar
 through GitHub's device flow: it shows a one-time code to enter at
 github.com/login/device and continues once GitHub approves it. The flow uses
 Lucia's GitHub App (`Assistant__GitHubClientId` overrides the client ID) and
@@ -898,6 +901,39 @@ connects over loopback. Each node's Local AI app adds its chat models, labeled
 with the node. A source without models says why in the picker, for example not
 installed, no model loaded, or not answering.
 
+Lucia's tools let the assistant read the lab: servers and their agents,
+containers and logs, apps and their settings, the catalog, storage and backups,
+DNS (including AdGuard rewrites), UniFi clients, and public web pages. It can
+also save a custom app, install a catalog app, start, stop, restart, move or
+upgrade an app, run a backup, and check servers for updates; and it can delete an
+app, restore a backup, publish an app on the internet or take it off, install a
+server's updates, restart it, update its agent, or run a command on it. Every
+call passes Lucia's policy, evaluated by the Agent Governance Toolkit: reads
+run on their own; changes wait for the owner's approval in the chat unless the
+owner lets that tool run automatically under **Settings → Assistant** or chooses
+to allow it for the chat; the destructive tools in the second list always ask,
+and their approval says what will happen, such as a restart taking the server's
+apps offline; reading a site that isn't on the owner's allowed list asks; and Plan mode
+refuses anything that changes the lab. An approval that waits 30 minutes is
+declined, a turn makes at most 50 tool calls, results are capped at 48 KB with
+secrets masked, and every decision is logged and counted on the
+`AgentGovernance` meter. "Allow for this chat" lasts until the chat is deleted
+or the host restarts.
+The assistant can ask the owner a question, or ask them to type a password or
+token for a custom app, which Lucia saves in the app's environment without the
+model seeing it. Settings are kept per owner in `users/<owner>/settings.json`
+under `Assistant__Directory`.
+
+Commands run as root through the node's Lucia agent (`bash`, `sh` or `python3`,
+up to 16 KB), each in its own `lucia-exec-<job>` systemd unit with a time limit
+of up to 30 minutes and empty stdin; the assistant sees the exit code and the
+last 32 KB of output, and a node runs at most four at once. Lucia sends commands
+only to agents that announce them in their heartbeat, so update a node's agent
+first. A command outlives an agent restart, but its exit code is lost.
+`read_web_page` reaches public addresses only, never the lab or other private
+networks, and doesn't follow a redirect to another site; it runs no
+JavaScript and reads up to 2 MB, 20,000 characters at a time.
+
 OpenAI compatibility comes from TensorSharp's protocol adapters, not a claim
 of complete OpenAI API parity. This host exposes text chat and embeddings only,
 not TensorSharp's web UI, code execution, skills, media upload, or video APIs.
@@ -919,6 +955,7 @@ They use a tiny synthetic GGUF and a fake CLI; they do not substitute for
 selected-model GPU inference and tool-quality qualification on the Spark.
 The assistant checks cover stream mapping, turn replay, request validation,
 retries, per-owner chat storage, GitHub sign-in (device flow, token renewal
-and sign-out) against a scripted GitHub, and LiteLLM and Local AI model routing
-against scripted apps, without starting the Copilot runtime or
+and sign-out) against a scripted GitHub, LiteLLM and Local AI model routing
+against scripted apps, and the tool policy, approvals, questions, secrets,
+settings, secret masking and web reader, without starting the Copilot runtime or
 using a real GitHub token.

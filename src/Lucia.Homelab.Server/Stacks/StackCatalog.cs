@@ -101,7 +101,7 @@ public static class StackCatalog
                 "gpus" => value.Length is > 0 and <= 1024,
                 "choice" => field.Options!.Any(option => option.Value == value),
                 // It's written to the app's .env unquoted.
-                "secret" => value.Length <= 128 && value.All(c => char.IsAsciiLetterOrDigit(c) || "._~+/=-".Contains(c)),
+                "secret" => value.Length <= 128 && Unquoted(value),
                 _ => value.Length is > 0 and <= 128 && !value.Any(char.IsControl),
             };
             if (!valid)
@@ -125,6 +125,9 @@ public static class StackCatalog
             if (line.IndexOf('=') is > 0 and var split && !line.StartsWith('#')) values[line[..split].Trim()] = line[(split + 1)..].Trim();
         return values;
     }
+
+    /// <summary>Whether a value reads the same unquoted in a .env file: compose would expand $, cut at #, and strip quotes.</summary>
+    internal static bool Unquoted(string value) => value.All(c => char.IsAsciiLetterOrDigit(c) || "._~+/=-".Contains(c));
 
     internal static string Secret(IReadOnlyDictionary<string, string> env, string key) =>
         env.TryGetValue(key, out var value) && value.Length >= 32 ? value

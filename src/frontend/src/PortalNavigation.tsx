@@ -10,7 +10,7 @@ import './PortalNavigation.css'
 
 const areaIcons: Record<AreaId, IconName> = { overview: 'home', lab: 'devices', ai: 'spark', settings: 'settings' }
 
-export function PortalNavigation({ route, session, assistant }: { route: Route; session: AuthenticationSession; assistant?: { open: boolean; toggle: () => void } }) {
+export function PortalNavigation({ route, session, assistant }: { route: Route; session: AuthenticationSession; assistant?: { open: boolean; toggle: () => void; waiting: number } }) {
   const [panel, setPanel] = useState<'areas' | 'search' | 'account' | null>(null)
   const [query, setQuery] = useState('')
   const dialog = useRef<HTMLDialogElement>(null)
@@ -74,8 +74,10 @@ export function PortalNavigation({ route, session, assistant }: { route: Route; 
       </button>
       <div className="portal-header-tools">
         {assistant && <button className="portal-search-button portal-assistant-button" type="button" data-assistant-toggle onClick={assistant.toggle}
-          aria-expanded={assistant.open} aria-controls="assistant-dock" aria-keyshortcuts="Control+J Meta+J" aria-label="Assistant">
-          <Icon name="chat" /><span>Assistant</span><kbd>⌘ / Ctrl J</kbd>
+          aria-expanded={assistant.open} aria-controls="assistant-dock" aria-keyshortcuts="Control+J Meta+J"
+          aria-label={assistant.waiting && !assistant.open ? `Assistant, ${assistant.waiting} waiting for you` : 'Assistant'}>
+          <Icon name="chat" /><span>Assistant</span>
+          {assistant.waiting > 0 && !assistant.open && <span className="portal-assistant-waiting">{assistant.waiting}</span>}<kbd>⌘ / Ctrl J</kbd>
         </button>}
         <button className="portal-search-button" onClick={() => open('search')} aria-haspopup="dialog" aria-label="Find a tool">
           <Icon name="search" /><span>Find a tool</span><kbd>⌘ / Ctrl K</kbd>

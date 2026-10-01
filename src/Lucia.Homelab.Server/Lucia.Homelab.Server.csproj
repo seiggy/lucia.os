@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Aspire.StackExchange.Redis.OutputCaching" Version="13.5.4" />
     <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.15" />
+    <PackageReference Include="Microsoft.AgentGovernance" Version="5.0.0" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.23.0" />
     <PackageReference Include="Microsoft.Agents.AI.GitHub.Copilot" Version="1.23.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />

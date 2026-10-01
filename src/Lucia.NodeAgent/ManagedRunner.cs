@@ -242,6 +242,7 @@ internal static class ManagedRunner
         var (gpuPercent, gpuTemperature) = NodeUsage.Gpu;
         return new(plan.DeviceId, plan.Hostname, version, FirstNumber("uptime"), FirstNumber("loadavg"),
             memoryTotal, memoryAvailable, total, available, NodeRuntime.Current, NodeUpdates.Current, AgentRelease.Current,
-            NodeUsage.Cpu(Optional(Path.Combine(proc, "stat"))), NodeUsage.CpuTemperature(sysClass), gpuPercent, gpuTemperature);
+            NodeUsage.Cpu(Optional(Path.Combine(proc, "stat"))), NodeUsage.CpuTemperature(sysClass), gpuPercent, gpuTemperature,
+            NodeExec.Features);
     }
 }
