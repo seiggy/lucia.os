@@ -35,8 +35,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             throw new AssistantException(400, "invalid_request", "The request body is invalid.");
         if (string.IsNullOrWhiteSpace(request.Text) || request.Text.Length > 32_768)
             throw new AssistantException(400, "invalid_message", "Messages must be between 1 and 32,768 characters.");
-        if (runtime.GitHubToken is null)
-            throw new AssistantException(503, "assistant_not_connected", "Connect GitHub to use the assistant.");
+        if (!await runtime.ConnectedAsync(owner, ct)) throw GitHubSignIn.NotConnected();
         var key = Key(owner, id);
         var folder = Path.Combine(Root, "users", owner, id);
         await _gate.WaitAsync(ct);
@@ -60,7 +59,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             _runs[key] = run;
             var route = request.Route is { } page && RoutePattern().IsMatch(page) ? page : "unknown";
             var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}\n</lucia-context>\n\n{request.Text}";
-            run.Completion = Task.Run(() => ExecuteAsync(key, folder, run, new(key, prompt, request.Model), transcript, info));
+            run.Completion = Task.Run(() => ExecuteAsync(key, folder, run, new(owner, key, prompt, request.Model), transcript, info));
             return run;
         }
         finally { _gate.Release(); }
@@ -128,13 +127,14 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         catch (OperationCanceledException) when (run.Stop.IsCancellationRequested)
         {
             run.Publish(stream.Abort());
-            if (!lifetime.ApplicationStopping.IsCancellationRequested) await runtime.AbortAsync(key, turn.Model);
+            if (!lifetime.ApplicationStopping.IsCancellationRequested) await runtime.AbortAsync(turn.Owner, key, turn.Model);
         }
         catch (Exception e)
         {
             logger.LogWarning("An assistant turn failed ({ErrorType}).", e.GetType().Name);
             logger.LogDebug(e, "Assistant turn failure.");
-            run.Publish(stream.Fail((e as AssistantException)?.Message));
+            var explained = e as AssistantException ?? await runtime.ExplainAsync(turn.Owner, e);
+            run.Publish(stream.Fail(explained?.Message));
         }
         try
         {

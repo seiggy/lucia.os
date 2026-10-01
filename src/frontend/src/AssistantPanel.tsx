@@ -3,7 +3,7 @@ import type { ReactNode, RefObject } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import type { UIMessage } from 'ai'
-import { Loader2Icon } from 'lucide-react'
+import { ExternalLinkIcon, Loader2Icon } from 'lucide-react'
 import { Conversation, ConversationContent, ConversationScrollButton } from './components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from './components/ai-elements/message'
 import {
@@ -13,8 +13,8 @@ import {
 } from './components/ai-elements/prompt-input'
 import type { PromptInputMessage } from './components/ai-elements/prompt-input'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './components/ai-elements/reasoning'
-import { chatTitle, chooseModel, isChatId, maxMessageLength, messageText, newChatId, pageRoute, parseModels, parseSessions, parseTranscript, settledText } from './assistant'
-import type { AssistantMetadata, AssistantMode, AssistantModels, ChatSummary, DockLayout, DockSide } from './assistant'
+import { chatTitle, chooseModel, isChatId, maxMessageLength, messageText, newChatId, pageRoute, parseGitHub, parseModels, parseSessions, parseTranscript, settledText } from './assistant'
+import type { AssistantMetadata, AssistantMode, AssistantModels, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import { ownerRequest, responseError } from './managementApi'
@@ -85,12 +85,180 @@ function ChatBubble({ message, streaming, onRetry }: { message: ChatMessage; str
   </Message>
 }
 
+type GitHub = {
+  status: GitHubStatus | null
+  notice: string | null
+  setNotice: (notice: string | null) => void
+  check: () => Promise<void>
+  start: () => Promise<GitHubStatus>
+  cancel: () => Promise<void>
+  disconnect: () => Promise<void>
+}
+
+// The host owns the sign-in. This mirrors it, polling only while a code waits to be entered on GitHub.
+function useGitHub(auth: AuthRef): GitHub {
+  const [status, setStatus] = useState<GitHubStatus | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  // Only the newest request may set the status, so a slow poll can't undo a cancel or a new code.
+  const latest = useRef(0)
+  const call = useCallback(async (method: 'GET' | 'POST' | 'DELETE', path: string) => {
+    const id = ++latest.current
+    return { id, response: await ownerRequest(auth.current.session, auth.current.refreshSession, `/api/assistant/github${path}`, method) }
+  }, [auth])
+  const check = useCallback(async () => {
+    try {
+      const { id, response } = await call('GET', '')
+      const value = parseGitHub(await response.json())
+      if (id === latest.current) setStatus(value)
+    } catch (failure) {
+      console.warn('Lucia could not check the GitHub sign-in.', failure)
+    }
+  }, [call])
+  const start = useCallback(async () => {
+    const { id, response } = await call('POST', '/device')
+    const value = parseGitHub(await response.json())
+    if (id === latest.current) setStatus(value)
+    setNotice(null)
+    return value
+  }, [call])
+  const cancel = useCallback(async () => {
+    await call('DELETE', '/device')
+    await check()
+  }, [call, check])
+  const disconnect = useCallback(async () => {
+    const { id } = await call('DELETE', '')
+    if (id === latest.current) setStatus({ state: 'disconnected' })
+    setNotice(null)
+    void check()
+  }, [call, check])
+
+  const state = status?.state
+  useEffect(() => { void check() }, [check])
+  useEffect(() => {
+    if (state && state !== 'pending') return
+    const poll = () => { if (document.visibilityState === 'visible') void check() }
+    const timer = state === 'pending' ? window.setInterval(poll, 2000) : undefined
+    window.addEventListener('focus', poll)
+    document.addEventListener('visibilitychange', poll)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', poll)
+      document.removeEventListener('visibilitychange', poll)
+    }
+  }, [state, check])
+  return { status, notice, setNotice, check, start, cancel, disconnect }
+}
+
+const gateCopy: Record<Exclude<GitHubState, 'pending'>, [message: string, action: string]> = {
+  connected: ['', 'Sign in again'],
+  disconnected: ['Sign in with GitHub to start asking. The assistant runs on your GitHub Copilot plan.', 'Sign in with GitHub'],
+  expired: ['The code expired before it was entered on GitHub.', 'Get a new code'],
+  denied: ['Access was declined on GitHub.', 'Try again'],
+  error: ['Lucia could not finish the sign-in.', 'Try again'],
+}
+const shownPage = (uri: string) => uri.replace(/^https:\/\//, '').replace(/\/$/, '')
+
+function GitHubGate({ github, onFocusInput }: { github: GitHub; onFocusInput: () => void }) {
+  const { status, notice } = github
+  const box = useRef<HTMLDivElement>(null)
+  const [working, setWorking] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [copied, setCopied] = useState<'copied' | 'blocked' | null>(null)
+  const [announcement, setAnnouncement] = useState('')
+  const seen = useRef(status?.state)
+  const refocus = useRef(false)
+  const copyTimer = useRef<number>(undefined)
+
+  // Finishing on GitHub removes the code card, so say what happened and keep focus out of the page body.
+  useEffect(() => {
+    const before = seen.current
+    seen.current = status?.state
+    if (!status || before === status.state) return
+    const asked = refocus.current
+    refocus.current = false
+    if (before === 'pending' && !asked) {
+      if (status.state === 'connected') setAnnouncement(status.login ? `Signed in to GitHub as @${status.login}.` : 'Signed in to GitHub.')
+      else if (status.message) setAnnouncement(status.message)
+    }
+    const lost = !document.activeElement || document.activeElement === document.body
+    if (!asked && !(before === 'pending' && lost)) return
+    const target = box.current?.querySelector<HTMLElement>('[data-autofocus]') ?? box.current?.querySelector<HTMLElement>('button')
+    if (target) target.focus()
+    else onFocusInput()
+  }, [status, onFocusInput])
+
+  async function act(action: () => Promise<unknown>, fallback: string) {
+    if (working) return
+    setWorking(true)
+    setFailure(null)
+    refocus.current = true
+    try {
+      await action()
+    } catch (error) {
+      refocus.current = false
+      setFailure(failureMessage(error, fallback))
+    } finally {
+      setWorking(false)
+    }
+  }
+  const begin = () => act(async () => {
+    setCopied(null)
+    const value = await github.start()
+    if (value.userCode && value.verificationUri) setAnnouncement(`Enter the code ${value.userCode} at ${shownPage(value.verificationUri)}.`)
+  }, 'Lucia could not start a GitHub sign-in.')
+  const cancel = () => act(github.cancel, 'Lucia could not cancel this sign-in.')
+  function copy() {
+    const code = status?.userCode
+    if (!code) return
+    window.clearTimeout(copyTimer.current)
+    // Write before the link's new tab takes focus; a missing clipboard (plain HTTP) counts as blocked.
+    let writing: Promise<void>
+    try { writing = navigator.clipboard.writeText(code) } catch (error) { writing = Promise.reject(error) }
+    writing.then(() => {
+      setCopied('copied')
+      setAnnouncement('Code copied.')
+      copyTimer.current = window.setTimeout(() => setCopied(null), 2000)
+    }, () => setCopied('blocked'))
+  }
+
+  let content: ReactNode = null
+  if (status?.state === 'pending' && status.userCode && status.verificationUri)
+    content = <div className="assistant-signin" role="group" aria-labelledby="assistant-signin-title">
+      <p id="assistant-signin-title">Enter this code at <strong>{shownPage(status.verificationUri)}</strong></p>
+      <p className="assistant-code"><code>{status.userCode}</code>
+        <button type="button" className="assistant-icon-button" aria-label="Copy code" title="Copy code" onClick={copy}>
+          <Icon name={copied === 'copied' ? 'check' : 'copy'} /></button></p>
+      {copied === 'blocked' && <p className="assistant-copy-blocked">Your browser blocked copying, so copy the code yourself.</p>}
+      <div className="assistant-signin-actions">
+        <a className="button secondary" href={status.verificationUri} target="_blank" rel="noreferrer" data-autofocus onClick={copy}>
+          <ExternalLinkIcon aria-hidden="true" />Copy code and open GitHub</a>
+        <button type="button" className="text-link" aria-disabled={working} onClick={() => void cancel()}>Cancel</button>
+      </div>
+      <p className="assistant-working"><Loader2Icon className="animate-spin" />Waiting for GitHub…</p>
+    </div>
+  else if (status && status.state !== 'pending' && (status.state !== 'connected' || notice)) {
+    const [message, action] = gateCopy[status.state]
+    content = <div className="assistant-connect" data-tone={status.state === 'error' ? 'failed' : undefined}>
+      <Icon name="attention" />
+      <div><p>{notice ?? status.message ?? message}</p>
+        <button type="button" className="button secondary" aria-disabled={working} onClick={() => void begin()}>
+          {working ? <><Loader2Icon className="animate-spin" />Getting a code…</> : action}</button></div>
+    </div>
+  }
+  return <div ref={box} className="assistant-gate">
+    {content}
+    {failure && <Alert>{failure}</Alert>}
+    <p className="visually-hidden" role="status">{announcement}</p>
+  </div>
+}
+
 type ChatViewProps = {
   id: string
   fresh: boolean
   hidden: boolean
   auth: AuthRef
   page: string
+  github: GitHub
   models: AssistantModels | null
   model?: string
   onModel: (model: string) => void
@@ -100,9 +268,10 @@ type ChatViewProps = {
   onStarted: (text: string) => void
   onTitle: (title: string) => void
   onReload: () => void
+  onFailed: () => void
 }
 
-function ChatView({ id, fresh, hidden, auth, page, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload }: ChatViewProps) {
+function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed }: ChatViewProps) {
   const draft = usePromptInputController()
   const input = useRef<HTMLTextAreaElement>(null)
   const [phase, setPhase] = useState<'loading' | 'resuming' | 'ready'>(fresh ? 'ready' : 'loading')
@@ -162,9 +331,14 @@ function ChatView({ id, fresh, hidden, auth, page, models, model, onModel, mode,
   useEffect(() => {
     if (focusKey > 0) input.current?.focus()
   }, [focusKey])
+  // Copilot refusals arrive mid-answer without a code, so any failure re-checks the sign-in and the models.
+  useEffect(() => {
+    if (status === 'error') onFailed()
+  }, [status, onFailed])
+  const focusInput = useCallback(() => input.current?.focus(), [])
 
   const busy = status === 'submitted' || status === 'streaming' || phase === 'resuming'
-  const connected = models?.connected !== false
+  const connected = !github.status || (github.status.state === 'connected' && !github.notice)
   const ready = phase === 'ready' && !loadError
   const canAsk = ready && connected && !busy
   const last = messages.at(-1)
@@ -230,8 +404,7 @@ function ChatView({ id, fresh, hidden, auth, page, models, model, onModel, mode,
       <ConversationScrollButton aria-label="Scroll to the latest message" />
     </Conversation>
     <div className="assistant-composer">
-      {!connected && <p className="assistant-connect"><Icon name="attention" /><span>GitHub isn’t connected, so the assistant can’t answer.
-        Until you can sign in here, set <code>Assistant__GitHubToken</code> on the host to a token with Copilot access.</span></p>}
+      <GitHubGate github={github} onFocusInput={focusInput} />
       <PromptInput onSubmit={submit}>
         <PromptInputBody>
           <PromptInputTextarea ref={input} aria-label="Message the assistant" placeholder="Ask about this page or your lab…" maxLength={maxMessageLength}
@@ -323,6 +496,46 @@ function ChatHistory({ auth, current, focusKey, onOpen, onForget }: HistoryProps
   </section>
 }
 
+// Signing out here only drops the host's token; revoking needs the App's client secret, so GitHub keeps its record.
+function GitHubAccount({ github }: { github: GitHub }) {
+  const [confirming, setConfirming] = useState(false)
+  const [working, setWorking] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const result = useRef<HTMLParagraphElement>(null)
+  useEffect(() => { if (done) result.current?.focus() }, [done])
+  const { status } = github
+  if (done) return <div className="assistant-account">
+    <p ref={result} tabIndex={-1}><Icon name="user" /><span>Signed out of GitHub on this host.</span></p></div>
+  if (status?.state !== 'connected') return null
+
+  async function signOut() {
+    if (working) return
+    setWorking(true)
+    setFailure(null)
+    try {
+      await github.disconnect()
+      setDone(true)
+    } catch (error) {
+      setFailure(failureMessage(error, 'Lucia could not sign out of GitHub.'))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return <div className="assistant-account">
+    <p><Icon name="user" /><span>Signed in to GitHub{status.login && <> as <strong>@{status.login}</strong></>}</span></p>
+    <button type="button" className="text-link" aria-expanded={confirming} onClick={() => { setConfirming(value => !value); setFailure(null) }}>Disconnect</button>
+    {confirming && <div className="assistant-confirm">
+      <p className={failure ? 'assistant-failed' : undefined} aria-live="polite">{failure ?? <>Lucia will forget your GitHub sign-in on this host.
+        GitHub keeps listing Lucia under <a href="https://github.com/settings/apps/authorizations" target="_blank" rel="noreferrer">Authorized GitHub Apps</a> until
+        you revoke it there.</>}</p>
+      <button type="button" className="button secondary assistant-danger" aria-disabled={working} onClick={() => void signOut()}>Disconnect GitHub</button>
+      <button type="button" className="text-link" onClick={() => setConfirming(false)}>Cancel</button>
+    </div>}
+  </div>
+}
+
 type PanelProps = {
   session: AuthenticationSession
   refreshSession: () => Promise<void>
@@ -349,8 +562,14 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
   const [model, setModel] = useState<string>()
   const [mode, setMode] = useState<AssistantMode>('execute')
   const [focusCount, setFocusCount] = useState(0)
+  const [modelsRound, setModelsRound] = useState(0)
+  const github = useGitHub(auth)
+  const { check: checkGitHub, setNotice } = github
+  const linked = github.status ? github.status.state === 'connected' : null
 
+  // Models come from Copilot, so they wait for a sign-in; a refusal then explains itself above the composer.
   useEffect(() => {
+    if (!linked) return
     const controller = new AbortController()
     ownerRequest(auth.current.session, auth.current.refreshSession, '/api/assistant/models', 'GET', undefined, controller.signal)
       .then(response => response.json())
@@ -359,10 +578,22 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
         const available = parseModels(value)
         setModels(available)
         setModel(chooseModel(available, readStored(modelKey)))
+        setNotice(null)
+        if (!available.connected) void checkGitHub()
       })
-      .catch(failure => { if (!controller.signal.aborted) console.warn('Lucia could not list assistant models.', failure) })
+      .catch(failure => {
+        if (controller.signal.aborted) return
+        const code = failureCode(failure)
+        if (code === 'copilot_unavailable' || code === 'github_signed_out') setNotice(failureMessage(failure, 'Sign in with GitHub again.'))
+        if (code === 'github_signed_out' || code === 'assistant_not_connected') void checkGitHub()
+        else if (code !== 'copilot_unavailable') console.warn('Lucia could not list assistant models.', failure)
+      })
     return () => controller.abort()
-  }, [])
+  }, [linked, modelsRound, checkGitHub, setNotice])
+  const failed = useCallback(() => {
+    void checkGitHub()
+    setModelsRound(round => round + 1)
+  }, [checkGitHub])
 
   function startChat() {
     setChat(current => ({ id: newChatId(), fresh: true, nonce: current.nonce + 1 }))
@@ -410,10 +641,11 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
         </div>
       </header>
       <ChatView key={`${chat.id}:${chat.nonce}`} id={chat.id} fresh={chat.fresh} hidden={view === 'history'} auth={auth} page={page}
-        models={models} model={model} onModel={chooseModelId} mode={mode} onMode={setMode} focusKey={focusToken + focusCount}
-        onStarted={started} onTitle={setTitle} onReload={reload} />
+        github={github} models={linked && !github.notice ? models : null} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
+        focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} />
       {view === 'history' && <ChatHistory auth={auth} current={chat.id} focusKey={focusToken} onOpen={openChat}
         onForget={id => { if (id === chat.id) startChat() }} />}
+      {view === 'history' && <GitHubAccount github={github} />}
     </div>
   </PromptInputProvider>
 }

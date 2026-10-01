@@ -30,10 +30,13 @@ A stack that keeps restarting usually has **one service** exiting. Open **Stacks
 
 let mode = 'ready'
 let sessions = new Map()
+let github = {}
 const runs = new Map()
+const signedIn = { state: 'connected', login: 'octocat' }
 
 export function resetAssistantFixture(value) {
   mode = value
+  github = value === 'disconnected' ? { state: 'disconnected' } : signedIn
   runs.clear()
   sessions = new Map([[seedId, {
     id: seedId, title: 'Why does my media stack keep restarting?', updated: '2026-09-24T18:30:00Z', model: 'gpt-5-mini',
@@ -114,8 +117,29 @@ export async function assistantFixture(request, response, path, sessionMode, jso
   if (sessionMode !== 'owner') return fail(403, 'forbidden', 'Synthetic Owner access is required.')
   if (request.method !== 'GET' && request.headers['x-csrf-token'] !== 'fixture-csrf-request')
     return fail(403, 'invalid_csrf_token', 'Synthetic CSRF check failed.')
-  if (path === '/api/assistant/models')
-    return json(mode === 'disconnected' ? { connected: false, defaultModel: null, models: [] } : { connected: true, defaultModel: 'gpt-5-mini', models }), true
+  // A device code stays pending until a check approves it with ?approve, standing in for the owner on github.com.
+  if (path === '/api/assistant/github' && request.method === 'GET') {
+    if (github.state === 'pending' && new URL(request.url, 'http://127.0.0.1').searchParams.has('approve')) github = signedIn
+    const { state, login = null, userCode = null, verificationUri = null, interval = null, message = null } = github
+    return json({ state, login, userCode, verificationUri, interval, message }), true
+  }
+  if (path === '/api/assistant/github/device' && request.method === 'POST') {
+    github = { state: 'pending', userCode: 'WDJB-MJHT', verificationUri: 'https://github.com/login/device', interval: 5, before: github }
+    return json({ state: 'pending', login: null, userCode: github.userCode, verificationUri: github.verificationUri, interval: 5, message: null }), true
+  }
+  if (path === '/api/assistant/github/device' && request.method === 'DELETE') {
+    if (github.state === 'pending') github = github.before.state === 'connected' ? github.before : { state: 'disconnected' }
+    return empty()
+  }
+  if (path === '/api/assistant/github' && request.method === 'DELETE') {
+    github = { state: 'disconnected' }
+    return empty()
+  }
+  if (path === '/api/assistant/models') {
+    if (github.state !== 'connected') return json({ connected: false, defaultModel: null, models: [] }), true
+    if (mode === 'refused') return fail(503, 'copilot_unavailable', 'Copilot did not accept @octocat. Check that the account has GitHub Copilot, then sign in again.')
+    return json({ connected: true, defaultModel: 'gpt-5-mini', models }), true
+  }
   if (path === '/api/assistant/sessions')
     return json({ sessions: [...sessions.values()].sort((a, b) => b.updated.localeCompare(a.updated))
       .map(({ id, title, updated, model }) => ({ id, title, updated, model, running: running(id) })) }), true
@@ -129,7 +153,7 @@ export async function assistantFixture(request, response, path, sessionMode, jso
       return fail(400, 'invalid_request', 'The request body is invalid.')
     if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 32768)
       return fail(400, 'invalid_message', 'Messages must be between 1 and 32,768 characters.')
-    if (mode === 'disconnected') return fail(503, 'assistant_not_connected', 'Connect GitHub to use the assistant.')
+    if (github.state !== 'connected') return fail(503, 'assistant_not_connected', 'Sign in with GitHub to use the assistant.')
     if (mode === 'busy' || running(body.sessionId)) return fail(409, 'run_active', 'This chat is still answering. Stop it or wait for it to finish.')
     let session = sessions.get(body.sessionId)
     if (!session) sessions.set(body.sessionId, session = { id: body.sessionId, title: title(body.text), messages: [] })

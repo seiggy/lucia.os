@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chatTitle, chooseModel, isChatId, messageText, newChatId, pageRoute, parseDock, parseModels, parseSessions, parseTranscript, settledText }
+import { chatTitle, chooseModel, isChatId, messageText, newChatId, pageRoute, parseDock, parseGitHub, parseModels, parseSessions, parseTranscript, settledText }
   from '../.checks/assistant.js'
 
 const id = newChatId()
@@ -76,4 +76,17 @@ assert.deepEqual(parseDock({ open: true, side: 'left' }, true), { open: true, si
 assert.deepEqual(parseDock({ open: true, side: 'left' }, false), { open: false, side: 'left' })
 assert.deepEqual(parseDock('broken', true), { open: false, side: 'right' })
 assert.deepEqual(parseDock({ open: 'yes', side: 'top' }, true), { open: false, side: 'right' })
+
+const signIn = { state: 'pending', login: null, userCode: 'ABCD-1234', verificationUri: 'https://github.com/login/device', interval: 5, message: null }
+assert.deepEqual(parseGitHub(signIn), { state: 'pending', userCode: 'ABCD-1234', verificationUri: 'https://github.com/login/device' })
+for (const page of ['https://github.com.example.net/login/device', 'http://github.com/login/device', 'https://octo:cat@github.com/login/device',
+  'javascript:alert(1)', null])
+  assert.throws(() => parseGitHub({ ...signIn, verificationUri: page }), String(page))
+for (const code of ['<b>12</b>', 'ABC', 'ABCD 1234', null]) assert.throws(() => parseGitHub({ ...signIn, userCode: code }), String(code))
+for (const broken of [null, [], { state: 'signed-in' }, { state: 3 }]) assert.throws(() => parseGitHub(broken))
+assert.deepEqual(parseGitHub({ state: 'connected', login: 'octo-cat', message: null }), { state: 'connected', login: 'octo-cat' })
+assert.deepEqual(parseGitHub({ state: 'connected', login: '@octocat' }), { state: 'connected' })
+assert.deepEqual(parseGitHub({ state: 'expired', login: 'octocat', userCode: 'ABCD-1234', message: '  The code expired.  ' }),
+  { state: 'expired', message: 'The code expired.' })
+assert.equal(parseGitHub({ state: 'error', message: 'x'.repeat(500) }).message.length, 400)
 console.log('Assistant checks passed.')

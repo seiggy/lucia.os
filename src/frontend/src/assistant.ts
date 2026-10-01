@@ -13,6 +13,8 @@ export type Transcript = { title: string; messages: AssistantMessage[]; running:
 export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean }
 export type AssistantModel = { id: string; name: string }
 export type AssistantModels = { connected: boolean; defaultModel?: string; models: AssistantModel[] }
+export type GitHubState = 'connected' | 'pending' | 'disconnected' | 'expired' | 'denied' | 'error'
+export type GitHubStatus = { state: GitHubState; login?: string; userCode?: string; verificationUri?: string; message?: string }
 export type DockSide = 'left' | 'right'
 export type DockState = { open: boolean; side: DockSide }
 export type DockLayout = 'push' | 'overlay' | 'sheet'
@@ -21,6 +23,9 @@ export const maxMessageLength = 32768
 const chatIdPattern = /^[a-f0-9]{32}$/
 const modelPattern = /^[A-Za-z0-9._:/-]{1,100}$/
 const routePattern = /^\/[A-Za-z0-9/_.-]{0,200}$/
+const githubStates: readonly string[] = ['connected', 'pending', 'disconnected', 'expired', 'denied', 'error']
+const userCodePattern = /^[A-Za-z0-9-]{4,16}$/
+const loginPattern = /^[A-Za-z0-9-]{1,39}$/
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const unexpected = () => new Error('Lucia returned an unexpected assistant response.')
@@ -82,6 +87,23 @@ export function parseModels(value: unknown): AssistantModels {
   const models = value.models.flatMap(item => record(item) && isModelId(item.id)
     ? [{ id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : item.id }] : [])
   return { connected: value.connected, models, ...(isModelId(value.defaultModel) ? { defaultModel: value.defaultModel } : {}) }
+}
+
+// The sign-in page opens in a new tab, so only GitHub's own HTTPS pages are accepted.
+export function parseGitHub(value: unknown): GitHubStatus {
+  if (!record(value) || typeof value.state !== 'string' || !githubStates.includes(value.state)) throw unexpected()
+  const status: GitHubStatus = { state: value.state as GitHubState }
+  if (status.state === 'pending') {
+    let page: URL
+    try { page = new URL(String(value.verificationUri)) } catch { throw unexpected() }
+    if (typeof value.userCode !== 'string' || !userCodePattern.test(value.userCode) || page.origin !== 'https://github.com'
+      || page.username || page.password) throw unexpected()
+    status.userCode = value.userCode
+    status.verificationUri = page.href
+  }
+  if (status.state === 'connected' && typeof value.login === 'string' && loginPattern.test(value.login)) status.login = value.login
+  if (typeof value.message === 'string' && value.message.trim()) status.message = value.message.trim().slice(0, 400)
+  return status
 }
 
 function parseMetadata(value: unknown): AssistantMetadata | undefined {

@@ -299,15 +299,80 @@ async page => {
     await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message the assistant"]')?.value === 'Is my whoami app healthy?', null, { timeout: 5000 })
     check(await page.locator('.assistant-bubble').count() === 0, 'The refused message stayed in the transcript')
 
-    // Without GitHub the composer explains why nothing can be sent and how to connect for now.
+    // Without GitHub the composer explains why nothing can be sent and offers a device-code sign-in.
     await start('disconnected')
-    await wait(page.locator('.assistant-connect').filter({ hasText: 'Assistant__GitHubToken' }))
+    const signIn = button('Sign in with GitHub')
+    await wait(page.locator('.assistant-connect').filter({ hasText: 'Sign in with GitHub to start asking' }))
     const before = sent.length
     await input.fill('Hello')
     await input.press('Enter')
     check(await button('Send message').isDisabled() && await button(starter).isDisabled(), 'Sending stayed available without GitHub')
     check(await model.count() === 0 && sent.length === before, 'A message was sent or a model offered without GitHub')
     await shot('assistant-disconnected')
+
+    // Signing in shows the code beside a link to GitHub, and cancelling returns to the offer.
+    const card = page.getByRole('group', { name: 'Enter this code at github.com/login/device', exact: true })
+    const toGitHub = card.getByRole('link', { name: 'Copy code and open GitHub', exact: true })
+    const spoken = page.locator('.assistant-gate [role="status"]')
+    await signIn.click()
+    await wait(card)
+    await focused(toGitHub, 'Starting a sign-in did not focus the GitHub link')
+    check(await card.locator('code').innerText() === 'WDJB-MJHT' && await toGitHub.getAttribute('href') === 'https://github.com/login/device'
+      && await toGitHub.getAttribute('target') === '_blank' && /\bnoreferrer\b/.test(await toGitHub.getAttribute('rel')), 'The card did not offer the code and a safe GitHub link')
+    check(await spoken.innerText() === 'Enter the code WDJB-MJHT at github.com/login/device.', 'The code was not announced: ' + await spoken.innerText())
+    await card.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await wait(signIn)
+    await focused(signIn, 'Cancelling did not return focus to the sign-in button')
+    check(await card.count() === 0, 'Cancelling left the code card')
+    await signIn.click()
+    await wait(card)
+    await card.getByRole('button', { name: 'Copy code', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.assistant-gate [role="status"]')?.textContent === 'Code copied.'
+      || !!document.querySelector('.assistant-copy-blocked'), null, { timeout: 5000 })
+    const copied = await spoken.innerText() === 'Code copied.'
+    await page.waitForTimeout(300)
+    await shot('assistant-signin')
+    await page.setViewportSize({ width: 390, height: 844 })
+    await layout('sheet')
+    await wait(card)
+    await noOverflow('390 sign-in card')
+    await page.waitForTimeout(300)
+    await shot('assistant-signin-mobile')
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await layout('push')
+
+    // Approval on GitHub swaps the card for the composer, names the account, and unlocks models and starters.
+    await page.request.get(base + '/api/assistant/github?approve')
+    await card.waitFor({ state: 'detached', timeout: 5000 })
+    await wait(model)
+    check(!await button(starter).isDisabled(), 'Starters stayed disabled after signing in')
+    check(await spoken.innerText() === 'Signed in to GitHub as @octocat.', 'Finishing the sign-in was not announced')
+    await focused(input, 'Finishing the sign-in did not focus the composer')
+
+    // History names the account and signs out only after saying what GitHub keeps.
+    await button('Chat history').click()
+    const account = page.locator('.assistant-account')
+    await wait(account.filter({ hasText: 'Signed in to GitHub as @octocat' }))
+    const disconnect = account.getByRole('button', { name: 'Disconnect', exact: true })
+    await disconnect.click()
+    check(await disconnect.getAttribute('aria-expanded') === 'true', 'Disconnect did not report its confirmation')
+    check(await account.getByRole('link', { name: 'Authorized GitHub Apps', exact: true }).getAttribute('href') === 'https://github.com/settings/apps/authorizations',
+      'The confirmation did not link to GitHub’s app authorizations')
+    await shot('assistant-account')
+    await account.getByRole('button', { name: 'Disconnect GitHub', exact: true }).click()
+    await wait(account.filter({ hasText: 'Signed out of GitHub on this host.' }))
+    await focused(account.locator('p[tabindex="-1"]'), 'Signing out did not focus its result')
+    await button('Chat history').click()
+    await wait(signIn)
+    check(await model.count() === 0, 'Models stayed offered after signing out')
+
+    // When Copilot refuses the account, the composer says so and offers to sign in again.
+    await start('refused')
+    const refusal = page.locator('.assistant-connect').filter({ hasText: 'Copilot did not accept @octocat.' })
+    await wait(refusal)
+    check(await refusal.getByRole('button', { name: 'Sign in again', exact: true }).count() === 1, 'A refusal did not offer to sign in again')
+    check(await button(starter).isDisabled() && await model.count() === 0, 'Asking stayed available after Copilot refused')
+    await shot('assistant-refused')
 
     // A failed answer keeps its partial text, explains the failure once with a retry, and survives a reload.
     await start('failing')
@@ -334,7 +399,7 @@ async page => {
 
     check(sent.every(item => item.csrf === 'fixture-csrf-request'), 'A chat request went out without the CSRF token')
     check(errors.length === 0, 'Page errors: ' + errors.join(' | '))
-    return { contract: true, focus: true, history: true, layouts: ['push', 'overlay', 'sheet'], column: pushed, stop: true, resume: resumed, busy: true, disconnected: true, failing: true, retry: redone }
+    return { contract: true, focus: true, history: true, layouts: ['push', 'overlay', 'sheet'], column: pushed, stop: true, resume: resumed, busy: true, disconnected: true, signin: { copied }, account: true, refused: true, failing: true, retry: redone }
   } finally {
     page.off('pageerror', onPageError)
     page.off('console', onConsole)

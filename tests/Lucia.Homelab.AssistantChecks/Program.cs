@@ -1,8 +1,14 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
+using System.Web;
 using GitHub.Copilot;
 using Lucia.Homelab.Server.Assistant;
 using Microsoft.Agents.AI;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -148,12 +154,28 @@ try
         run.Stop.Dispose();
     }
 
+    // GitHub sign-in against a scripted GitHub: synthetic tokens and no network. Checks for the code fire at once; the 10-minute linger never does.
+    var directory = Path.Combine(storage, "assistant");
+    var options = Options.Create(new AssistantOptions { Directory = directory });
+    var github = new FakeGitHub();
+    var clock = new InstantTime();
+    using var signIn = new GitHubSignIn(options, new EphemeralDataProtectionProvider(), NullLogger<GitHubSignIn>.Instance, new HttpClient(github), clock);
+    async Task<GitHubStatus> Settle(string who, string state)
+    {
+        for (var i = 0; i < 500 && signIn.Status(who).State != state; i++) await Task.Delay(10);
+        var status = signIn.Status(who);
+        Check(status.State == state, $"The sign-in reaches {state} (it is {status.State}).");
+        return status;
+    }
+    static object Issued(string access, string refresh, int expires = 28_800) => new
+    {
+        access_token = access, token_type = "bearer", scope = "", expires_in = expires, refresh_token = refresh, refresh_token_expires_in = 15_897_600
+    };
+
     // Runs and chat files. Shutdown is already underway, so each turn stops before the Copilot runtime starts:
     // turns run end to end without a CLI, a real token or network.
-    var directory = Path.Combine(storage, "assistant");
-    var connected = Options.Create(new AssistantOptions { Directory = directory, GitHubToken = "synthetic-not-a-token" });
-    await using var runtime = new AssistantRuntime(connected, NullLoggerFactory.Instance);
-    await using var runs = new AssistantRuns(runtime, connected, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance);
+    await using var runtime = new AssistantRuntime(options, signIn, NullLoggerFactory.Instance);
+    await using var runs = new AssistantRuns(runtime, options, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance);
     const string owner = "0123456789abcdef", stranger = "fedcba9876543210";
     var chat = Guid.NewGuid().ToString("N");
     AssistantChatRequest Ask(string text, string messageId = "m1", string mode = "execute", string? model = null, string? session = null) =>
@@ -167,11 +189,56 @@ try
     await Reject(() => runs.StartAsync(owner, Ask("Hi", model: "gpt 5; rm"), default), 400, "invalid_request", "Model ids are validated.");
     await Reject(() => runs.StartAsync(owner, Ask(" \n "), default), 400, "invalid_message", "Blank messages are rejected.");
     await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
-    var offline = Options.Create(new AssistantOptions { Directory = directory, GitHubToken = " " });
-    await using (var offlineRuntime = new AssistantRuntime(offline, NullLoggerFactory.Instance))
-    await using (var offlineRuns = new AssistantRuns(offlineRuntime, offline, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance))
-        await Reject(() => offlineRuns.StartAsync(owner, Ask("Hi"), default), 503, "assistant_not_connected", "Without a GitHub token the assistant asks to connect.");
+    await Reject(() => runs.StartAsync(owner, Ask("Hi"), default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
     Check(!Directory.Exists(Path.Combine(directory, "users")), "Rejected requests write nothing.");
+    Check(signIn.Status(owner) == new GitHubStatus("disconnected") && !(bool)Node(await runtime.ModelsAsync(owner, default))["connected"]!,
+        "Before signing in, the owner is disconnected and no models are listed.");
+
+    var pending = await signIn.StartAsync(owner, default);
+    Check(pending is { State: "pending", UserCode: "CODE-0001", VerificationUri: "https://github.com/login/device", Interval: 5 }
+        && signIn.Status(owner) == pending, "Signing in shows a code to enter on GitHub.");
+    Check(await signIn.StartAsync(owner, default) == pending && github.Codes == 1, "Starting again, from another tab or a double click, keeps the same code.");
+    github.Reply("CODE-0001", new { error = "authorization_pending" }, new { error = "slow_down", interval = 10 }, Issued("ghu_synthetic", "ghr_synthetic"));
+    Check((await Settle(owner, "connected")).Login == "octocat", "Once the code is entered on GitHub, the owner is signed in as their login.");
+    Check(clock.Waits.Contains(TimeSpan.FromSeconds(10)), "When GitHub asks Lucia to slow down, it waits longer between checks.");
+    var saved = Path.Combine(directory, "github", owner + ".json");
+    var envelope = File.ReadAllText(saved);
+    Check(!envelope.Contains("synthetic"), "Tokens are saved encrypted, never in plain text.");
+    Check(await signIn.TokenAsync(owner, default) == "ghu_synthetic" && github.Refreshes == 0, "A token with hours left is used as is.");
+
+    var copied = Path.Combine(directory, "github", stranger + ".json");
+    File.Copy(saved, copied);
+    Check(signIn.Status(stranger).State == "disconnected" && await signIn.TokenAsync(stranger, default) is null,
+        "One owner's saved sign-in does not decrypt for another owner.");
+    await signIn.DisconnectAsync(stranger);
+    Check(!File.Exists(copied) && File.Exists(saved), "Disconnecting deletes only that owner's saved sign-in.");
+
+    github.Reply((await signIn.StartAsync(stranger, default)).UserCode!, new { error = "access_denied" });
+    Check((await Settle(stranger, "denied")).Message == "Access was declined on GitHub.", "Declining on GitHub ends the sign-in and says so.");
+    github.Reply((await signIn.StartAsync(stranger, default)).UserCode!, new { error = "expired_token" });
+    await Settle(stranger, "expired");
+    var abandoned = await signIn.StartAsync(stranger, default);
+    await signIn.CancelAsync(stranger);
+    Check(signIn.Status(stranger).State == "disconnected" && (await signIn.StartAsync(stranger, default)).UserCode != abandoned.UserCode,
+        "Cancelling forgets the code, and signing in again gets a new one.");
+    await signIn.CancelAsync(stranger);
+
+    github.Reply((await signIn.StartAsync(stranger, default)).UserCode!, Issued("ghu_old", "ghr_old", expires: 1_800));
+    await Settle(stranger, "connected");
+    github.Reply("refresh:ghr_old", Issued("ghu_new", "ghr_new"));
+    Check(await signIn.TokenAsync(stranger, default) == "ghu_new" && await signIn.TokenAsync(stranger, default) == "ghu_new"
+        && github.Refreshes == 1 && signIn.Status(stranger).Login == "octocat", "A token with under an hour left is renewed once and keeps the login.");
+    github.Reply((await signIn.StartAsync(stranger, default)).UserCode!, Issued("ghu_old", "ghr_spent", expires: 1_800));
+    await Settle(stranger, "connected");
+    github.Reply("refresh:ghr_spent", new { error = "bad_refresh_token" });
+    Check(await signIn.TokenAsync(stranger, default) is null && signIn.Status(stranger).State == "disconnected" && !File.Exists(copied),
+        "When GitHub will not renew a sign-in, the owner is signed out.");
+
+    var refused = new IOException("Communication error.", new InvalidOperationException("Failed to fetch Copilot user info: 401 Unauthorized: {\"message\":\"Bad credentials\"}"));
+    Check(await signIn.ExplainAsync(owner, new IOException("Pipe closed.")) is null, "Other runtime failures are not blamed on the sign-in.");
+    Check(await signIn.ExplainAsync(stranger, refused) is { Code: "assistant_not_connected" }, "Copilot refusing a signed-out owner asks them to sign in.");
+    Check(await signIn.ExplainAsync(owner, refused) is { StatusCode: 503, Code: "copilot_unavailable" } unavailable && unavailable.Message.Contains("@octocat")
+        && File.Exists(saved), "Copilot refusing a working GitHub sign-in names the account to check.");
 
     const string question = "  Why is grafana down?\nIt was fine yesterday.";
     var first = await runs.StartAsync(owner, Ask(question), default);
@@ -234,6 +301,10 @@ try
     await Reject(() => runs.GetAsync(owner, huge, default), 409, "session_too_large", "Oversized chats are refused, not loaded.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi", session: huge), default), 409, "session_too_large", "Oversized chats cannot take new messages.");
 
+    github.UserStatus = 401;
+    Check(await signIn.ExplainAsync(owner, refused) is { Code: "github_signed_out" } && signIn.Status(owner).State == "disconnected" && !File.Exists(saved),
+        "When GitHub no longer accepts the sign-in, the owner is signed out.");
+
     Console.WriteLine($"Assistant checks passed ({checks} assertions). No Copilot runtime, GitHub token or network used.");
 }
 finally
@@ -248,4 +319,56 @@ sealed class StoppedLifetime : IHostApplicationLifetime
     public CancellationToken ApplicationStopping { get; } = new(canceled: true);
     public CancellationToken ApplicationStopped => CancellationToken.None;
     public void StopApplication() { }
+}
+
+/// <summary>Timers up to a minute fire at once, so checks for a code run instantly; longer ones (the linger) never fire.</summary>
+sealed class InstantTime : TimeProvider
+{
+    public ConcurrentQueue<TimeSpan> Waits { get; } = new();
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        Waits.Enqueue(dueTime);
+        return base.CreateTimer(callback, state, dueTime <= TimeSpan.FromMinutes(1) ? TimeSpan.Zero : Timeout.InfiniteTimeSpan, period);
+    }
+}
+
+/// <summary>GitHub's device-flow endpoints, scripted per code. A check with no reply queued waits for one, so a code stays pending without spinning.</summary>
+sealed class FakeGitHub : HttpMessageHandler
+{
+    private readonly ConcurrentDictionary<string, Channel<object>> _replies = new();
+    private int _codes, _refreshes;
+
+    public int Codes => _codes;
+    public int Refreshes => _refreshes;
+    public int UserStatus { get; set; } = 200;
+
+    /// <summary>Queues token replies for a user code, or for "refresh:" and a refresh token.</summary>
+    public void Reply(string key, params object[] bodies)
+    {
+        foreach (var body in bodies) Queue(key).Writer.TryWrite(body);
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        switch (request.RequestUri!.AbsoluteUri)
+        {
+            case "https://github.com/login/device/code":
+                var code = $"CODE-{Interlocked.Increment(ref _codes):D4}";
+                return Json(new { device_code = "device:" + code, user_code = code, verification_uri = "https://github.com/login/device", expires_in = 899, interval = 5 });
+            case "https://github.com/login/oauth/access_token":
+                var form = HttpUtility.ParseQueryString(await request.Content!.ReadAsStringAsync(ct));
+                var refresh = form["grant_type"] == "refresh_token";
+                if (refresh) Interlocked.Increment(ref _refreshes);
+                return Json(await Queue(refresh ? "refresh:" + form["refresh_token"] : form["device_code"]!["device:".Length..]).Reader.ReadAsync(ct));
+            case "https://api.github.com/user" when request.Headers.Authorization?.Scheme == "Bearer":
+                return new HttpResponseMessage((HttpStatusCode)UserStatus) { Content = JsonContent.Create(new { login = "octocat" }) };
+            default:
+                throw new InvalidOperationException("Unexpected request to " + request.RequestUri);
+        }
+    }
+
+    private Channel<object> Queue(string key) => _replies.GetOrAdd(key, _ => Channel.CreateUnbounded<object>());
+
+    private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
 }

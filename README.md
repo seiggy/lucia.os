@@ -866,9 +866,18 @@ cleanup operations available rather than stopping the host.
 The assistant runs Microsoft Agent Framework over the GitHub Copilot runtime,
 which the server starts as a child process with no built-in tools, files, shell,
 or ambient configuration. This first slice only answers questions; it cannot
-inspect or change the lab. Until GitHub sign-in ships, set
-`Assistant__GitHubToken` to a token with Copilot access; without one, the chat
-bar asks the owner to connect GitHub. Turns keep running if the browser
+inspect or change the lab. Each owner signs in to GitHub from the chat bar
+through GitHub's device flow: it shows a one-time code to enter at
+github.com/login/device and continues once GitHub approves it. The flow uses
+Lucia's GitHub App (`Assistant__GitHubClientId` overrides the client ID) and
+needs no client secret. The host renews the App's expiring user token and keeps
+it per owner under `github/` in `Assistant__Directory`, encrypted with ASP.NET
+Core Data Protection. If Copilot refuses the token, check that the account has
+Copilot and that the App has the Copilot Requests account permission, then
+choose **Sign in again**. **Disconnect**, under chat history, deletes only the
+host's copy; revoke Lucia under GitHub's
+[Authorized GitHub Apps](https://github.com/settings/apps/authorizations) to
+end the authorization. Turns keep running if the browser
 disconnects, and the chat bar reattaches to them or stops them. Chats are
 stored per owner as JSON under `Assistant__Directory` (`/data/assistant` on the
 appliance). Build and publish download the SHA-256-checked Copilot runtime for
@@ -896,5 +905,6 @@ memory reservations, Qwen tool-call parsing, and HTTP permission boundaries.
 They use a tiny synthetic GGUF and a fake CLI; they do not substitute for
 selected-model GPU inference and tool-quality qualification on the Spark.
 The assistant checks cover stream mapping, turn replay, request validation,
-retries, and per-owner chat storage without starting the Copilot runtime or
-using a GitHub token.
+retries, per-owner chat storage, and GitHub sign-in (device flow, token renewal
+and sign-out) against a scripted GitHub, without starting the Copilot runtime or
+using a real GitHub token.

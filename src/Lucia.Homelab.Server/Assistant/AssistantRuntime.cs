@@ -14,17 +14,17 @@ public sealed class AssistantOptions
     public string Directory { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lucia", "data", "assistant");
 
-    /// <summary>Development seam until per-owner GitHub sign-in ships. Never log it.</summary>
-    public string? GitHubToken { get; set; }
+    /// <summary>Client ID of the GitHub App that owners sign in to with GitHub's device flow. It is public, so no secret is needed.</summary>
+    public string GitHubClientId { get; set; } = "Iv23li9RiKrquNuCmjzI";
 
     /// <summary>Model used when the chat bar does not pick one; null lets the runtime choose.</summary>
     public string? Model { get; set; }
 }
 
-public sealed record AssistantTurn(string SessionKey, string Prompt, string? Model);
+public sealed record AssistantTurn(string Owner, string SessionKey, string Prompt, string? Model);
 
 /// <summary>One Copilot CLI child in Empty mode (no built-in tools, files, shell or ambient config), shared by every session.</summary>
-public sealed class AssistantRuntime(IOptions<AssistantOptions> options, ILoggerFactory loggers) : IAsyncDisposable
+public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubSignIn github, ILoggerFactory loggers) : IAsyncDisposable
 {
     public const string TelemetryName = "Lucia.Assistant";
 
@@ -61,9 +61,12 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, ILogger
 
     private string Root => Path.GetFullPath(options.Value.Directory);
 
-    public string? GitHubToken => string.IsNullOrWhiteSpace(options.Value.GitHubToken) ? null : options.Value.GitHubToken.Trim();
-
     public string? DefaultModel => string.IsNullOrWhiteSpace(options.Value.Model) ? null : options.Value.Model.Trim();
+
+    public async Task<bool> ConnectedAsync(string owner, CancellationToken ct) => await github.TokenAsync(owner, ct) is not null;
+
+    /// <summary>A message the owner can act on when Copilot refused their sign-in; null for other failures.</summary>
+    public Task<AssistantException?> ExplainAsync(string owner, Exception error) => github.ExplainAsync(owner, error);
 
     /// <summary>Returns the running client, replacing it when the CLI has exited.</summary>
     public async Task<CopilotClient> ClientAsync(CancellationToken ct)
@@ -105,24 +108,32 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, ILogger
         finally { _gate.Release(); }
     }
 
-    public async Task<object> ModelsAsync(CancellationToken ct)
+    public async Task<object> ModelsAsync(string owner, CancellationToken ct)
     {
-        if (GitHubToken is not { } token)
+        if (await github.TokenAsync(owner, ct) is not { } token)
             return new { connected = false, defaultModel = DefaultModel, models = Array.Empty<object>() };
-        var client = await ClientAsync(ct);
-        var list = await client.Rpc.Models.ListAsync(gitHubToken: token, cancellationToken: ct);
-        return new
+        try
         {
-            connected = true,
-            defaultModel = DefaultModel,
-            models = list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled)
-                .Select(model => new { id = model.Id, name = model.Name }).ToArray()
-        };
+            var client = await ClientAsync(ct);
+            var list = await client.Rpc.Models.ListAsync(gitHubToken: token, cancellationToken: ct);
+            return new
+            {
+                connected = true,
+                defaultModel = DefaultModel,
+                models = list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled)
+                    .Select(model => new { id = model.Id, name = model.Name }).ToArray()
+            };
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            if (await github.ExplainAsync(owner, e) is { } explained) throw explained;
+            throw;
+        }
     }
 
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(AssistantTurn turn, [EnumeratorCancellation] CancellationToken ct)
     {
-        var token = GitHubToken ?? throw new AssistantException(503, "assistant_not_connected", "Connect GitHub to use the assistant.");
+        var token = await github.TokenAsync(turn.Owner, ct) ?? throw GitHubSignIn.NotConnected();
         var client = await ClientAsync(ct);
         var resume = await client.GetSessionMetadataAsync(turn.SessionKey, ct) is not null;
         var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, turn.Model, token),
@@ -134,14 +145,15 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, ILogger
     }
 
     /// <summary>Cancelling a MAF run only detaches from the session, so reattach and abort the turn. Best effort.</summary>
-    public async Task AbortAsync(string sessionKey, string? model)
+    public async Task AbortAsync(string owner, string sessionKey, string? model)
     {
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var token = await github.TokenAsync(owner, timeout.Token);
             var client = await ClientAsync(timeout.Token);
             await using var session = await client.ResumeSessionAsync(sessionKey,
-                Configure(new ResumeSessionConfig(), model, GitHubToken), timeout.Token);
+                Configure(new ResumeSessionConfig(), model, token), timeout.Token);
             await session.AbortAsync(timeout.Token);
         }
         catch (Exception e)

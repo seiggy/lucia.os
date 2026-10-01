@@ -13,6 +13,9 @@ public static class AssistantEndpoints
         builder.Services.AddOptions<AssistantOptions>().BindConfiguration("Assistant")
             .Validate(options => Path.IsPathFullyQualified(options.Directory), "Assistant:Directory must be absolute.")
             .ValidateOnStart();
+        builder.Services.AddDataProtection();
+        builder.Services.AddSingleton(services =>
+            ActivatorUtilities.CreateInstance<GitHubSignIn>(services, GitHubSignIn.CreateClient(), TimeProvider.System));
         builder.Services.AddSingleton<AssistantRuntime>();
         builder.Services.AddSingleton<AssistantRuns>();
     }
@@ -47,7 +50,20 @@ public static class AssistantEndpoints
             await runs.DeleteAsync(Owner(context), id, ct);
             return Results.NoContent();
         });
-        group.MapGet("/models", (AssistantRuntime runtime, CancellationToken ct) => runtime.ModelsAsync(ct));
+        group.MapGet("/models", (HttpContext context, AssistantRuntime runtime, CancellationToken ct) => runtime.ModelsAsync(Owner(context), ct));
+        // GitHub sign-in: the host keeps the tokens; the browser only ever sees the code to type on GitHub.
+        group.MapGet("/github", (HttpContext context, GitHubSignIn github) => github.Status(Owner(context)));
+        group.MapPost("/github/device", (HttpContext context, GitHubSignIn github, CancellationToken ct) => github.StartAsync(Owner(context), ct));
+        group.MapDelete("/github/device", async (HttpContext context, GitHubSignIn github) =>
+        {
+            await github.CancelAsync(Owner(context));
+            return Results.NoContent();
+        });
+        group.MapDelete("/github", async (HttpContext context, GitHubSignIn github) =>
+        {
+            await github.DisconnectAsync(Owner(context));
+            return Results.NoContent();
+        });
     }
 
     /// <summary>Replays the turn from its first chunk, then follows it until it ends or the browser leaves.</summary>
