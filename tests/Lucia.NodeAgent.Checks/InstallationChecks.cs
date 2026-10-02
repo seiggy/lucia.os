@@ -121,6 +121,10 @@ internal static class InstallationChecks
             && preseed.Contains("passwd/make-user boolean false", StringComparison.Ordinal)
             && preseed.Contains("firmware-realtek", StringComparison.Ordinal) && preseed.Contains("mirror/suite string trixie", StringComparison.Ordinal),
             "Preseed OS/security defaults are wrong.");
+        Check(preseed.Contains("apt-setup/contrib boolean true", StringComparison.Ordinal)
+            && preseed.Contains("apt-setup/non-free boolean true", StringComparison.Ordinal)
+            && preseed.Contains("apt-setup/non-free-firmware boolean true", StringComparison.Ordinal),
+            "Preseed leaves contrib or non-free out of apt sources, so GPU drivers can't install.");
         Reject(() => InstallationRules.Preseed(plan with { AuthorityExpiresAt = now.AddSeconds(-1) }), "Expired preseed passed.");
         var grant = new InstallationGrant(taskId, id, Guid.NewGuid(), plan.Hostname, disk.Id!, 1, now.AddMinutes(5), "debian-13.7", publicKey, now.AddHours(2));
         InstallationRules.ValidateGrant(grant, plan, grant.RequestId, now, true);

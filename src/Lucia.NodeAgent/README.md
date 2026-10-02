@@ -108,7 +108,8 @@ are exposed as CLI options.
    file paths retain their existing no-follow rules.
 
 Preseed contains fixed English/US/UTC/DHCP settings, the approved hostname,
-Debian `trixie` at HTTPS `deb.debian.org/debian`, main and non-free firmware,
+Debian `trixie` at HTTPS `deb.debian.org/debian` with the main, contrib, non-free
+and non-free-firmware components (so GPU drivers install without editing sources),
 security/updates, single-disk GPT/EFI/ext4 (no LVM or RAID removal directives),
 locked root/no password user, SSH/sudo/SSSD and Realtek firmware packages,
 and the two fixed parent hooks. Parent scripts remain responsible for

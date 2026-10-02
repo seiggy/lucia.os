@@ -161,8 +161,8 @@ internal static class InstallationRules
             d-i mirror/https/proxy string
             d-i mirror/suite string trixie
             d-i apt-setup/non-free-firmware boolean true
-            d-i apt-setup/non-free boolean false
-            d-i apt-setup/contrib boolean false
+            d-i apt-setup/non-free boolean true
+            d-i apt-setup/contrib boolean true
             d-i apt-setup/services-select multiselect security, updates
             d-i passwd/root-login boolean true
             d-i passwd/root-password-crypted password *
