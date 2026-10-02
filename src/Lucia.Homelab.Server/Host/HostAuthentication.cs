@@ -246,6 +246,13 @@ public static class HostAuthentication
                 await next(context);
                 return;
             }
+            // Cookie-free LAN discovery: the Debian installer appends its DHCP domain to the boot host,
+            // so it arrives under a LAN alias. Its own network and capability checks still apply.
+            if (context.Request.IsHttps && context.Request.Path.StartsWithSegments("/api/boot"))
+            {
+                await next(context);
+                return;
+            }
             if (!context.Request.IsHttps || !origins.Any(origin => MatchesOrigin(context.Request, origin)))
             {
                 await WriteErrorAsync(context, 400, "Use the configured public HTTPS origin.", "invalid_origin");

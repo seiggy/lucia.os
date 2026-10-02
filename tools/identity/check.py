@@ -18,7 +18,7 @@ import sys
 import tempfile
 from unittest.mock import MagicMock, Mock, patch
 
-from provision import BASE_DN, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, settings_for, validate_host
+from provision import BASE_DN, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, service_hosts, settings_for, validate_host
 from owner import enroll_ldap_owner, finish_owner, owner_identity, validate_login_password, validate_password, validate_username, verify_login
 
 for host in ("192.168.0.222", "spark-9423", "auth.lucia.home.arpa", "2001:db8::1"):
@@ -130,6 +130,14 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
         assert key.read_text() == "test-existing-key", "Recovery must keep an existing private key."
         assert not certificate.with_name("issuing.crt").exists()
         assert not key.with_name("issuing.key").exists()
+
+    resolv = certificate.with_name("resolv.conf")
+    resolv.write_text("nameserver 192.0.2.1\nsearch lan.example. bad_domain lan.example\n")
+    assert service_hosts("spark-1", str(resolv)) == ["spark-1", "spark-1.lan.example"]
+    assert service_hosts("spark.example", str(resolv)) == ["spark.example"]
+    assert service_hosts("192.168.0.2", str(resolv)) == ["192.168.0.2"]
+    assert service_hosts("spark-1", str(resolv) + ".missing") == ["spark-1"]
+    resolv.unlink()
 
     tls = MagicMock()
     with patch("provision.ssl.create_default_context", return_value=tls), \

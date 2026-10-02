@@ -178,6 +178,10 @@ certificate must match that hostname and the supplied public CA. On September
 22, 2026, the parent verified the owner's AdGuard Home rewrite through LAN DNS
 `192.168.1.230`: `spark-9423` now resolves to `192.168.0.222`. This tooling does
 not alter DNS; resolution from the eventual booted target still needs checking.
+When DHCP supplies a domain, the installer appends it to the dotless preseed host
+(`spark-9423.homelab.seiggy.com`), so DNS must resolve that name too. Identity
+provisioning adds each `/etc/resolv.conf` search-domain form of the public host to
+the service certificate, and the controller accepts any host on `/api/boot`.
 The agent's optional connect-address preserves SNI/hostname checks,
 but **does not fix GNU Wget's preseed DNS lookup**. The target clock must also
 be accurate. No TLS bypass, `allow_unauthenticated_ssl`, or IP-certificate

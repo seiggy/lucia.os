@@ -62,6 +62,29 @@ def validate_host(host):
     return host.lower()
 
 
+def service_hosts(host, resolv_conf="/etc/resolv.conf"):
+    """The public host plus its LAN-qualified names. The Debian installer appends the
+    DHCP domain to a dotless preseed host, so the service certificate must match it."""
+    hosts = [host]
+    if "." in host or ":" in host:
+        return hosts
+    try:
+        lines = pathlib.Path(resolv_conf).read_text().splitlines()
+    except OSError:
+        return hosts
+    for line in lines:
+        parts = line.split()
+        if parts and parts[0] in ("search", "domain"):
+            for domain in parts[1:]:
+                try:
+                    name = validate_host(host + "." + domain.rstrip("."))
+                except ValueError:
+                    continue
+                if name not in hosts:
+                    hosts.append(name)
+    return hosts
+
+
 def authority(host, port):
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
@@ -276,8 +299,12 @@ class Provisioner:
                 raise RuntimeError("Service certificate files must not be symbolic links.")
             if certificate.exists() and not key.exists():
                 raise RuntimeError("The service private key is missing. Restore it; existing keys are not silently replaced.")
+            hosts = service_hosts(self.settings["public_host"])
             valid = certificate.exists() and self.run(
                 ["openssl", "x509", "-in", str(certificate), "-checkend", "28800", "-noout"], check=False).returncode == 0
+            if valid:
+                names = self.run(["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"]).stdout
+                valid = all(re.search(r"(?:DNS|IP Address):" + re.escape(name) + r"(?:,|\s|$)", names) for name in hosts)
             if not valid:
                 staged = certificate.with_name("issuing.crt")
                 staged_key = key.with_name("issuing.key")
@@ -286,21 +313,24 @@ class Provisioner:
                           "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt", "--force"]
                 try:
                     if key.exists():
-                        host = self.settings["public_host"]
-                        try:
-                            ipaddress.ip_address(host)
-                            san = "IP:" + host
-                        except ValueError:
-                            san = "DNS:" + host
+                        sans = []
+                        for host in hosts:
+                            try:
+                                ipaddress.ip_address(host)
+                                sans.append("IP:" + host)
+                            except ValueError:
+                                sans.append("DNS:" + host)
                         self.run(["openssl", "req", "-new", "-key", str(key), "-out", str(csr),
-                                  "-subj", "/CN=" + host, "-addext", "subjectAltName=" + san + ",DNS:identity-gateway,DNS:localhost"])
+                                  "-subj", "/CN=" + hosts[0], "-addext",
+                                  "subjectAltName=" + ",".join(sans) + ",DNS:identity-gateway,DNS:localhost"])
                         self.run(["docker", "exec", "lucia-identity-ca", "step", "ca", "sign",
                                   "/certificates/issuing.csr", "/certificates/issuing.crt", *common])
                         signing_key = key
                     else:
                         self.run(["docker", "exec", "lucia-identity-ca", "step", "ca", "certificate",
                                   self.settings["public_host"], "/certificates/issuing.crt", "/certificates/issuing.key",
-                                  "--san", self.settings["public_host"], "--san", "identity-gateway", "--san", "localhost", *common])
+                                  *[arg for host in hosts for arg in ("--san", host)],
+                                  "--san", "identity-gateway", "--san", "localhost", *common])
                         signing_key = staged_key
                     self.validate_certificate_pair(staged, signing_key, root)
                     if signing_key == staged_key:
