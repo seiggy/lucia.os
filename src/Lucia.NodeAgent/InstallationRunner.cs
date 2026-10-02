@@ -20,7 +20,7 @@ internal sealed class InstallationRunner(DiscoveryClient client, SecureStateDire
             if (configuration.CanRequestInstallationGrant)
             {
                 var fresh = inspector.Inspect();
-                if (AgentJson.SerializeReport(fresh) != AgentJson.SerializeReport(registered))
+                if (AgentJson.SerializeStable(fresh) != AgentJson.SerializeStable(registered))
                     throw new NodeAgentException("Hardware inventory changed since discovery. Owner review must restart.");
                 var plan = InstallationRules.Approve(configuration, credentials, fresh, disks.BootId(),
                     disks.VerifyUnused(fresh, InstallationRules.DiskId(configuration.DiskId)), DateTimeOffset.UtcNow);
@@ -122,7 +122,7 @@ internal sealed class InstallationRunner(DiscoveryClient client, SecureStateDire
     {
         var fresh = inspector.Inspect();
         InstallationRules.SameDisk(plan, fresh);
-        if (AgentJson.SerializeReport(fresh) != AgentJson.SerializeReport(plan.Inventory)
+        if (AgentJson.SerializeStable(fresh) != AgentJson.SerializeStable(plan.Inventory)
             || disks.VerifyUnused(fresh, plan.DiskId) != plan.DeviceNumber)
             throw new NodeAgentException("The current hardware no longer exactly matches the approved inventory.");
         return fresh;

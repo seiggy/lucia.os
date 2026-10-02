@@ -58,9 +58,15 @@ export interface InstallationTask {
   approvedAt: string
   authorityExpiresAt: string
   grantIssuedAt: string | null
+  progressExpiresAt: string | null
   updatedAt: string
   statusMessage: string | null
 }
+
+/** An install that stopped reporting before it enrolled or failed. It no longer holds its hostname and can be removed. */
+export const taskStalled = (task: InstallationTask, now = Date.now()) =>
+  (task.phase === 'Approved' || task.phase === 'GrantIssued' || task.phase === 'Installing' || task.phase === 'AwaitingEnrollment')
+  && Date.parse(task.progressExpiresAt ?? task.authorityExpiresAt) <= now
 
 export interface OnboardingSnapshot {
   window: { isOpen: boolean; expiresAt: string | null }
@@ -235,6 +241,7 @@ export function parseOnboardingSnapshot(value: unknown): OnboardingSnapshot {
         hostname: text(task.hostname), diskId: diskId(task.diskId), inventoryRevision: integer(task.inventoryRevision),
         approvedBy: text(task.approvedBy), approvedAt: timestamp(task.approvedAt),
         authorityExpiresAt: timestamp(task.authorityExpiresAt), grantIssuedAt: nullable(task.grantIssuedAt, timestamp),
+        progressExpiresAt: 'progressExpiresAt' in task ? nullable(task.progressExpiresAt, timestamp) : null,
         updatedAt: timestamp(task.updatedAt), statusMessage: optionalText(task.statusMessage),
       }
     })),
@@ -365,7 +372,7 @@ export function validateInstallApproval(snapshot: OnboardingSnapshot, device: On
   validateApprovalFields(input)
   const disk = device.hardware.disks.find(disk => disk.id === input.diskId)
   if (!disk || !isInstallableDisk(disk)) throw new Error('Choose a safely identified, writable, nonremovable disk from this device.')
-  if (snapshot.tasks.some(task => task.hostname === input.hostname && task.phase !== 'Failed' && task.phase !== 'Invalidated'))
+  if (snapshot.tasks.some(task => task.hostname === input.hostname && task.phase !== 'Failed' && task.phase !== 'Invalidated' && !taskStalled(task, now)))
     throw new Error('That hostname is already reserved by another installation.')
   return { hostname: input.hostname, diskId: disk.id, confirmation: input.confirmation, recoveryPublicKey: input.recoveryPublicKey.trim() }
 }

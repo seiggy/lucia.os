@@ -3,7 +3,7 @@ import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import type { IconName } from './Icon'
 import { ownerRequest } from './managementApi'
-import { cudaLines, cudaLineUnsupported, formatBytes, formatCountdown, installationBlockers, isInstallableDisk, parseOnboardingSnapshot, parseManagedNodes, requestOnboarding, secondsUntil, validateInstallApproval, visibleDiscoveries } from './onboarding'
+import { cudaLines, cudaLineUnsupported, formatBytes, formatCountdown, installationBlockers, isInstallableDisk, parseOnboardingSnapshot, parseManagedNodes, requestOnboarding, secondsUntil, taskStalled, validateInstallApproval, visibleDiscoveries } from './onboarding'
 import type { CudaLine, DevicePhase, InstallationTask, NodeAction, OnboardingAction, OnboardingDevice, OnboardingSnapshot, TaskPhase, ManagedNodeSummary, NodeRuntimeSummary } from './onboarding'
 import { ServerUsage } from './ServerUsage'
 import { parseStackList } from './stackManagement'
@@ -303,7 +303,7 @@ function OwnerOnboarding({ session, refreshSession, view }: HardwareOnboardingPr
             <button className="text-link" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</button>
           </div>
         </div>
-        {tasks.length > 0 ? <><div className="surface hardware-list">{tasks.map(task => <TaskEntry key={task.id} task={task} />)}</div><p className="section-note">These are the timestamps reported by the host. A detailed event history is not available from this connection.</p></>
+        {tasks.length > 0 ? <><div className="surface hardware-list">{tasks.map(task => <TaskEntry key={task.id} task={task} now={now} />)}</div><p className="section-note">These are the timestamps reported by the host. A detailed event history is not available from this connection.</p></>
           : !error && <div className="hardware-empty"><Icon name="tasks" /><h3>{finishedCount > 0 ? 'Nothing needs you right now.' : 'No installation tasks have been reported.'}</h3>
             <p>{finishedCount > 0 ? 'Finished installations are tucked away. An installation shows here while it runs, and stays if it needs your attention.'
               : 'A task appears when you approve an installation for a discovered device. Opening discovery alone does not create a task.'}</p>
@@ -372,10 +372,20 @@ function UpdatesSection({ node, disabled, perform }: { node: ManagedNodeSummary;
   </section>
 }
 
-function RemoveDevice({ device, title, disabled, perform }: { device: OnboardingDevice; title: string; disabled: boolean; perform: Perform }) {
+function RemoveDevice({ device, title, disabled, perform, stalled = false, installing = false }: { device: OnboardingDevice; title: string; disabled: boolean; perform: Perform; stalled?: boolean; installing?: boolean }) {
   const [confirm, setConfirm] = useState(false)
+  if (installing && !stalled) return <div className="hardware-reject">
+    <p>{confirm ? <>Lucia cancels this installation and forgets {title}, freeing its hostname. Power the machine off; a half-written disk is erased again on the next install.</>
+      : 'Stuck or started by mistake? Cancel the installation.'}</p>
+    <div className="hardware-actions">{confirm
+      ? <><button className="button secondary hardware-danger" disabled={disabled}
+        onClick={() => void perform({ kind: 'remove', deviceId: device.id }, `The installation on ${title} was cancelled.`)}>Cancel installation</button>
+        <button className="text-link" onClick={() => setConfirm(false)}>Keep installing</button></>
+      : <button className="button secondary" disabled={disabled} onClick={() => setConfirm(true)}>Cancel installation…</button>}</div>
+  </div>
   return <div className="hardware-reject">
-    <p>{confirm ? <>Lucia forgets {title}, revokes its agent’s access and drops its DNS name. The machine itself isn’t erased or shut down. Move its apps off first.</>
+    <p>{stalled ? `This installation stopped reporting before it finished. Remove it to clear the attempt, then boot the machine again to rediscover it.`
+      : confirm ? <>Lucia forgets {title}, revokes its agent’s access and drops its DNS name. The machine itself isn’t erased or shut down. Move its apps off first.</>
       : 'Retired this machine? Remove it from Lucia. Nothing on the machine changes.'}</p>
     <div className="hardware-actions">{confirm
       ? <><button className="button secondary hardware-danger" disabled={disabled}
@@ -624,9 +634,10 @@ function DeviceEntry({ device, title, snapshot, now, disabled, perform, session,
         document.getElementById('hardware-list-heading')?.focus({ preventScroll: true })
       }}>{device.dismissedAt ? 'Restore to list' : 'Dismiss discovery'}</button>
     </div>}
-    {(device.phase === 'Managed' || device.phase === 'Failed')
-      && <RemoveDevice key={device.id} device={device} title={title} disabled={disabled} perform={perform} />}
-    {task && taskOpen(task) && <a className="text-link" href="#/tasks">Follow installation <Icon name="arrow" /></a>}
+    {(device.phase === 'Managed' || device.phase === 'Failed' || (task && taskOpen(task)))
+      && <RemoveDevice key={device.id} device={device} title={title} disabled={disabled} perform={perform}
+        stalled={!!task && taskStalled(task, now)} installing={device.phase !== 'Managed' && device.phase !== 'Failed'} />}
+    {task && taskOpen(task) && !taskStalled(task, now) && <a className="text-link" href="#/tasks">Follow installation <Icon name="arrow" /></a>}
   </article>
 }
 
@@ -761,9 +772,12 @@ function RecoveryKeyInput({ session, refreshSession, value, onChange, disabled, 
   </div>
 }
 
-function TaskEntry({ task }: { task: InstallationTask }) {
+function TaskEntry({ task, now }: { task: InstallationTask; now: number }) {
+  const stalled = taskStalled(task, now)
   return <article className="hardware-entry">
-    <div className="hardware-entry-heading"><h3>{task.hostname}</h3><Phase phase={task.phase} /></div>
+    <div className="hardware-entry-heading"><h3>{task.hostname}</h3>{stalled
+      ? <span className="status status-amber"><Icon name="attention" />Stopped responding</span> : <Phase phase={task.phase} />}</div>
+    {stalled && <p className="hardware-failure">This machine stopped reporting before it finished installing, and its hostname is free again. Remove it from <a href="#/devices">Devices</a>, then boot it to rediscover it.</p>}
     {task.statusMessage && <p className={task.phase === 'Failed' || task.phase === 'Invalidated' ? 'hardware-failure' : 'hardware-meta'}>{task.statusMessage}</p>}
     <ol className="hardware-timeline">
       <li><strong>Installation approved</strong><DateTime value={task.approvedAt} /></li>

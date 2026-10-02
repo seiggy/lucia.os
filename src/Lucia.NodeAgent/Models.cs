@@ -56,6 +56,10 @@ public static class AgentJson
         return json;
     }
 
+    /// <summary>The report minus IP addresses, which change with DHCP and IPv6 router advertisements but aren't hardware.</summary>
+    public static string SerializeStable(HardwareReport report) => JsonSerializer.Serialize(report with
+        { Interfaces = report.Interfaces.Select(nic => nic with { Addresses = [] }).ToArray() }, Options);
+
     internal static void ValidateReportSize(string json)
     {
         if (Encoding.UTF8.GetByteCount(json) > MaxReportBytes)

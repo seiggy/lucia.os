@@ -590,7 +590,6 @@ try
         await Fails(() => store.RequestInstallationGrantAsync(session, Guid.NewGuid(), diskB, 1), 409, "approval_mismatch");
         nodeClock.Advance(TimeSpan.FromMinutes(20));
         await store.ReportStatusAsync(session, HardwareDevicePhase.AwaitingEnrollment, "Synthetic installed node waiting for enrollment");
-        await Fails(() => store.RemoveDeviceAsync(discovered.DeviceId, actor, default), 409, "installation_in_progress");
         Check((await store.RequireEnrollmentAsync(session, approvedNode.Id, default)).Id == approvedNode.Id,
             "Completed installation was stranded by the shorter discovery lifetime.");
         await Fails(() => store.CompleteEnrollmentAsync(discovered.DeviceId, approvedNode.Id, fingerprintB, default), 409, "enrollment_mismatch");

@@ -189,7 +189,7 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
                 var device = existing.Device;
                 if (device.DiscoveryExpiresAt <= now || existing.Scope == CapabilityScope.Revoked)
                     throw Conflict("discovery_expired", "This discovery session is expired or closed; it cannot be renewed.");
-                var changed = existing.InventoryHash != inventoryHash;
+                var changed = existing.InventoryHash != inventoryHash && StableInventory(existing.Device.Hardware) != StableInventory(report);
                 if (changed)
                 {
                     var hadGrant = false;
@@ -257,7 +257,10 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
             var disk = device.Hardware.Disks.SingleOrDefault(disk => disk.Id == request.DiskId);
             if (disk is null || disk.IsReadOnly || disk.IsRemovable)
                 throw Conflict("ineligible_disk", "Choose an exact inventory stable ID for a nonremovable, writable disk.");
-            if (state.Tasks.Any(task => task.Task.Hostname == request.Hostname && task.Task.Phase is not (HardwareTaskPhase.Failed or HardwareTaskPhase.Invalidated)))
+            // An install that stopped reporting before enrolling no longer holds its hostname.
+            if (state.Tasks.Any(task => task.Task.Hostname == request.Hostname && (task.Task.Phase == HardwareTaskPhase.Managed
+                || task.Task.Phase is not (HardwareTaskPhase.Failed or HardwareTaskPhase.Invalidated)
+                    && (task.Task.ProgressExpiresAt ?? task.Task.AuthorityExpiresAt) > now)))
                 throw Conflict("hostname_in_use", "An existing installation task already reserves this hostname.");
             if (state.Tasks.Count >= MaximumTasks) throw Unavailable("registry_full", "The bounded onboarding task registry is full.");
             var job = new HardwareInstallationTask(Guid.NewGuid(), device.Id, HardwareTaskPhase.Approved, request.Hostname,
@@ -439,8 +442,8 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
         }, ct);
 
     /// <summary>
-    /// Forgets a device and its installation tasks, for retired or failed machines. Refused while an installation still
-    /// holds live authority. Earlier journal events stay, detached from the device. Returns false when it isn't known.
+    /// Forgets a device and its installation tasks, for retired, failed or stuck machines, cancelling any installation in
+    /// progress. Earlier journal events stay, detached from the device. Returns false when it isn't known.
     /// </summary>
     public Task<bool> RemoveDeviceAsync(Guid deviceId, string actor, CancellationToken ct = default) =>
         MutateAsync((state, now) =>
@@ -448,11 +451,7 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
             Actor(actor);
             var index = state.Devices.FindIndex(item => item.Device.Id == deviceId);
             if (index < 0) return (state, false);
-            var device = state.Devices[index].Device;
-            var task = state.Tasks.FirstOrDefault(item => item.Task.Id == device.TaskId)?.Task;
-            if (device.Phase is HardwareDevicePhase.Approved or HardwareDevicePhase.Installing or HardwareDevicePhase.AwaitingEnrollment
-                && task is not null && (task.ProgressExpiresAt ?? task.AuthorityExpiresAt) > now)
-                throw Conflict("installation_in_progress", "This machine is still installing. Wait for it to finish or fail before removing it.");
+            // An install in progress is cancelled too: its session and task go, so the installer's next call is refused.
             state.Devices.RemoveAt(index);
             state.Tasks.RemoveAll(item => item.Task.DeviceId == deviceId);
             for (var i = 0; i < state.Events.Count; i++)
@@ -611,6 +610,9 @@ public sealed class HardwareOnboardingStore : IHostedService, IDisposable
     }
     private static string InventoryHash(HardwareReport report) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(report, HardwareOnboardingJson.Options)));
+    // IP addresses come and go (DHCP, IPv6 router advertisements, the installer's own netcfg); they aren't hardware.
+    private static string StableInventory(HardwareReport report) => JsonSerializer.Serialize(report with
+        { Interfaces = report.Interfaces.Select(nic => nic with { Addresses = [] }).ToArray() }, HardwareOnboardingJson.Options);
     private static string SecretHash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static void Actor(string actor) => HardwareInventoryValidation.Text(actor, 512, true);
     private static DateTimeOffset Min(DateTimeOffset left, DateTimeOffset right) => left < right ? left : right;
