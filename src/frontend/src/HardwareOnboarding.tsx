@@ -644,6 +644,7 @@ function InstallForm({ device, snapshot, now, disabled, perform, session, refres
   const blockers = installationBlockers(snapshot, device, now)
   const disks = device.hardware.disks.filter(isInstallableDisk)
   const selectedDisk = disks.find(disk => disk.id === diskId)
+  const dataDisks = selectedDisk ? device.hardware.disks.filter(disk => !disk.isRemovable && !disk.isReadOnly && disk.path !== selectedDisk.path) : []
   const prefix = `hardware-${device.id}`
   return <details className="hardware-approval"><summary>Review installation or reject this device</summary>
     <p>Match the verification code above with the physical device’s console, then compare its model, serial number, and disks. An installation replaces all data on the one disk you choose.</p>
@@ -666,7 +667,7 @@ function InstallForm({ device, snapshot, now, disabled, perform, session, refres
             <input id={`${prefix}-hostname`} value={hostname} onChange={event => setHostname(event.target.value)} autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={63} required pattern="[a-z]([a-z0-9-]{0,61}[a-z0-9])?" aria-describedby={`${prefix}-hostname-help`} />
             <span id={`${prefix}-hostname-help`}>Start with a lowercase letter; numbers and hyphens are allowed. For example, dev-server.</span>
           </label>
-          <label htmlFor={`${prefix}-disk`}>Disk to erase
+          <label htmlFor={`${prefix}-disk`}>Install Debian on
             <select id={`${prefix}-disk`} value={diskId} required onChange={event => { setDiskId(event.target.value); setAcknowledged(false); setConfirmation('') }}>
               <option value="">Choose a disk — none is selected</option>
               {disks.map(disk => <option key={disk.id} value={disk.id}>{disk.model || 'Unknown model'} · {formatBytes(disk.sizeBytes)} · {disk.serial || disk.path}</option>)}
@@ -677,12 +678,13 @@ function InstallForm({ device, snapshot, now, disabled, perform, session, refres
           disabled={disabled || blockers.length > 0} prefix={prefix}
           onChange={value => { setRecoveryPublicKey(value); setAcknowledged(false); setConfirmation('') }} />
         {selectedDisk && <p className="hardware-selected-disk"><strong>Selected disk:</strong> {selectedDisk.model || 'Model not reported'} · {formatBytes(selectedDisk.sizeBytes)} · Serial: {selectedDisk.serial || 'Not reported'}<span>{selectedDisk.id}</span></p>}
-        <div className="hardware-erasure" id={`${prefix}-warning`}><Icon name="attention" /><p><strong>All data on this disk will be erased.</strong> This cannot be undone. Back up anything you want to keep before approving.</p></div>
-        <label className="hardware-checkbox"><input type="checkbox" checked={acknowledged} required onChange={event => setAcknowledged(event.target.checked)} />I have checked this physical device, matched its verification code, and approve erasing the selected disk.</label>
+        {selectedDisk && dataDisks.length > 0 && <p className="hardware-selected-disk"><strong>Data volume at /srv/data:</strong> {dataDisks.map(disk => `${disk.model || disk.path} · ${formatBytes(disk.sizeBytes)}`).join(', ')}</p>}
+        <div className="hardware-erasure" id={`${prefix}-warning`}><Icon name="attention" /><p><strong>All data on every disk in this machine will be erased</strong>{dataDisks.length > 0 && <>, including the {dataDisks.length === 1 ? 'other disk' : `${dataDisks.length} other disks`}, which become one data volume</>}. This cannot be undone. Back up anything you want to keep before approving.</p></div>
+        <label className="hardware-checkbox"><input type="checkbox" checked={acknowledged} required onChange={event => setAcknowledged(event.target.checked)} />I have checked this physical device, matched its verification code, and approve erasing all of its disks.</label>
         <label className="hardware-confirmation" htmlFor={`${prefix}-confirmation`}>Type ERASE to confirm
           <input id={`${prefix}-confirmation`} value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" autoCapitalize="characters" spellCheck={false} required pattern="ERASE" aria-describedby={`${prefix}-warning`} />
         </label>
-        <button className="button primary" type="submit" disabled={!selectedDisk || !acknowledged || confirmation !== 'ERASE' || !hostname || !recoveryPublicKey}>Erase selected disk and install</button>
+        <button className="button primary" type="submit" disabled={!selectedDisk || !acknowledged || confirmation !== 'ERASE' || !hostname || !recoveryPublicKey}>{dataDisks.length > 0 ? 'Erase all disks and install' : 'Erase disk and install'}</button>
       </fieldset>
       {error && <p className="hardware-failure" role="alert" tabIndex={-1} ref={errorSummary}>{error}</p>}
     </form>

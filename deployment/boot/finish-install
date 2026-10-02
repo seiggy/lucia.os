@@ -3,6 +3,17 @@ set -eu
 umask 077
 [ -f /etc/lucia/installation-enabled ]
 . /etc/lucia/discovery.conf
+# The guard cleared every other fixed disk; pool them into one ext4 volume at /srv/data.
+if [ -s /run/lucia/data-disks ] && ! grep -q ' /srv/data ' /target/etc/fstab; then
+    command -v lvm >/dev/null 2>&1 || anna-install lvm2-udeb
+    data=$(cat /run/lucia/data-disks)
+    if lvm pvcreate -ff -y $data && lvm vgcreate lucia-data $data && lvm lvcreate -y -l 100%FREE -n data lucia-data \
+        && mkfs.ext4 -q -L lucia-data /dev/lucia-data/data && mkdir -p /target/srv/data; then
+        echo '/dev/lucia-data/data /srv/data ext4 defaults,nofail 0 2' >> /target/etc/fstab
+    else
+        echo 'Lucia could not create the /srv/data volume; the data disks are left empty.' >&2
+    fi
+fi
 set -- stage-managed --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt --state-directory /run/lucia
 if [ -n "$LUCIA_CONNECT_ADDRESS" ]; then
     set -- "$@" --connect-address "$LUCIA_CONNECT_ADDRESS"

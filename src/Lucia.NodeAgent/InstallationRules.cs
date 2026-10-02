@@ -183,7 +183,7 @@ internal static class InstallationRules
             d-i grub-installer/only_debian boolean true
             d-i grub-installer/with_other_os boolean false
             tasksel tasksel/first multiselect standard
-            d-i pkgsel/include string openssh-server sudo sssd-ldap libnss-sss libpam-sss libpam-modules ca-certificates curl firmware-realtek libssl3t64 libstdc++6 libgcc-s1 zlib1g
+            d-i pkgsel/include string openssh-server sudo sssd-ldap libnss-sss libpam-sss libpam-modules ca-certificates curl lvm2 firmware-realtek libssl3t64 libstdc++6 libgcc-s1 zlib1g
             d-i pkgsel/upgrade select safe-upgrade
             d-i popularity-contest/participate boolean false
             d-i preseed/late_command string /usr/lib/lucia/finish-install

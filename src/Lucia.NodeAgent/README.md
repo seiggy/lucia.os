@@ -91,8 +91,15 @@ are exposed as CLI options.
    and init.d runs) to its kernel device and sets `partman-auto/disk` and
    `grub-installer/bootdev` to it: partman's `mapdevfs` passes NVMe and
    virtio by-id links through unchanged, so a by-id value matches no disk.
-4. Parent `/usr/lib/lucia/finish-install` invokes `stage-managed` after d-i
-   installation; if it fails, the agent's reason (including which fixed setup
+   Approval covers every fixed disk: first the guard stops device-mapper/md
+   holders that sit only on those disks (one spanning any other disk blocks
+   partitioning), zeroes the first and last MiB of every fixed disk and
+   partition, and lists the other disks in `/run/lucia/data-disks`. Any failure
+   blocks partitioning; `/run/lucia/approved-disk-cleared` prevents a second wipe.
+4. After d-i installation, parent `/usr/lib/lucia/finish-install` pools any
+   disks in `/run/lucia/data-disks` into one LVM volume (`lucia-data/data`,
+   ext4) mounted `nofail` at `/srv/data` (on failure they are left empty and
+   installation continues), then invokes `stage-managed`; if it fails, the agent's reason (including which fixed setup
    step exited) is also written to the installer console, since d-i itself only
    reports "exit code 1". `/target` must be an ext4 root partition on the selected
    physical disk, not an arbitrary bind mount or directory. Unexpected
@@ -111,7 +118,7 @@ Preseed contains fixed English/US/UTC/DHCP settings, the approved hostname,
 Debian `trixie` at HTTPS `deb.debian.org/debian` with the main, contrib, non-free
 and non-free-firmware components (so GPU drivers install without editing sources),
 security/updates, single-disk GPT/EFI/ext4 (no LVM or RAID removal directives),
-locked root/no password user, SSH/sudo/SSSD and Realtek firmware packages,
+locked root/no password user, SSH/sudo/SSSD, lvm2 and Realtek firmware packages,
 and the two fixed parent hooks. Parent scripts remain responsible for
 unconditionally propagating failure and for not entering partman through an
 unguarded alternative path. The agent itself does not perform installation.

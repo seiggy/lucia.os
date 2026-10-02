@@ -2,6 +2,67 @@
 # Read-only images never contain installation-enabled. Install images still
 # require a current, exact-disk grant before the partitioner may proceed.
 trap '' HUP INT TERM
+# Approval covers every fixed disk: Debian goes on the approved one and the rest become the
+# /srv/data volume. partman cannot remove LVM thin pools (e.g. Proxmox's pve/data), so stop
+# device-mapper and md devices that sit only on these disks, then zero their signatures.
+on_disk() (
+    case " $devs " in *" $1 "*) exit 0 ;; esac
+    case $1 in dm-*|md*) ;; *) exit 1 ;; esac
+    for s in /sys/class/block/"$1"/slaves/*; do
+        [ -e "$s" ] && on_disk "${s##*/}" || exit 1
+    done
+)
+drop_holders() (
+    for h in /sys/class/block/"$1"/holders/*; do
+        h=${h##*/}
+        [ -e /sys/class/block/"$h" ] || continue
+        on_disk "$h" || { echo "/dev/$h also uses a removable disk; clear it by hand" >&2; exit 1; }
+        drop_holders "$h" || exit 1
+        case $h in
+            md*) command -v mdadm >/dev/null || anna-install mdadm-udeb; mdadm --stop /dev/"$h" ;;
+            *) command -v dmsetup >/dev/null || anna-install dmsetup-udeb; dmsetup remove "$(cat /sys/class/block/"$h"/dm/name)" ;;
+        esac || { echo "/dev/$h is in use" >&2; exit 1; }
+    done
+)
+zero_ends() {
+    size=$(cat /sys/class/block/"$1"/size)
+    count=2048
+    [ "$size" -gt 4096 ] || count=$size
+    dd if=/dev/zero of=/dev/"$1" bs=512 count="$count" 2>/dev/null || return 1
+    [ "$size" -le 4096 ] || dd if=/dev/zero of=/dev/"$1" bs=512 count=2048 seek=$((size - 2048)) 2>/dev/null
+}
+clear_disks() {
+    disks=
+    for b in /sys/block/*; do
+        name=${b##*/}
+        case $name in loop*|ram*|zram*|sr*|scd*|fd*) continue ;; esac
+        [ -d "$b/device" ] && [ "$(cat "$b/removable")" = 0 ] && [ "$(cat "$b/ro")" = 0 ] || continue
+        [ "$(cat "$b/device/type" 2>/dev/null)" = 5 ] && continue
+        disks="$disks $name"
+    done
+    case " $disks " in *" ${1#/dev/} "*) ;; *) echo "the approved disk is not a fixed disk" >&2; return 1 ;; esac
+    devs=$disks
+    for name in $disks; do
+        for p in /sys/block/"$name"/"$name"*; do
+            [ -e "$p/partition" ] && devs="$devs ${p##*/}"
+        done
+    done
+    for d in $devs; do
+        drop_holders "$d" || return 1
+    done
+    for d in $devs; do
+        case " $disks " in *" $d "*) ;; *) zero_ends "$d" || return 1 ;; esac
+    done
+    for name in $disks; do
+        zero_ends "$name" || return 1
+    done
+    sync
+    : > /run/lucia/data-disks
+    for name in $disks; do
+        blockdev --rereadpt /dev/"$name" 2>/dev/null || true
+        [ "/dev/$name" = "$1" ] || echo "/dev/$name" >> /run/lucia/data-disks
+    done
+}
 if [ -f /etc/lucia/installation-enabled ] && [ -r /etc/lucia/discovery.conf ]; then
     . /etc/lucia/discovery.conf
     set -- installation-guard --server "$LUCIA_SERVER" --ca-file /etc/lucia/public-ca.crt --state-directory /run/lucia
@@ -24,9 +85,14 @@ if [ -f /etc/lucia/installation-enabled ] && [ -r /etc/lucia/discovery.conf ]; t
         case "$id:$disk" in
             /dev/disk/by-id/*:/dev/[a-z]*)
                 if [ -b "$disk" ] && [ "${disk#/dev/*/}" = "$disk" ]; then
-                    db_set partman-auto/disk "$disk"
-                    db_set grub-installer/bootdev "$disk"
-                    exit 0
+                    if [ -f /run/lucia/approved-disk-cleared ] || clear_disks "$disk"; then
+                        : > /run/lucia/approved-disk-cleared
+                        db_set partman-auto/disk "$disk"
+                        db_set grub-installer/bootdev "$disk"
+                        exit 0
+                    fi
+                    echo "Lucia could not clear the disks. Partitioning is blocked." >&2
+                    while :; do sleep 3600; done
                 fi ;;
         esac
         echo "Lucia could not resolve the approved disk. Partitioning is blocked." >&2

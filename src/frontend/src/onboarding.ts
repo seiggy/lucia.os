@@ -361,7 +361,7 @@ export interface InstallApproval { hostname: string; diskId: string; confirmatio
 export function validateInstallApproval(snapshot: OnboardingSnapshot, device: OnboardingDevice, input: InstallApproval, acknowledged: boolean, now = Date.now()): InstallApproval {
   const blockers = installationBlockers(snapshot, device, now)
   if (blockers.length) throw new Error(blockers[0])
-  if (!acknowledged) throw new Error('Confirm that all data on the selected disk may be erased.')
+  if (!acknowledged) throw new Error('Confirm that all data on this machine’s disks may be erased.')
   validateApprovalFields(input)
   const disk = device.hardware.disks.find(disk => disk.id === input.diskId)
   if (!disk || !isInstallableDisk(disk)) throw new Error('Choose a safely identified, writable, nonremovable disk from this device.')
@@ -374,7 +374,7 @@ function validateApprovalFields(input: InstallApproval) {
   if (typeof input.hostname !== 'string' || !/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(input.hostname) || input.hostname === 'localhost')
     throw new Error('Use a hostname of 1–63 lowercase letters, numbers, or hyphens. Start with a letter, end with a letter or number, and do not use localhost.')
   try { diskId(input.diskId) } catch { throw new Error('Choose an exact, whole-disk identifier from this device.') }
-  if (input.confirmation !== 'ERASE') throw new Error('Type ERASE exactly to approve erasing this disk.')
+  if (input.confirmation !== 'ERASE') throw new Error('Type ERASE exactly to approve erasing these disks.')
   if (typeof input.recoveryPublicKey !== 'string' || input.recoveryPublicKey.length > 16384
     || /[\r\n]/.test(input.recoveryPublicKey) || !/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+=*(?: [^\r\n]*)?$/.test(input.recoveryPublicKey.trim()))
     throw new Error('Paste one supported SSH public key for the local recovery administrator, or import one from GitHub. Never paste a private key.')
