@@ -4,8 +4,8 @@ import { ownerRequest } from './managementApi'
 import { parseManagedNodes } from './onboarding'
 import { Icon } from './Icon'
 import { bytes } from './sparkTelemetry'
-import { chatContextRange, downloadProgress, parseContextPlan, parseLocalModels, parseModelStatus, parseProviderStatus, parseRepository, parseSearch, parseServing, record } from './modelManagement'
-import type { ContextPlan, LocalModel, ModelChoice, ModelKind, ModelStatus, ProviderStatus, RepositoryModels, SearchItem, ServingStatus } from './modelManagement'
+import { chatContextRange, downloadProgress, parseContextPlan, parseLocalModels, parseModelStatus, parseProviderStatus, parseRepository, parseSearch, parseServing, parseSparkModel, record } from './modelManagement'
+import type { ContextPlan, LocalModel, ModelChoice, ModelKind, ModelStatus, ProviderStatus, RepositoryModels, SearchItem, ServingStatus, SparkModel } from './modelManagement'
 import './ModelManager.css'
 
 type Access = { session: AuthenticationSession; refreshSession: () => Promise<void>; view?: 'library' | 'find'; server?: string }
@@ -65,6 +65,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
   const [models, setModels] = useState<LocalModel[]>([])
   const [status, setStatus] = useState<ModelStatus | null>(null)
   const [serving, setServing] = useState<ServingStatus | null>(null)
+  const [qwen, setQwen] = useState<SparkModel | null>(null)
   const [serveContext, setServeContext] = useState('')
   // vLLM serves one model the owner picks here; llama.cpp's router serves the whole library; Lucia Inference loads models itself.
   const engine = serving?.engine ?? 'lucia'
@@ -117,15 +118,16 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
     const controller = new AbortController()
     reading.current = controller
     try {
-      const [inventory, runtime, engine] = await Promise.all([
+      const [inventory, runtime, engine, spark] = await Promise.all([
         request(`${base}/models`, 'GET', undefined, controller.signal),
         request(`${base}/status`, 'GET', undefined, controller.signal),
         server ? request(server.serving, 'GET', undefined, controller.signal) : null,
+        server ? null : request('/api/host/spark-model', 'GET', undefined, controller.signal).then(response => response.json()).then(parseSparkModel).catch(() => null),
       ])
       const nextModels = parseLocalModels(await inventory.json())
       const nextStatus = parseModelStatus(await runtime.json())
       const nextServing = engine && parseServing(await engine.json())
-      if (alive.current && !controller.signal.aborted) { setModels(nextModels); setStatus(nextStatus); setServing(nextServing); setError(null) }
+      if (alive.current && !controller.signal.aborted) { setModels(nextModels); setStatus(nextStatus); setServing(nextServing); setQwen(spark); setError(null) }
     } catch (failure) {
       if (alive.current && !controller.signal.aborted)
         setError(failure instanceof Error ? failure.message : 'The model library could not be read.')
@@ -322,6 +324,29 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
       </div></div>
       <p className="section-note">Apps use the model’s repository name, such as {serving.name ?? 'Qwen/Qwen3-8B'}, as the model in their requests.</p>
     </section>}
+    {!server && qwen && (qwen.workerReady || qwen.desired === 'running') && <section hidden={view !== 'library'} className="surface model-manager-section" aria-labelledby="qwen-heading">
+      <h2 id="qwen-heading">Spark recipe</h2>
+      <div className="model-slots"><div>
+        <h3>{qwen.model} on TensorFold</h3>
+        <p className="model-name">{{ starting: 'Starting', running: 'Serving', stopping: 'Stopping', stopped: 'Off', failed: 'Failed' }[qwen.state]}</p>
+        <p className="muted" role={qwen.state === 'failed' ? 'alert' : undefined}>{qwen.state === 'running'
+          ? `${qwen.parallel} conversations at once, ${qwen.contextTokens.toLocaleString()} tokens of context each.`
+          : qwen.message ?? (qwen.state === 'starting' ? 'Preparing the recipe.' : qwen.state === 'stopping' ? 'Lucia reloads its own models once it has stopped.' : '')}</p>
+        {!qwen.workerReady && <p className="muted">The Spark’s model service isn’t reporting. Changes apply once it is back.</p>}
+        {qwen.desired === 'running'
+          ? <button className="text-link" disabled={disabled} onClick={() => setConfirmation({
+            label: `Stop ${qwen.model}`, path: '/api/host/spark-model/stop', method: 'POST',
+            successMessage: 'Stopping. Lucia reloads its own models once the Spark reports it stopped.',
+            description: `Stop ${qwen.model}? Requests still running are cut off. Lucia then reloads its own LLM and embedding model.`,
+          })}>Stop <Icon name="eject" /></button>
+          : <button className="text-link" disabled={disabled || !qwen.workerReady} onClick={() => setConfirmation({
+            label: `Start ${qwen.model}`, path: '/api/host/spark-model/start', method: 'POST',
+            successMessage: 'Starting. The first start downloads about 125 GB, then loads for a few minutes.',
+            description: `Start ${qwen.model}? Lucia unloads its own LLM and embedding model first, since this recipe needs nearly all of the Spark’s memory. The first start downloads about 125 GB.`,
+          })}>Start <Icon name="arrow" /></button>}
+      </div></div>
+      <p className="section-note">A DGX Spark recipe that serves {qwen.model} instead of Lucia’s own models. Apps and the assistant reach it through Lucia’s API as {qwen.model}.</p>
+    </section>}
     <section hidden={view !== 'library' || dedicated} className="surface model-manager-section" aria-labelledby="loaded-models-heading">
       <h2 id="loaded-models-heading">Loaded now</h2>
       <div className="model-slots">{(['Chat', 'Embedding'] as const).map(slot => {
@@ -335,6 +360,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
             })}>Unload <Icon name="eject" /></button></>}
         </div>
       })}</div>
+      {status?.paused && <p className="section-note">{status.paused}</p>}
       {!server && <p className="section-note">{status ? `${status.voiceReserveGiB} GiB is reserved for future voice features.` : 'Memory for future voice features is reserved separately.'} Context estimates also include the other loaded model and OS/services headroom.</p>}
     </section>
     <div hidden={view !== 'find'}>

@@ -34,6 +34,8 @@ public sealed class InferenceRuntime : IAsyncDisposable
     public OpenAIResponsesAdapter ResponsesAdapter { get; }
     public bool HasEmbeddingModel => _embedding is not null;
     public string? StartupError { get; set; }
+    /// <summary>Why loading is refused right now, such as another model holding the memory.</summary>
+    public string? Paused { get; set; }
     public string? ChatModelName => Chat.IsLoaded ? Path.GetFileNameWithoutExtension(Chat.LoadedModelPath) : null;
 
     public InferenceRuntime(ModelCatalog catalog, ModelInspector inspector, IOptions<HostPlatformOptions> options,
@@ -78,7 +80,8 @@ public sealed class InferenceRuntime : IAsyncDisposable
         chat = _chatId is { } chat ? new { id = chat, name = ChatModelName, plan = _chatPlan } : null,
         embedding = _embeddingId is { } embedding ? new { id = embedding, name = _embedding?.ModelName, backend = _embedding?.Backend, plan = _embeddingPlan } : null,
         voiceReserveGiB = _options.VoiceReserveGiB,
-        startupError = StartupError
+        startupError = StartupError,
+        paused = Paused
     };
 
     public object OpenAIModels()
@@ -121,6 +124,7 @@ public sealed class InferenceRuntime : IAsyncDisposable
         await Gate.WaitAsync(cancellationToken);
         try
         {
+            if (Paused is { } reason) throw new InvalidOperationException(reason);
             var model = _catalog.Find(id) ?? throw new KeyNotFoundException("Model not found.");
             var plan = Inspect(id, contextTokens);
             if (plan.EffectiveContextTokens < (model.Source.Kind == ModelKind.Chat ? 256 : 1))

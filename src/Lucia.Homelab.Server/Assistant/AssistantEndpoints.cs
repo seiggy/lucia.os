@@ -42,8 +42,15 @@ public static class AssistantEndpoints
         var problem = string.IsNullOrEmpty(platform.InferenceApiKey) ? "Set HostPlatform:InferenceApiKey to use the Spark's model."
             : model is null ? runtime.StartupError ?? "No chat model is loaded on the Spark. Load one on the AI page."
             : port is null ? "The Spark's model needs the host to listen on HTTP." : null;
+        var context = runtime.Chat.ContextTokens;
+        if (services.GetRequiredService<SparkModel>().Serving() is { } qwen)
+        {
+            (model, context) = (SparkModel.Name, SparkModel.ContextTokens);
+            problem = string.IsNullOrEmpty(platform.InferenceApiKey) ? "Set HostPlatform:InferenceApiKey to use the Spark's model."
+                : port is null ? "The Spark's model needs the host to listen on HTTP." : qwen.Problem;
+        }
         return new(port is { } open ? new UriBuilder("http", "127.0.0.1", open, "v1").Uri : null, platform.InferenceApiKey, model,
-            runtime.Chat.ContextTokens, platform.MaxOutputTokens, problem);
+            context, platform.MaxOutputTokens, problem);
     }
 
     /// <summary>Owner-only; CSRF comes from the global UseHostCsrf middleware. Streams speak the AI SDK UI message protocol.</summary>

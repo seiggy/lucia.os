@@ -28,6 +28,7 @@ internal static class BootstrapPayload
         "tools/nodes/prepare_directory.py",
         "tools/packages/package_worker.py",
         "tools/runners/spark_runner_worker.py",
+        "tools/runners/spark_model_worker.py",
         "deployment/host/Dockerfile",
         "deployment/boot/Dockerfile",
         "deployment/boot/serve.py",

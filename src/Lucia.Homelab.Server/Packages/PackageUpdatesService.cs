@@ -257,6 +257,7 @@ public sealed partial class PackageUpdatesService(IOptions<PackageUpdatesOptions
         if (!stale && (!ready || Busy(status) || PendingRequest() || status?["rebootingAt"] is JsonValue)) return;
         File.Delete(PausePath);
         runtime.StartupError = null;
+        if (runtime.Paused is not null) return;
         try
         {
             var saved = await catalog.ReadSelectionAsync(ct);

@@ -35,7 +35,7 @@ export interface LocalModel {
   downloadedBytes: number | null
 }
 export interface LoadedModel { id: string; name: string; plan: ContextPlan }
-export interface ModelStatus { backend: string; chat: LoadedModel | null; embedding: LoadedModel | null; voiceReserveGiB: number; startupError: string | null }
+export interface ModelStatus { backend: string; chat: LoadedModel | null; embedding: LoadedModel | null; voiceReserveGiB: number; startupError: string | null; paused: string | null }
 export interface ProviderStatus { configured: boolean; accountName: string | null; source: string; validatedAt: string | null }
 export interface SearchItem {
   repository: string; pipelineTag: string | null; downloads: number | null; likes: number | null; gated: boolean; private: boolean
@@ -154,7 +154,17 @@ export function parseModelStatus(value: unknown): ModelStatus {
     return { id: id(item.id), name: text(item.name), plan: parseContextPlan(item.plan) }
   }
   return { backend: text(x.backend), chat: nullable(x.chat, loaded), embedding: nullable(x.embedding, loaded),
-    voiceReserveGiB: finite(x.voiceReserveGiB), startupError: nullable(x.startupError, text) }
+    voiceReserveGiB: finite(x.voiceReserveGiB), startupError: nullable(x.startupError, text), paused: nullable(x.paused ?? null, text) }
+}
+export interface SparkModel { model: string; contextTokens: number; parallel: number; workerReady: boolean; desired: 'running' | 'stopped'
+  state: 'starting' | 'running' | 'stopping' | 'stopped' | 'failed'; since: string | null; message: string | null }
+export function parseSparkModel(value: unknown): SparkModel {
+  const x = record(value)
+  const desired = text(x.desired), state = text(x.state)
+  if ((desired !== 'running' && desired !== 'stopped') || !['starting', 'running', 'stopping', 'stopped', 'failed'].includes(state)
+    || typeof x.workerReady !== 'boolean') throw new Error('The Spark model status was invalid.')
+  return { model: text(x.model), contextTokens: finite(x.contextTokens), parallel: finite(x.parallel), workerReady: x.workerReady, desired,
+    state: state as SparkModel['state'], since: nullable(x.since ?? null, text), message: nullable(x.message ?? null, text) }
 }
 export function parseProviderStatus(value: unknown): ProviderStatus {
   const x = record(value)
