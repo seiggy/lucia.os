@@ -1,0 +1,45 @@
+---
+import { getCollection } from 'astro:content';
+import Docs from '../../layouts/Docs.astro';
+import { u, sections } from '../../lib/url';
+
+const all = await getCollection('docs');
+const groups = sections.map((s) => ({
+  ...s,
+  items: all.filter((d) => d.data.section === s.id).sort((a, b) => a.data.order - b.data.order),
+}));
+const blurbs: Record<string, string> = {
+  'getting-started': 'What your lab needs, how to install Lucia from source, and what to do in the first hour.',
+  architecture: 'How the pieces fit: the Spark, your nodes, DNS, apps, Local AI, the assistant and its jobs.',
+  reference: 'Configuration, the security model, and the honest list of what Lucia does not do yet.',
+};
+---
+<Docs title="Lucia documentation" description="How Lucia runs your homelab, what it assumes about it, and how to install it from source.">
+  <div class="index">
+    {groups.map((g) => (
+      <section aria-labelledby={`s-${g.id}`}>
+        <h2 id={`s-${g.id}`}>{g.label}</h2>
+        <p class="blurb">{blurbs[g.id]}</p>
+        <ul>
+          {g.items.map((d) => (
+            <li>
+              <a href={u(`/docs/${d.id}/`)}>{d.data.title}</a>
+              <span>{d.data.description}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))}
+  </div>
+</Docs>
+
+<style>
+  .index section + section { margin-top: 3em; }
+  .index h2 { margin-top: 0; }
+  .blurb { color: var(--muted); }
+  .index ul { list-style: none; padding: 0; margin-top: 1em; border-top: 1px solid var(--line); }
+  .index li { display: grid; grid-template-columns: minmax(180px, 15rem) 1fr; gap: 4px 24px; padding: 12px 0; border-bottom: 1px solid var(--line); margin: 0; }
+  .index li a { font-weight: 600; }
+  .index li span { color: var(--muted); font-size: 0.9375rem; }
+  @media (max-width: 640px) { .index li { grid-template-columns: 1fr; } }
+</style>

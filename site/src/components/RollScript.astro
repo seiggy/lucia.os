@@ -1,0 +1,41 @@
+<script>
+  // The one authored motion moment: tube banks slot through their cathodes and settle.
+  const banks = document.querySelectorAll<HTMLElement>('[data-roll]');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function roll(bank: HTMLElement) {
+    bank.querySelectorAll<HTMLElement>('.lit').forEach((el, i) => {
+      const final = el.dataset.d ?? el.textContent ?? '';
+      const steps = 6 + i * 3;
+      let n = 0;
+      const t = setInterval(() => {
+        n++;
+        if (n >= steps) {
+          el.textContent = final;
+          el.classList.remove('flick');
+          clearInterval(t);
+          return;
+        }
+        el.classList.add('flick');
+        setTimeout(() => {
+          el.textContent = String(Math.floor(Math.random() * 10));
+          el.classList.remove('flick');
+        }, 45);
+      }, 95);
+    });
+  }
+
+  if (!still && 'IntersectionObserver' in window) {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          io.unobserve(e.target);
+          roll(e.target as HTMLElement);
+        }
+      },
+      { threshold: 0.6 }
+    );
+    banks.forEach((b) => io.observe(b));
+  }
+</script>

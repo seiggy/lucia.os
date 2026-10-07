@@ -1,0 +1,639 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-07T17:40:58+00:00",
+  "title": "Design System: Lucia site",
+  "extensions": {
+    "colorMeta": {
+      "plasma": {
+        "role": "primary",
+        "displayName": "Plasma",
+        "tonalRamp": [
+          "oklch(from #ff8a00 15% c h)",
+          "oklch(from #ff8a00 25% c h)",
+          "oklch(from #ff8a00 35% c h)",
+          "oklch(from #ff8a00 45% c h)",
+          "oklch(from #ff8a00 60% c h)",
+          "oklch(from #ff8a00 75% c h)",
+          "oklch(from #ff8a00 85% c h)",
+          "oklch(from #ff8a00 95% c h)"
+        ]
+      },
+      "plasma-hi": {
+        "role": "primary",
+        "displayName": "Plasma Hi",
+        "tonalRamp": [
+          "oklch(from #ffc27a 15% c h)",
+          "oklch(from #ffc27a 25% c h)",
+          "oklch(from #ffc27a 35% c h)",
+          "oklch(from #ffc27a 45% c h)",
+          "oklch(from #ffc27a 60% c h)",
+          "oklch(from #ffc27a 75% c h)",
+          "oklch(from #ffc27a 85% c h)",
+          "oklch(from #ffc27a 95% c h)"
+        ]
+      },
+      "plasma-glow": {
+        "role": "primary",
+        "displayName": "Plasma Glow (emission halo only)"
+      },
+      "ocean": {
+        "role": "secondary",
+        "displayName": "Ocean, docs light",
+        "tonalRamp": [
+          "oklch(from #285bdd 15% c h)",
+          "oklch(from #285bdd 25% c h)",
+          "oklch(from #285bdd 35% c h)",
+          "oklch(from #285bdd 45% c h)",
+          "oklch(from #285bdd 60% c h)",
+          "oklch(from #285bdd 75% c h)",
+          "oklch(from #285bdd 85% c h)",
+          "oklch(from #285bdd 95% c h)"
+        ]
+      },
+      "ocean-ink": {
+        "role": "secondary",
+        "displayName": "Ocean Ink, docs light links",
+        "tonalRamp": [
+          "oklch(from #2855be 15% c h)",
+          "oklch(from #2855be 25% c h)",
+          "oklch(from #2855be 35% c h)",
+          "oklch(from #2855be 45% c h)",
+          "oklch(from #2855be 60% c h)",
+          "oklch(from #2855be 75% c h)",
+          "oklch(from #2855be 85% c h)",
+          "oklch(from #2855be 95% c h)"
+        ]
+      },
+      "ocean-dark": {
+        "role": "secondary",
+        "displayName": "Ocean, docs dark",
+        "tonalRamp": [
+          "oklch(from #97b3ff 15% c h)",
+          "oklch(from #97b3ff 25% c h)",
+          "oklch(from #97b3ff 35% c h)",
+          "oklch(from #97b3ff 45% c h)",
+          "oklch(from #97b3ff 60% c h)",
+          "oklch(from #97b3ff 75% c h)",
+          "oklch(from #97b3ff 85% c h)",
+          "oklch(from #97b3ff 95% c h)"
+        ]
+      },
+      "soon-amber": {
+        "role": "tertiary",
+        "displayName": "Soon Amber",
+        "tonalRamp": [
+          "oklch(from #c47a2c 15% c h)",
+          "oklch(from #c47a2c 25% c h)",
+          "oklch(from #c47a2c 35% c h)",
+          "oklch(from #c47a2c 45% c h)",
+          "oklch(from #c47a2c 60% c h)",
+          "oklch(from #c47a2c 75% c h)",
+          "oklch(from #c47a2c 85% c h)",
+          "oklch(from #c47a2c 95% c h)"
+        ]
+      },
+      "chassis": {
+        "role": "neutral",
+        "displayName": "Chassis (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "chassis-2": {
+        "role": "neutral",
+        "displayName": "Chassis 2 (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Panel (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "panel-2": {
+        "role": "neutral",
+        "displayName": "Panel 2 (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "rule-2": {
+        "role": "neutral",
+        "displayName": "Rule 2 (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "mesh": {
+        "role": "neutral",
+        "displayName": "Mesh (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "lamp-off": {
+        "role": "neutral",
+        "displayName": "Lamp Off (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "glass": {
+        "role": "neutral",
+        "displayName": "Glass (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Ink 3 (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Ink 2 (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "ink-hi": {
+        "role": "neutral",
+        "displayName": "Ink Hi (steel ramp)",
+        "tonalRamp": [
+          "#0e0e10",
+          "#17181b",
+          "#24272c",
+          "#3a3d42",
+          "#5a6068",
+          "#868c94",
+          "#a9afb6",
+          "#eceef0"
+        ]
+      },
+      "docs-page": {
+        "role": "neutral",
+        "displayName": "Docs page",
+        "tonalRamp": [
+          "oklch(from #f3f5f9 15% c h)",
+          "oklch(from #f3f5f9 25% c h)",
+          "oklch(from #f3f5f9 35% c h)",
+          "oklch(from #f3f5f9 45% c h)",
+          "oklch(from #f3f5f9 60% c h)",
+          "oklch(from #f3f5f9 75% c h)",
+          "oklch(from #f3f5f9 85% c h)",
+          "oklch(from #f3f5f9 95% c h)"
+        ]
+      },
+      "docs-surface": {
+        "role": "neutral",
+        "displayName": "Docs surface",
+        "tonalRamp": [
+          "oklch(from #ffffff 15% c h)",
+          "oklch(from #ffffff 25% c h)",
+          "oklch(from #ffffff 35% c h)",
+          "oklch(from #ffffff 45% c h)",
+          "oklch(from #ffffff 60% c h)",
+          "oklch(from #ffffff 75% c h)",
+          "oklch(from #ffffff 85% c h)",
+          "oklch(from #ffffff 95% c h)"
+        ]
+      },
+      "docs-text": {
+        "role": "neutral",
+        "displayName": "Docs text",
+        "tonalRamp": [
+          "oklch(from #202839 15% c h)",
+          "oklch(from #202839 25% c h)",
+          "oklch(from #202839 35% c h)",
+          "oklch(from #202839 45% c h)",
+          "oklch(from #202839 60% c h)",
+          "oklch(from #202839 75% c h)",
+          "oklch(from #202839 85% c h)",
+          "oklch(from #202839 95% c h)"
+        ]
+      },
+      "docs-muted": {
+        "role": "neutral",
+        "displayName": "Docs muted",
+        "tonalRamp": [
+          "oklch(from #58677d 15% c h)",
+          "oklch(from #58677d 25% c h)",
+          "oklch(from #58677d 35% c h)",
+          "oklch(from #58677d 45% c h)",
+          "oklch(from #58677d 60% c h)",
+          "oklch(from #58677d 75% c h)",
+          "oklch(from #58677d 85% c h)",
+          "oklch(from #58677d 95% c h)"
+        ]
+      },
+      "docs-line": {
+        "role": "neutral",
+        "displayName": "Docs line",
+        "tonalRamp": [
+          "oklch(from #e0e5ee 15% c h)",
+          "oklch(from #e0e5ee 25% c h)",
+          "oklch(from #e0e5ee 35% c h)",
+          "oklch(from #e0e5ee 45% c h)",
+          "oklch(from #e0e5ee 60% c h)",
+          "oklch(from #e0e5ee 75% c h)",
+          "oklch(from #e0e5ee 85% c h)",
+          "oklch(from #e0e5ee 95% c h)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Hero headline and closing line; uppercase; max 5.75rem."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Marketing section heads and the 404 title."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Channel names, trace steps, Not-yet items."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Marketing prose in ink-2 at 62ch."
+      },
+      "label": {
+        "displayName": "Engraved label",
+        "purpose": "Plates, readout keys, provenance; never an eyebrow."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Panel-key labels."
+      },
+      "nixie": {
+        "displayName": "Nixie digit",
+        "purpose": "Tube digits and ghost cathodes; size from bank --w."
+      },
+      "docs-headline": {
+        "displayName": "Docs headline",
+        "purpose": "Article h1, matches the portal headline."
+      },
+      "docs-body": {
+        "displayName": "Docs body",
+        "purpose": "Article prose at 70ch."
+      },
+      "docs-label": {
+        "displayName": "Docs engraved label",
+        "purpose": "Nav groups, TOC head, pager, callout labels (0.8125rem)."
+      }
+    },
+    "shadows": [
+      {
+        "name": "instrument",
+        "value": "inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px #2a2d32, 0 30px 60px rgb(0 0 0 / 0.6)",
+        "purpose": "Hero shift-clock instrument only."
+      },
+      {
+        "name": "bezel",
+        "value": "inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px var(--rule-2), 0 24px 48px rgb(0 0 0 / 0.55)",
+        "purpose": "Screenshot frames."
+      },
+      {
+        "name": "rack",
+        "value": "inset 0 0 0 1px var(--rule), 0 24px 60px rgb(0 0 0 / 0.4)",
+        "purpose": "The rack plate."
+      },
+      {
+        "name": "key",
+        "value": "inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 1px var(--rule-2), 0 6px 14px rgb(0 0 0 / 0.5)",
+        "purpose": "Buttons at rest."
+      },
+      {
+        "name": "key-pressed",
+        "value": "inset 0 1px 3px rgb(0 0 0 / 0.6), 0 0 0 1px var(--rule-2)",
+        "purpose": "Button :active."
+      },
+      {
+        "name": "well",
+        "value": "inset 0 1px 3px rgb(0 0 0 / 0.6), 0 0 0 1px var(--rule)",
+        "purpose": "Recessed fields (saved prompt)."
+      },
+      {
+        "name": "lamp-glow",
+        "value": "0 0 8px var(--plasma)",
+        "purpose": "Lit lamps and toggle knobs."
+      },
+      {
+        "name": "lit-key-halo",
+        "value": "inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 1px #6b3d0a, 0 0 22px rgb(255 138 0 / 0.22), 0 6px 14px rgb(0 0 0 / 0.5)",
+        "purpose": "Lit (primary) button."
+      },
+      {
+        "name": "nixie-glow",
+        "value": "0 0 4px var(--plasma), 0 0 14px var(--plasma), 0 0 30px rgb(255 138 0 / 0.55)",
+        "purpose": "text-shadow on lit tube digits."
+      },
+      {
+        "name": "docs-scrim",
+        "value": "rgb(8 10 14 / 0.55)",
+        "purpose": "Docs dialog ::backdrop."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "All marketing state transitions (0.12–0.2s)."
+      },
+      {
+        "name": "slot-roll",
+        "value": "95ms step, 45ms flick at opacity 0.18, 6 + 3×index steps, IntersectionObserver threshold 0.6, once",
+        "purpose": "The one authored motion; off under prefers-reduced-motion."
+      },
+      {
+        "name": "tube-flick",
+        "value": "opacity 0.14s linear",
+        "purpose": "Digit dim between roll steps."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "lab-feature",
+        "value": "1080px"
+      },
+      {
+        "name": "lab-stack",
+        "value": "900px"
+      },
+      {
+        "name": "lab-nav",
+        "value": "720px"
+      },
+      {
+        "name": "lab-mobile",
+        "value": "640px"
+      },
+      {
+        "name": "docs-toc",
+        "value": "1180px"
+      },
+      {
+        "name": "docs-sheet",
+        "value": "860px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Lit Button",
+      "kind": "button",
+      "refersTo": "button-lit",
+      "description": "Primary CTA panel key; one per group.",
+      "html": "<a class=\"ds-btn ds-btn-lit\" href=\"#\"><span class=\"ds-lamp\"></span>Install from source</a>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; gap:12px; min-height:48px; padding:12px 22px; border-radius:6px; text-decoration:none; font:700 0.9375rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:0.22em; text-transform:uppercase; color:#c2c7cd; background:linear-gradient(180deg,#25282d,#16181b); box-shadow:inset 0 1px 0 rgb(255 255 255 / 0.08),0 0 0 1px #2f3338,0 6px 14px rgb(0 0 0 / 0.5); transition:color .18s cubic-bezier(0.22,1,0.36,1), box-shadow .18s cubic-bezier(0.22,1,0.36,1), transform .12s cubic-bezier(0.22,1,0.36,1); } .ds-lamp { width:7px; height:7px; border-radius:50%; background:#50555c; box-shadow:inset 0 1px 1px rgb(0 0 0 / 0.6); } a.ds-btn:hover { color:#ffc27a; } a.ds-btn:hover .ds-lamp { background:#ff8a00; box-shadow:0 0 8px #ff8a00; } a.ds-btn:active { transform:translateY(1px); box-shadow:inset 0 1px 3px rgb(0 0 0 / 0.6),0 0 0 1px #2f3338; } .ds-btn:focus-visible { outline:2px solid #ffc27a; outline-offset:3px; } .ds-btn-lit { color:#ffc27a; box-shadow:inset 0 1px 0 rgb(255 255 255 / 0.08),0 0 0 1px #6b3d0a,0 0 22px rgb(255 138 0 / 0.22),0 6px 14px rgb(0 0 0 / 0.5); } .ds-btn-lit .ds-lamp { background:#ff8a00; box-shadow:0 0 8px #ff8a00; } .ds-btn-lit:hover { color:#fff; }"
+    },
+    {
+      "name": "Plain Button",
+      "kind": "button",
+      "refersTo": "button-plain",
+      "description": "Secondary panel key; lamp lights on hover.",
+      "html": "<a class=\"ds-btn\" href=\"#\"><span class=\"ds-lamp\"></span>Star on GitHub<svg viewBox=\"0 0 12 12\" width=\"12\" height=\"12\" style=\"opacity:.7\"><path d=\"M3.5 2.5h6v6M9.5 2.5 2.5 9.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"square\"/></svg></a>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; gap:12px; min-height:48px; padding:12px 22px; border-radius:6px; text-decoration:none; font:700 0.9375rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:0.22em; text-transform:uppercase; color:#c2c7cd; background:linear-gradient(180deg,#25282d,#16181b); box-shadow:inset 0 1px 0 rgb(255 255 255 / 0.08),0 0 0 1px #2f3338,0 6px 14px rgb(0 0 0 / 0.5); transition:color .18s cubic-bezier(0.22,1,0.36,1), box-shadow .18s cubic-bezier(0.22,1,0.36,1), transform .12s cubic-bezier(0.22,1,0.36,1); } .ds-lamp { width:7px; height:7px; border-radius:50%; background:#50555c; box-shadow:inset 0 1px 1px rgb(0 0 0 / 0.6); } a.ds-btn:hover { color:#ffc27a; } a.ds-btn:hover .ds-lamp { background:#ff8a00; box-shadow:0 0 8px #ff8a00; } a.ds-btn:active { transform:translateY(1px); box-shadow:inset 0 1px 3px rgb(0 0 0 / 0.6),0 0 0 1px #2f3338; } .ds-btn:focus-visible { outline:2px solid #ffc27a; outline-offset:3px; }"
+    },
+    {
+      "name": "Soon Button",
+      "kind": "button",
+      "refersTo": "button-soon",
+      "description": "Non-link key for unreleased capability.",
+      "html": "<span class=\"ds-btn ds-btn-soon\" aria-disabled=\"true\"><span class=\"ds-lamp\"></span>Desktop bootstrap<span class=\"ds-soon-tag\">Coming soon</span></span>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; gap:12px; min-height:48px; padding:12px 22px; border-radius:6px; text-decoration:none; font:700 0.9375rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:0.22em; text-transform:uppercase; color:#c2c7cd; background:linear-gradient(180deg,#25282d,#16181b); box-shadow:inset 0 1px 0 rgb(255 255 255 / 0.08),0 0 0 1px #2f3338,0 6px 14px rgb(0 0 0 / 0.5); transition:color .18s cubic-bezier(0.22,1,0.36,1), box-shadow .18s cubic-bezier(0.22,1,0.36,1), transform .12s cubic-bezier(0.22,1,0.36,1); } .ds-lamp { width:7px; height:7px; border-radius:50%; background:#50555c; box-shadow:inset 0 1px 1px rgb(0 0 0 / 0.6); } a.ds-btn:hover { color:#ffc27a; } a.ds-btn:hover .ds-lamp { background:#ff8a00; box-shadow:0 0 8px #ff8a00; } a.ds-btn:active { transform:translateY(1px); box-shadow:inset 0 1px 3px rgb(0 0 0 / 0.6),0 0 0 1px #2f3338; } .ds-btn:focus-visible { outline:2px solid #ffc27a; outline-offset:3px; } .ds-btn-soon { color:#7a8088; background:linear-gradient(180deg,#1b1d21,#131417); cursor:default; } .ds-soon-tag { font-size:0.6875rem; letter-spacing:0.2em; color:#c47a2c; border-left:1px solid #2f3338; padding-left:12px; }"
+    },
+    {
+      "name": "Tube Bank",
+      "kind": "custom",
+      "refersTo": "tube-lit",
+      "description": "Nixie tubes with all ten ghost cathodes; lit / dim / blank.",
+      "html": "<div class=\"ds-bank\" role=\"img\" aria-label=\"07\"><span class=\"ds-tube\"><span class=\"ds-ghost\"><i>0</i><i>1</i><i>2</i><i>3</i><i>4</i><i>5</i><i>6</i><i>7</i><i>8</i><i>9</i></span><span class=\"ds-lit\">0</span></span><span class=\"ds-tube\"><span class=\"ds-ghost\"><i>0</i><i>1</i><i>2</i><i>3</i><i>4</i><i>5</i><i>6</i><i>7</i><i>8</i><i>9</i></span><span class=\"ds-lit\">7</span></span><span class=\"ds-tube ds-dim\"><span class=\"ds-ghost\"><i>0</i><i>1</i><i>2</i><i>3</i><i>4</i><i>5</i><i>6</i><i>7</i><i>8</i><i>9</i></span><span class=\"ds-lit\">8</span></span></div>",
+      "css": ".ds-bank { --w:58px; --h:110px; --fs:80px; display:flex; gap:7px; align-items:flex-end; padding:16px; background:#0e0e10; } .ds-tube { position:relative; width:var(--w); height:var(--h); border-radius:calc(var(--w)/2) calc(var(--w)/2) calc(var(--w)*.14) calc(var(--w)*.14); background:radial-gradient(120% 60% at 30% 8%, rgb(255 255 255 / .16), transparent 45%), repeating-linear-gradient(60deg, rgb(166 172 180 / .07) 0 1px, transparent 1px 7px), repeating-linear-gradient(-60deg, rgb(166 172 180 / .07) 0 1px, transparent 1px 7px), linear-gradient(180deg, rgb(40 30 22 / .55), rgb(10 10 12 / .92)); box-shadow:inset 0 0 0 1px rgb(166 172 180 / .26), inset 0 -14px 18px rgb(0 0 0 / .6); overflow:hidden; } .ds-tube::after { content:''; position:absolute; left:11%; right:11%; bottom:0; height:9%; background:linear-gradient(180deg,#2b2e33,#0d0e10); border-radius:3px 3px 8px 8px; } .ds-ghost, .ds-lit { position:absolute; inset:0 0 10%; display:grid; place-items:center; font:200 var(--fs)/1 'Saira Extra Condensed','Arial Narrow',sans-serif; } .ds-ghost i { grid-area:1/1; font-style:normal; color:rgb(166 172 180 / .045); } .ds-lit { color:#ffc27a; text-shadow:0 0 4px #ff8a00, 0 0 14px #ff8a00, 0 0 30px rgb(255 138 0 / .55); } .ds-dim .ds-lit { color:rgb(166 172 180 / .13); text-shadow:none; }"
+    },
+    {
+      "name": "Screenshot Plate",
+      "kind": "custom",
+      "refersTo": "shot-plate",
+      "description": "Bezel-framed capture with provenance plate.",
+      "html": "<figure class=\"ds-shot\"><div class=\"ds-bezel\"><div class=\"ds-img\"></div></div><figcaption class=\"ds-plate\"><span><span class=\"ds-engr\">Captured</span> lucia.homelab.seiggy.com/#/ai/jobs</span><span><span class=\"ds-engr\">On</span> 2026-10-07</span><span class=\"ds-engr ds-unret\">Unretouched</span></figcaption></figure>",
+      "css": ".ds-shot { margin:0; padding:20px; background:#0e0e10; } .ds-bezel { padding:10px; border-radius:12px; background:linear-gradient(180deg,#1f2126,#121316); box-shadow:inset 0 1px 0 rgb(255 255 255 / .06), 0 0 0 1px #2f3338, 0 24px 48px rgb(0 0 0 / .55); } .ds-img { aspect-ratio:1440/900; border-radius:4px; background:#f3f5f9; box-shadow:0 0 0 1px #000; } .ds-plate { display:flex; flex-wrap:wrap; gap:6px 22px; margin-top:10px; padding:0 4px; font:400 0.8125rem/1.4 'Saira',system-ui,sans-serif; color:#a9afb6; } .ds-engr { font:500 0.6875rem/1.3 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.22em; text-transform:uppercase; color:#868c94; margin-right:6px; } .ds-unret { margin-left:auto; margin-right:0; color:#c47a2c; }"
+    },
+    {
+      "name": "Rack Channel",
+      "kind": "card",
+      "refersTo": "rack-channel",
+      "description": "One row in the rack: readout, plate caption, title, prose, more-link.",
+      "html": "<article class=\"ds-ch\"><div class=\"ds-read\"><span class=\"ds-lamps\"><span class=\"ds-lamp-on\"></span>lucialab01</span><p class=\"ds-engr\">Example lab</p></div><div class=\"ds-copy\"><h3 class=\"ds-h3\">DNS that survives a reboot</h3><p>AdGuard runs on every node, each on its own virtual IP.</p><a class=\"ds-more\" href=\"#\">AdGuard high availability</a></div></article>",
+      "css": ".ds-ch { display:grid; grid-template-columns:200px 1fr; gap:16px 48px; align-items:center; padding:34px 28px; background:#101113; border-bottom:1px solid #24272c; color:#a9afb6; font:400 1.0625rem/1.6 'Saira',system-ui,sans-serif; } .ds-read, .ds-copy { display:grid; gap:12px; justify-items:start; } .ds-lamps { display:flex; align-items:center; gap:12px; color:#d7d9dc; font-size:.9375rem; } .ds-lamp-on { width:7px; height:7px; border-radius:50%; background:#ff8a00; box-shadow:0 0 8px #ff8a00; } .ds-engr { font:500 .75rem/1.3 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.22em; text-transform:uppercase; color:#8a9098; } .ds-h3 { font:500 1.5rem/1.1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.1em; text-transform:uppercase; color:#eceef0; } .ds-more { display:inline-flex; align-items:center; gap:10px; font:500 .875rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.2em; text-transform:uppercase; color:#d7d9dc; text-decoration:none; padding-block:8px; } .ds-more::after { content:''; width:30px; height:1px; background:currentColor; transform:scaleX(.6); transform-origin:left; transition:transform .2s cubic-bezier(0.22,1,0.36,1); } .ds-more:hover { color:#ffc27a; } .ds-more:hover::after { transform:scaleX(1); } .ds-more:focus-visible { outline:2px solid #ffc27a; outline-offset:3px; border-radius:4px; }"
+    },
+    {
+      "name": "Docs Chassis",
+      "kind": "nav",
+      "refersTo": "docs-chassis",
+      "description": "Sticky dark header bridging docs to the laboratory, in every theme.",
+      "html": "<header class=\"ds-chassis\"><a class=\"ds-mark\" href=\"#\">Lucia</a><a class=\"ds-sub\" href=\"#\">Docs</a><span style=\"flex:1\"></span><button class=\"ds-search\" type=\"button\"><span>Search docs</span><kbd>/</kbd></button></header>",
+      "css": ".ds-chassis { display:flex; align-items:center; gap:14px; height:56px; padding-inline:20px; background:#0e0e10; border-bottom:1px solid #24272c; } .ds-mark { font:300 1.25rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.48em; text-transform:uppercase; color:#d7d9dc; text-decoration:none; } .ds-sub { font:500 .75rem/1.3 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.2em; text-transform:uppercase; color:#ffc27a; text-decoration:none; padding-left:14px; border-left:1px solid #3a3d42; } .ds-search { display:inline-flex; align-items:center; gap:10px; height:38px; min-width:220px; padding:0 10px 0 12px; border:1px solid #2f3338; border-radius:8px; background:#17181b; color:#9aa1a9; font:400 .875rem -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; cursor:pointer; } .ds-search span { flex:1; text-align:left; } .ds-search kbd { font:.75rem ui-monospace,Consolas,monospace; padding:1px 6px; border:1px solid #3a3d42; border-radius:4px; color:#868c94; } .ds-search:hover { border-color:#4a4f56; color:#d7d9dc; } .ds-chassis :focus-visible { outline:2px solid #ff8a00; outline-offset:2px; border-radius:4px; }"
+    },
+    {
+      "name": "Docs Callout",
+      "kind": "card",
+      "refersTo": "docs-callout-note",
+      "description": "GitHub-alert callouts: note / requires / caution / destructive.",
+      "html": "<div class=\"ds-docs\"><aside class=\"ds-callout\"><p class=\"ds-label\">Note</p><p>Search is built with the production site.</p></aside><aside class=\"ds-callout ds-caution\"><p class=\"ds-label\">Caution</p><p>This restarts every app on the node.</p></aside><aside class=\"ds-callout ds-destructive\"><p class=\"ds-label\">Destructive</p><p>Deleting an app removes its volumes.</p></aside></div>",
+      "css": ".ds-docs { display:grid; gap:14px; padding:20px; background:#f3f5f9; color:#202839; font:400 1rem/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; } .ds-callout { padding:14px 18px 16px; border-radius:10px; background:#eef3ff; border:1px solid #cfdcfb; } .ds-callout > * + * { margin-top:.6em; } .ds-callout p { margin:0; } .ds-label { font:500 .8125rem/1 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.22em; text-transform:uppercase; color:#2855be; display:flex; align-items:center; gap:8px; } .ds-label::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; } .ds-caution { background:#fff2dc; border-color:#e9d3aa; } .ds-caution .ds-label { color:#785417; } .ds-destructive { background:#fff0e9; border-color:#efc9bd; } .ds-destructive .ds-label { color:#963c2a; }"
+    },
+    {
+      "name": "Docs Nav Link",
+      "kind": "nav",
+      "refersTo": "docs-nav-link-current",
+      "description": "Sidebar group with engraved label and Ocean-tinted current page.",
+      "html": "<nav class=\"ds-nav\"><p class=\"ds-engr\">Architecture</p><a href=\"#\">Overview</a><a href=\"#\" aria-current=\"page\">Nodes</a><a href=\"#\">Local AI</a></nav>",
+      "css": ".ds-nav { display:grid; gap:2px; padding:20px; width:248px; background:#f3f5f9; font:400 .9375rem/1.35 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; } .ds-engr { margin:0 0 8px; font:500 .75rem/1.3 'Saira Extra Condensed','Arial Narrow',sans-serif; letter-spacing:.2em; text-transform:uppercase; color:#58677d; } .ds-nav a { display:block; padding:6px 10px; margin-left:-10px; border-radius:8px; color:#202839; text-decoration:none; } .ds-nav a:hover { background:#e9edf4; } .ds-nav a[aria-current='page'] { background:color-mix(in srgb, #285bdd 12%, #ffffff); color:#2855be; font-weight:600; } .ds-nav a:focus-visible { outline:2px solid #285bdd; outline-offset:2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Nixie Laboratory Counter",
+    "overview": "**Creative North Star: \"The Nixie Laboratory Counter\"**\n\nThe site is two worlds joined at one seam. The marketing world (Persuade mode: `index.astro`, `404.astro`, `Lab.astro`, `lab.css`) is a dark instrument panel: brushed chassis, hairline-ringed plates, rack rails, and banks of Nixie tubes whose lit digits are the only hot light in the room. Numbers in the tubes are real figures from the code or a working lab (02:00, 07:00, 30, 13, 200, 443, 10), so the counter is evidence, not ornament. Copy is short, uppercase-condensed at the top of each section and plain sentence-case Saira below.\n\nThe docs world (Read mode: `Docs.astro`, `docs.css`) deliberately reads like the portal: the app's cool neutrals, Ocean accent, system font stack, light/dark/system theme. It bridges back to the laboratory through a dark chassis header that never changes with theme, and through Saira Extra Condensed engraved labels on nav groups, callouts, pager and TOC.\n\nDensity is generous in marketing (sections breathe at 64–120px) and calm-reader in docs (70ch article, sticky sidebar and TOC). Imagery is unretouched evidence only.",
+    "keyCharacteristics": [
+      "Dark-only marketing chassis; plasma orange is light emission, rationed.",
+      "Nixie tube banks with all ten ghost cathodes; lit, dim and blank states.",
+      "Rack channel rows, spec plates and readouts instead of card grids.",
+      "Provenance plate on every screenshot.",
+      "One authored motion moment: the tube slot-roll.",
+      "Docs match the portal (Ocean, system type, light/dark/system) under a chassis header."
+    ],
+    "rules": [
+      {
+        "name": "The Rationed Plasma Rule",
+        "body": "Plasma and plasma-hi appear only where something is lit: tube digits, the primary CTA, the on-duty lamp and readout, the lit-word, state lamps, hover and focus. Resting links, body text, borders and decoration never take orange.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Worlds Rule",
+        "body": "Marketing is dark-only steel and plasma; docs is the portal's neutrals and Ocean with a light/dark/system switch. Orange enters docs only inside the chassis header; Ocean never enters the laboratory.",
+        "section": "colors"
+      },
+      {
+        "name": "The Engraved Label Rule",
+        "body": "Condensed uppercase labels name a value, a group or a plate, the way engraving names a dial. They sit beside or below what they name, never as an eyebrow above a heading.",
+        "section": "typography"
+      },
+      {
+        "name": "The Lit Word Rule",
+        "body": "At most one phrase per headline is lit, and only when it carries the promise (\"2 a.m.\"). Headings never use gradient text.",
+        "section": "typography"
+      },
+      {
+        "name": "The Rack, Not Grid Rule",
+        "body": "Repeated features are rows in one rack, each with its own readout (tube bank, lamp list, keyswitch), never a grid of identical cards.",
+        "section": "layout"
+      },
+      {
+        "name": "The Emitted Light Rule",
+        "body": "Orange glow means something is switched on. Never use a glow, coloured shadow or hard offset shadow as decoration.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Ghost Cathode Rule",
+        "body": "A tube always shows all ten cathodes. Absence is shown as a dark tube, not a missing one.",
+        "section": "components"
+      },
+      {
+        "name": "The One Motion Rule",
+        "body": "The only authored motion is the slot-roll: when a lit bank is 60% visible (IntersectionObserver, once), each tube flickers through random digits every 95ms (45ms dim at 18% opacity) for 6 + 3×index steps, then settles. Dim and blank banks never roll. With reduced motion the script does nothing and smooth scrolling is off. Everything else is a ≤0.2s state transition.",
+        "section": "components"
+      },
+      {
+        "name": "The Provenance Plate Rule",
+        "body": "Every product screenshot, in either world, carries where and when it was captured and that it is unretouched.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "**Do** keep plasma for lit things: tube digits, the one lit CTA per group, lamps, readouts, the lit-word, hover and focus.",
+      "**Do** put a real, sourced number in every lit tube and give the bank a plain-language `aria-label`.",
+      "**Do** show missing or planned capability as `dim` or `blank` tubes and `soon` buttons, never as hidden content.",
+      "**Do** frame every product screenshot with a provenance plate or caption (route, capture date, \"Unretouched\").",
+      "**Do** build repeated features as rack rows with distinct readouts; use `dl` plates for specs and modes.",
+      "**Do** keep marketing prose at ≤62ch and docs prose at 70ch.",
+      "**Do** keep docs aligned with the portal: same neutrals, Ocean accent, system type, light/dark/system theme.",
+      "**Do** honour `prefers-reduced-motion`: no roll, no smooth scroll, no transitions."
+    ],
+    "donts": [
+      "**Don't** use orange for resting links, body text, borders, icons or decoration, or invent new orange tints.",
+      "**Don't** place engraved labels as eyebrows above headings.",
+      "**Don't** build identical card grids.",
+      "**Don't** use gradient text, side stripes wider than 1px, or decorative glows and offset shadows.",
+      "**Don't** set display type above 5.75rem (hard ceiling 6rem).",
+      "**Don't** add a second authored motion; state changes stay ≤0.2s.",
+      "**Don't** retouch, mock up or composite screenshots, or ship captures that show personal data.",
+      "**Don't** bring Ocean into the laboratory, or let the docs chassis follow the light theme."
+    ]
+  }
+}

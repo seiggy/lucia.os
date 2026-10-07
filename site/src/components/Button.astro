@@ -1,0 +1,48 @@
+---
+interface Props {
+  href?: string;
+  kind?: 'lit' | 'plain' | 'soon';
+  external?: boolean;
+  class?: string;
+}
+const { href, kind = 'plain', external = false, class: cls } = Astro.props;
+const Tag = kind === 'soon' || !href ? 'span' : 'a';
+---
+<Tag
+  class:list={['btn', `btn-${kind}`, cls]}
+  href={Tag === 'a' ? href : undefined}
+  rel={external ? 'noopener' : undefined}
+  aria-disabled={kind === 'soon' ? 'true' : undefined}
+>
+  <span class="lamp" aria-hidden="true"></span>
+  <span class="btn-label"><slot /></span>
+  {kind === 'soon' && <span class="soon-tag">Coming soon</span>}
+  {external && (
+    <svg class="ext" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      <path d="M3.5 2.5h6v6M9.5 2.5 2.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square" />
+    </svg>
+  )}
+</Tag>
+
+<style>
+  .btn {
+    display: inline-flex; align-items: center; gap: 12px; min-height: 48px; padding: 12px 22px;
+    border-radius: 6px; text-decoration: none;
+    font: 700 0.9375rem/1 var(--cond); letter-spacing: 0.22em; text-transform: uppercase;
+    color: #c2c7cd;
+    background: linear-gradient(180deg, #25282d, #16181b);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 1px var(--rule-2), 0 6px 14px rgb(0 0 0 / 0.5);
+    transition: color 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), transform 0.12s var(--ease-out);
+  }
+  .lamp { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #50555c; box-shadow: inset 0 1px 1px rgb(0 0 0 / 0.6); }
+  a.btn:hover { color: var(--plasma-hi); }
+  a.btn:hover .lamp { background: var(--plasma); box-shadow: 0 0 8px var(--plasma); }
+  a.btn:active { transform: translateY(1px); box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.6), 0 0 0 1px var(--rule-2); }
+  .btn-lit { color: var(--plasma-hi); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 0 1px #6b3d0a, 0 0 22px rgb(255 138 0 / 0.22), 0 6px 14px rgb(0 0 0 / 0.5); }
+  .btn-lit .lamp { background: var(--plasma); box-shadow: 0 0 8px var(--plasma); }
+  .btn-lit:hover { color: #fff; }
+  .btn-soon { color: #7a8088; background: linear-gradient(180deg, #1b1d21, #131417); cursor: default; }
+  .soon-tag { font-size: 0.6875rem; letter-spacing: 0.2em; color: #c47a2c; border-left: 1px solid var(--rule-2); padding-left: 12px; }
+  .ext { opacity: 0.7; }
+  @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+</style>

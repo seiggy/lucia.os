@@ -1,0 +1,21 @@
+---
+import Lab from '../layouts/Lab.astro';
+import TubeBank from '../components/TubeBank.astro';
+import Button from '../components/Button.astro';
+import { u } from '../lib/url';
+---
+<Lab title="Not found · Lucia" description="This page is not wired to anything.">
+  <section class="nf wrap">
+    <TubeBank value="404" label="404" size="lg" />
+    <h1 class="h2">Nothing on this channel</h1>
+    <p class="prose-m">The page you asked for isn't patched in. It may have moved when the docs were reorganised.</p>
+    <div class="cta">
+      <Button href={u('/')} kind="lit">Back to the panel</Button>
+      <Button href={u('/docs/')} kind="plain">Read the docs</Button>
+    </div>
+  </section>
+</Lab>
+<style>
+  .nf { min-height: 70dvh; display: grid; align-content: center; justify-items: start; gap: 28px; padding-block: 96px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; }
+</style>

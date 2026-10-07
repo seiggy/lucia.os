@@ -1,0 +1,337 @@
+---
+import '../styles/docs.css';
+import { getCollection } from 'astro:content';
+import { u, repo, sections } from '../lib/url';
+
+interface Props {
+  title: string;
+  description: string;
+  current?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+  source?: string;
+}
+const { title, description, current, headings = [], source } = Astro.props;
+
+const sectionOrder: string[] = sections.map((s) => s.id);
+const all = (await getCollection('docs')).sort(
+  (a, b) => sectionOrder.indexOf(a.data.section) - sectionOrder.indexOf(b.data.section) || a.data.order - b.data.order
+);
+const groups = sections.map((s) => ({ ...s, items: all.filter((d) => d.data.section === s.id) }));
+const idx = all.findIndex((d) => d.id === current);
+const prev = idx > 0 ? all[idx - 1] : undefined;
+const next = idx >= 0 && idx < all.length - 1 ? all[idx + 1] : undefined;
+const href = (id: string) => u(`/docs/${id}/`);
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const pageTitle = current ? `${title} · Lucia docs` : title;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={u('/favicon.svg')} type="image/svg+xml" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={new URL(u('/images/og.png'), Astro.site)} />
+    <script is:inline>
+      try {
+        const t = localStorage.getItem('lucia-docs-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#doc">Skip to content</a>
+    <header class="chassis">
+      <div class="chassis-in">
+        <button class="menu-btn icon-btn" type="button" data-open="nav-sheet" aria-label="Open contents">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" stroke-width="1.6" fill="none" /></svg>
+        </button>
+        <a class="mark" href={u('/')}>Lucia</a>
+        <a class="mark-sub engr" href={u('/docs/')}>Docs</a>
+        <span class="grow"></span>
+        <button class="search-btn" type="button" data-open="search" aria-keyshortcuts="/">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6" fill="none" /><path d="m13 13 4 4" stroke="currentColor" stroke-width="1.6" /></svg>
+          <span>Search docs</span>
+          <kbd>/</kbd>
+        </button>
+        <button class="icon-btn theme-btn" type="button" aria-label="Theme: system" title="Theme: system">
+          <svg class="t-sys" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6.5" stroke="currentColor" stroke-width="1.6" fill="none" /><path d="M10 3.5a6.5 6.5 0 0 1 0 13z" fill="currentColor" /></svg>
+          <svg class="t-light" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="3.5" stroke="currentColor" stroke-width="1.6" fill="none" /><path d="M10 2v2.5M10 15.5V18M2 10h2.5M15.5 10H18M4.3 4.3l1.8 1.8M13.9 13.9l1.8 1.8M4.3 15.7l1.8-1.8M13.9 6.1l1.8-1.8" stroke="currentColor" stroke-width="1.6" /></svg>
+          <svg class="t-dark" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M15.5 12.5A6.5 6.5 0 0 1 7.5 4.5a6.5 6.5 0 1 0 8 8z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round" /></svg>
+        </button>
+        <a class="icon-btn gh" href={repo} rel="noopener" aria-label="Lucia on GitHub">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" /></svg>
+        </a>
+      </div>
+    </header>
+
+    <div class="docs-grid">
+      <nav class="sidebar" aria-label="Documentation">
+        {groups.map((g) => (
+          <div class="nav-group">
+            <p class="engr">{g.label}</p>
+            <ul>
+              {g.items.map((d) => (
+                <li><a href={href(d.id)} aria-current={d.id === current ? 'page' : undefined}>{d.data.title}</a></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+
+      <main id="doc" class="doc">
+        <article data-pagefind-body={current ? '' : undefined}>
+          <header class="doc-head">
+            <h1>{title}</h1>
+            <p class="lede">{description}</p>
+          </header>
+          <div class="prose">
+            <slot />
+          </div>
+        </article>
+
+        {current && (
+          <footer class="pager" data-pagefind-ignore>
+            {prev ? (
+              <a class="pg prev" href={href(prev.id)} rel="prev"><span class="engr">Previous</span><span>{prev.data.title}</span></a>
+            ) : <span />}
+            {next && (
+              <a class="pg next" href={href(next.id)} rel="next"><span class="engr">Next</span><span>{next.data.title}</span></a>
+            )}
+          </footer>
+        )}
+        {source && (
+          <p class="edit"><a href={`${repo}/edit/main/site/src/content/docs/${source}`} rel="noopener">Suggest a change to this page</a></p>
+        )}
+      </main>
+
+      {toc.length > 1 && (
+        <aside class="toc" aria-label="On this page">
+          <p class="engr">On this page</p>
+          <ul>
+            {toc.map((h) => (
+              <li class={`d${h.depth}`}><a href={`#${h.slug}`}>{h.text}</a></li>
+            ))}
+          </ul>
+        </aside>
+      )}
+    </div>
+
+    <dialog id="nav-sheet" class="sheet" aria-label="Contents">
+      <div class="sheet-head">
+        <span class="engr">Contents</span>
+        <button class="icon-btn" type="button" data-close aria-label="Close contents">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" /></svg>
+        </button>
+      </div>
+      <nav aria-label="Documentation">
+        <a class="sheet-home" href={u('/docs/')}>Docs home</a>
+        {groups.map((g) => (
+          <div class="nav-group">
+            <p class="engr">{g.label}</p>
+            <ul>
+              {g.items.map((d) => (
+                <li><a href={href(d.id)} aria-current={d.id === current ? 'page' : undefined}>{d.data.title}</a></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+    </dialog>
+
+    <dialog id="search" class="search-dlg" aria-label="Search docs">
+      <div class="search-head">
+        <span class="engr">Search the docs</span>
+        <button class="icon-btn" type="button" data-close aria-label="Close search">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" /></svg>
+        </button>
+      </div>
+      <div id="pagefind" data-base={u('/pagefind/')}></div>
+      <p class="search-note" hidden>Search is built with the production site. Run <code>npm run build</code>, then <code>npm run preview</code>.</p>
+    </dialog>
+
+    <script>
+      const modes = ['system', 'light', 'dark'] as const;
+      const root = document.documentElement;
+      const btn = document.querySelector<HTMLButtonElement>('.theme-btn')!;
+      const paint = (m: (typeof modes)[number]) => {
+        btn.dataset.mode = m;
+        btn.setAttribute('aria-label', `Theme: ${m}`);
+        btn.title = `Theme: ${m}`;
+      };
+      let mode: (typeof modes)[number] = (root.dataset.theme as 'light' | 'dark') ?? 'system';
+      paint(mode);
+      btn.addEventListener('click', () => {
+        mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+        if (mode === 'system') { delete root.dataset.theme; localStorage.removeItem('lucia-docs-theme'); }
+        else { root.dataset.theme = mode; localStorage.setItem('lucia-docs-theme', mode); }
+        paint(mode);
+      });
+
+      let searchReady = false;
+      async function openSearch() {
+        const dlg = document.getElementById('search') as HTMLDialogElement;
+        dlg.showModal();
+        if (searchReady) { dlg.querySelector('input')?.focus(); return; }
+        searchReady = true;
+        const host = document.getElementById('pagefind')!;
+        const base = host.dataset.base!;
+        try {
+          const css = document.createElement('link');
+          css.rel = 'stylesheet';
+          css.href = base + 'pagefind-ui.css';
+          document.head.append(css);
+          await new Promise<void>((ok, fail) => {
+            const s = document.createElement('script');
+            s.src = base + 'pagefind-ui.js';
+            s.onload = () => ok();
+            s.onerror = () => fail();
+            document.head.append(s);
+          });
+          // @ts-expect-error provided by pagefind-ui.js
+          new PagefindUI({ element: '#pagefind', showSubResults: true, showImages: false, resetStyles: false, autofocus: true });
+        } catch {
+          dlg.querySelector<HTMLElement>('.search-note')!.hidden = false;
+        }
+      }
+
+      document.querySelectorAll<HTMLElement>('[data-open]').forEach((b) =>
+        b.addEventListener('click', () => {
+          if (b.dataset.open === 'search') openSearch();
+          else (document.getElementById(b.dataset.open!) as HTMLDialogElement).showModal();
+        })
+      );
+      document.querySelectorAll<HTMLDialogElement>('dialog').forEach((d) => {
+        d.querySelector('[data-close]')?.addEventListener('click', () => d.close());
+        d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+      });
+      document.addEventListener('keydown', (e) => {
+        const t = e.target as HTMLElement;
+        if (e.key === '/' && !e.metaKey && !e.ctrlKey && !t.closest('input, textarea, [contenteditable]')) {
+          e.preventDefault();
+          openSearch();
+        }
+      });
+
+      const tocLinks = [...document.querySelectorAll<HTMLAnchorElement>('.toc a')];
+      if (tocLinks.length && 'IntersectionObserver' in window) {
+        const map = new Map(tocLinks.map((a) => [decodeURIComponent(a.hash.slice(1)), a]));
+        const io = new IntersectionObserver(
+          (entries) => {
+            for (const e of entries) {
+              if (!e.isIntersecting) continue;
+              tocLinks.forEach((a) => a.removeAttribute('aria-current'));
+              map.get(e.target.id)?.setAttribute('aria-current', 'location');
+            }
+          },
+          { rootMargin: '-72px 0px -70% 0px' }
+        );
+        map.forEach((_, id) => { const h = document.getElementById(id); if (h) io.observe(h); });
+      }
+    </script>
+  </body>
+</html>
+
+<style>
+  .chassis {
+    position: sticky; top: 0; z-index: 20; background: var(--chassis); color: #c7cbd0;
+    border-bottom: 1px solid #24272c;
+  }
+  .chassis-in { display: flex; align-items: center; gap: 14px; height: 56px; padding-inline: clamp(12px, 3vw, 28px); max-width: 1440px; margin-inline: auto; }
+  .mark { font: 300 1.25rem/1 var(--cond); letter-spacing: 0.48em; text-transform: uppercase; color: #d7d9dc; text-decoration: none; }
+  .mark-sub { color: #ff9e33; text-decoration: none; padding-left: 14px; border-left: 1px solid #3a3d42; }
+  .grow { flex: 1; }
+  .icon-btn {
+    display: inline-grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 8px;
+    background: transparent; color: #aab0b8; cursor: pointer; text-decoration: none;
+  }
+  .icon-btn:hover { color: #fff; background: #1c1e22; }
+  .search-btn {
+    display: inline-flex; align-items: center; gap: 10px; height: 38px; min-width: 220px; padding: 0 10px 0 12px;
+    border: 1px solid #2f3338; border-radius: 8px; background: #17181b; color: #9aa1a9; font: 400 0.875rem var(--sans); cursor: pointer;
+  }
+  .search-btn:hover { border-color: #4a4f56; color: #d7d9dc; }
+  .search-btn span { flex: 1; text-align: left; }
+  .search-btn kbd { font: 0.75rem var(--mono); padding: 1px 6px; border: 1px solid #3a3d42; border-radius: 4px; color: #868c94; }
+  .chassis :focus-visible { outline-color: var(--plasma); }
+  .theme-btn svg { display: none; }
+  .theme-btn[data-mode='system'] .t-sys, .theme-btn[data-mode='light'] .t-light, .theme-btn[data-mode='dark'] .t-dark, .theme-btn:not([data-mode]) .t-sys { display: block; }
+  .menu-btn { display: none; }
+
+  .docs-grid {
+    display: grid; grid-template-columns: 248px minmax(0, 1fr) 216px; gap: clamp(24px, 3.5vw, 56px);
+    max-width: 1440px; margin-inline: auto; padding: 40px clamp(16px, 3vw, 28px) 96px;
+  }
+  .sidebar { position: sticky; top: 88px; align-self: start; max-height: calc(100dvh - 104px); overflow-y: auto; padding-right: 8px; }
+  .nav-group + .nav-group { margin-top: 26px; }
+  .nav-group ul { list-style: none; padding: 0; margin-top: 8px; }
+  .nav-group a {
+    display: block; padding: 6px 10px; margin-left: -10px; border-radius: 8px;
+    color: var(--text); text-decoration: none; font-size: 0.9375rem; line-height: 1.35;
+  }
+  .nav-group a:hover { background: var(--surface-subtle); }
+  .nav-group a[aria-current='page'] { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-ink); font-weight: 600; }
+
+  .doc { min-width: 0; }
+  .doc-head { max-width: 70ch; padding-bottom: 22px; margin-bottom: 30px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: clamp(2rem, 3.4vw, 2.625rem); line-height: 1.13; font-weight: 720; letter-spacing: -0.035em; text-wrap: balance; }
+  .lede { margin-top: 12px; font-size: 1.1875rem; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+
+  .toc { position: sticky; top: 88px; align-self: start; max-height: calc(100dvh - 104px); overflow-y: auto; font-size: 0.875rem; }
+  .toc ul { list-style: none; padding: 0; margin-top: 10px; border-left: 1px solid var(--line); }
+  .toc a { display: block; padding: 4px 0 4px 14px; margin-left: -1px; border-left: 1px solid transparent; color: var(--muted); text-decoration: none; line-height: 1.4; }
+  .toc .d3 a { padding-left: 26px; }
+  .toc a:hover { color: var(--text); }
+  .toc a[aria-current] { color: var(--accent-ink); border-left-color: var(--accent); }
+
+  .pager { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 70ch; margin-top: 64px; }
+  .pg {
+    display: grid; gap: 4px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface); color: var(--text); text-decoration: none; font-weight: 600;
+  }
+  .pg:hover { border-color: var(--accent); }
+  .next { text-align: right; grid-column: 2; }
+  .edit { max-width: 70ch; margin-top: 24px; font-size: 0.875rem; }
+  .edit a { color: var(--muted); }
+
+  dialog { border: 0; padding: 0; color: var(--text); background: var(--surface); }
+  dialog::backdrop { background: rgb(8 10 14 / 0.55); }
+  .sheet { margin: 0; height: 100dvh; max-height: none; width: min(340px, 88vw); padding: 0 20px 32px; overflow-y: auto; }
+  .sheet-head, .search-head { display: flex; justify-content: space-between; align-items: center; height: 56px; }
+  .sheet .icon-btn, .search-dlg .icon-btn { color: var(--muted); }
+  .sheet .icon-btn:hover, .search-dlg .icon-btn:hover { background: var(--surface-subtle); color: var(--text); }
+  .sheet-home { display: block; margin-bottom: 20px; font-weight: 600; }
+  .search-dlg {
+    width: min(680px, calc(100vw - 24px)); max-height: min(80dvh, 720px); margin: 10dvh auto auto;
+    border-radius: 14px; padding: 0 20px 20px; border: 1px solid var(--line); overflow-y: auto;
+    --pagefind-ui-primary: var(--accent-ink); --pagefind-ui-text: var(--text); --pagefind-ui-background: var(--surface);
+    --pagefind-ui-border: var(--line); --pagefind-ui-tag: var(--surface-subtle); --pagefind-ui-border-radius: 10px;
+    --pagefind-ui-font: var(--sans); --pagefind-ui-scale: 0.85;
+  }
+  .search-note { color: var(--muted); font-size: 0.9375rem; }
+  .search-dlg :global(mark) { background: color-mix(in srgb, var(--accent-ink) 22%, transparent); color: inherit; padding-inline: 1px; }
+  .search-dlg :global(.pagefind-ui__search-input) { border-width: 1px; font-weight: 500; }
+  .search-dlg :global(.pagefind-ui__search-clear) { background: transparent; color: var(--muted); font: 500 0.8125rem var(--sans); padding-inline: 12px; border-radius: 12px; }
+  .search-dlg :global(.pagefind-ui__search-clear:hover) { color: var(--text); background: var(--surface-subtle); }
+  .search-dlg :global(.pagefind-ui__search-clear:focus-visible) { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+
+  @media (max-width: 1180px) {
+    .docs-grid { grid-template-columns: 232px minmax(0, 1fr); }
+    .toc { display: none; }
+  }
+  @media (max-width: 860px) {
+    .docs-grid { grid-template-columns: minmax(0, 1fr); padding-top: 28px; }
+    .sidebar { display: none; }
+    .menu-btn { display: inline-grid; margin-left: -8px; }
+    .search-btn { min-width: 0; }
+    .search-btn span, .search-btn kbd { display: none; }
+    .mark-sub { display: none; }
+    .pager { grid-template-columns: 1fr; }
+    .next { grid-column: 1; }
+  }
+</style>

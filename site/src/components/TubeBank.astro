@@ -1,0 +1,67 @@
+---
+interface Props {
+  value: string;
+  label: string;
+  size?: 'xl' | 'lg' | 'md' | 'sm';
+  roll?: boolean;
+  dim?: boolean;
+  blank?: boolean;
+  class?: string;
+}
+const { value, label, size = 'md', roll = true, dim = false, blank = false, class: cls } = Astro.props;
+const cathodes = '0123456789'.split('');
+---
+<div class:list={['bank', `bank-${size}`, { dim: dim || blank }, cls]} role="img" aria-label={label} data-roll={roll && !dim && !blank ? '' : undefined}>
+  {[...value].map((c) =>
+    /\d/.test(c) ? (
+      <span class="tube" aria-hidden="true">
+        <span class="ghost">{cathodes.map((g) => <i>{g}</i>)}</span>
+        {!blank && <span class="lit" data-d={c}>{c}</span>}
+      </span>
+    ) : (
+      <span class="sep" aria-hidden="true">{c}</span>
+    )
+  )}
+</div>
+
+<style>
+  .bank { --w: 74px; --h: 140px; --fs: 104px; display: flex; gap: calc(var(--w) * 0.12); align-items: flex-end; }
+  .bank-xl { --w: clamp(56px, 6.2vw, 84px); --h: calc(var(--w) * 1.9); --fs: calc(var(--w) * 1.4); }
+  .bank-lg { --w: 58px; --h: 110px; --fs: 80px; }
+  .bank-md { --w: 42px; --h: 80px; --fs: 58px; }
+  .bank-sm { --w: 30px; --h: 56px; --fs: 40px; }
+
+  .tube {
+    position: relative; flex: none; width: var(--w); height: var(--h);
+    border-radius: calc(var(--w) / 2) calc(var(--w) / 2) calc(var(--w) * 0.14) calc(var(--w) * 0.14);
+    background:
+      radial-gradient(120% 60% at 30% 8%, rgb(255 255 255 / 0.16), transparent 45%),
+      repeating-linear-gradient(60deg, rgb(166 172 180 / 0.07) 0 1px, transparent 1px 7px),
+      repeating-linear-gradient(-60deg, rgb(166 172 180 / 0.07) 0 1px, transparent 1px 7px),
+      linear-gradient(180deg, rgb(40 30 22 / 0.55), rgb(10 10 12 / 0.92));
+    box-shadow: inset 0 0 0 1px rgb(166 172 180 / 0.26), inset 0 -14px 18px rgb(0 0 0 / 0.6);
+    overflow: hidden;
+  }
+  .tube::after {
+    content: ''; position: absolute; left: 11%; right: 11%; bottom: 0; height: 9%;
+    background: linear-gradient(180deg, #2b2e33, #0d0e10); border-radius: 3px 3px 8px 8px;
+  }
+  .ghost, .lit {
+    position: absolute; inset: 0 0 10%; display: grid; place-items: center;
+    font: 200 var(--fs)/1 var(--cond);
+  }
+  .ghost i { grid-area: 1 / 1; font-style: normal; color: rgb(166 172 180 / 0.045); }
+  .lit {
+    color: var(--plasma-hi);
+    text-shadow: 0 0 4px var(--plasma), 0 0 14px var(--plasma), 0 0 30px rgb(255 138 0 / 0.55);
+    transition: opacity 0.14s linear;
+  }
+  :global(.lit.flick) { opacity: 0.18; }
+  .dim .lit { color: rgb(166 172 180 / 0.13); text-shadow: none; }
+  .dim .sep { color: rgb(166 172 180 / 0.2); text-shadow: none; }
+  .sep {
+    font: 200 calc(var(--fs) * 0.58)/1 var(--cond); color: var(--plasma);
+    text-shadow: 0 0 12px var(--plasma); padding-bottom: calc(var(--h) * 0.24);
+  }
+  @media (prefers-reduced-motion: reduce) { .lit { transition: none; } }
+</style>

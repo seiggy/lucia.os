@@ -1,0 +1,71 @@
+---
+import '../styles/lab.css';
+import RollScript from '../components/RollScript.astro';
+import { u, repo } from '../lib/url';
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const og = new URL(u('/images/og.png'), Astro.site);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={u('/favicon.svg')} type="image/svg+xml" />
+    <link rel="sitemap" href={u('/sitemap-index.xml')} />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={og} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="masthead wrap">
+      <a class="wordmark" href={u('/')} aria-label="Lucia home">Lucia</a>
+      <nav aria-label="Primary">
+        <a href={u('/#rack')}>Features</a>
+        <a href={u('/#job-run')}>A job run</a>
+        <a href={u('/#assumptions')}>Assumptions</a>
+        <a href={u('/docs/')}>Docs</a>
+        <a href={repo} rel="noopener">GitHub</a>
+      </nav>
+    </header>
+    <main id="main">
+      <slot />
+    </main>
+    <RollScript />
+  </body>
+</html>
+
+<style>
+  .masthead {
+    display: flex; justify-content: space-between; align-items: center; gap: 24px;
+    padding-block: 22px; border-bottom: 1px solid var(--rule);
+  }
+  .wordmark {
+    font: 300 1.5rem/1 var(--cond); letter-spacing: 0.5em; text-transform: uppercase;
+    color: #c7cbd0; text-decoration: none; margin-right: -0.5em;
+  }
+  nav { display: flex; gap: clamp(16px, 3vw, 32px); }
+  nav a {
+    font: 500 0.875rem/1 var(--cond); letter-spacing: 0.22em; text-transform: uppercase;
+    color: #9aa1a9; text-decoration: none; padding-block: 10px;
+  }
+  nav a:hover { color: var(--plasma-hi); }
+  @media (max-width: 720px) {
+    nav a:nth-child(-n + 3) { display: none; }
+  }
+</style>

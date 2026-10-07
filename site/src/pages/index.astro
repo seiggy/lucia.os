@@ -1,0 +1,505 @@
+---
+import Lab from '../layouts/Lab.astro';
+import TubeBank from '../components/TubeBank.astro';
+import Button from '../components/Button.astro';
+import Shot from '../components/Shot.astro';
+import { u, repo } from '../lib/url';
+
+const install = u('/docs/getting-started/install-from-source/');
+---
+<Lab
+  title="Lucia · The homelab that takes the 2 a.m. shift"
+  description="Lucia runs your homelab from an NVIDIA DGX Spark: PXE-installed Debian servers, AdGuard on every node, Docker apps, local AI, and scheduled assistant jobs that triage dead containers before you notice."
+>
+  <section class="hero wrap" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <h1 id="hero-title" class="display">Lucia takes the <span class="lit-word">2&nbsp;a.m.</span> shift.</h1>
+      <p class="lede prose-m">
+        An on-call engineer and a homelab easy button in one box. Lucia onboards Debian servers, keeps DNS, apps and
+        updates in line, and runs scheduled jobs that triage dead containers before you notice. It asks before anything
+        destructive. You keep root. You just stop needing it.
+      </p>
+      <div class="ctas">
+        <Button kind="lit" href={install}>Install from source</Button>
+        <Button href={repo} external>Star on GitHub</Button>
+        <Button kind="soon">Desktop bootstrap</Button>
+      </div>
+      <p class="fine">MIT licensed. Runs on your hardware, on your network, under your accounts.</p>
+    </div>
+
+    <div class="instrument" role="group" aria-label="Shift clock">
+      <div class="inst-top">
+        <span class="engr">Shift clock</span>
+        <span class="engr on-duty"><span class="lamp-on" aria-hidden="true"></span>Lucia on duty</span>
+      </div>
+      <TubeBank value="02:00" size="xl" label="The clock reads 02:00, the hour Lucia covers" class="clock" />
+      <div class="inst-scale" aria-hidden="true"><span class="engr">Hours</span><span class="engr">Minutes</span></div>
+      <dl class="readout">
+        <div><dt class="engr">Mode</dt><dd>Asks first</dd></div>
+        <div><dt class="engr">Owner</dt><dd>Asleep</dd></div>
+        <div><dt class="engr">Status</dt><dd>Handling it</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="rack" class="rack-sec" aria-labelledby="rack-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="rack-title" class="h2">Everything you used to babysit.</h2>
+        <p class="prose-m">
+          Each channel is a chore Lucia now watches, fixes or asks you about. Numbers in the tubes come from the source
+          code or a working lab, not a slide deck.
+        </p>
+      </div>
+
+      <div class="rack">
+        <article class="ch ch-feature" aria-labelledby="ch-jobs">
+          <div class="ch-read">
+            <TubeBank value="07:00" size="lg" label="A job scheduled for 7:00 every day" />
+            <p class="plate engr">Daily, 7:00</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-jobs" class="h3">Assistant jobs</h3>
+            <p class="prose-m">
+              Saved prompts on a cron schedule. Every run opens its own chat thread, uses only the actions you approved
+              for that job, and sends a push notification to the devices you picked when it needs you.
+            </p>
+            <a class="more" href={u('/docs/architecture/assistant-and-jobs/')}>How jobs work</a>
+          </div>
+          <Shot class="ch-shot" name="jobs" route="#/ai/jobs" alt="Lucia's Assistant jobs page: a job named Fix stopped containers, scheduled every day at 7:00, with its last run finished." />
+        </article>
+
+        <article class="ch" aria-labelledby="ch-nodes">
+          <div class="ch-read ch-read-pair">
+            <div><TubeBank value="30" size="md" label="30 seconds between server readings" /><p class="plate engr">Seconds per reading</p></div>
+            <div><TubeBank value="13" size="md" label="Debian 13" /><p class="plate engr">Debian, PXE'd</p></div>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-nodes" class="h3">Servers without a monitor</h3>
+            <p class="prose-m">
+              Network-boot a box, approve the disk, and Lucia installs Debian 13 and enrolls it. From then on it reports
+              CPU, memory, GPU and temperatures every 30 seconds.
+            </p>
+            <a class="more" href={u('/docs/architecture/nodes/')}>Nodes and onboarding</a>
+          </div>
+        </article>
+
+        <article class="ch" aria-labelledby="ch-dns">
+          <div class="ch-read">
+            <ul class="lamps" aria-label="Example lab: two AdGuard instances">
+              <li><span class="lamp-on" aria-hidden="true"></span><span>lucialab01</span><span class="engr">Primary · .230</span></li>
+              <li><span class="lamp-on" aria-hidden="true"></span><span>lucialab02</span><span class="engr">Replica · .231</span></li>
+            </ul>
+            <p class="plate engr">Example lab</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-dns" class="h3">DNS that survives a reboot</h3>
+            <p class="prose-m">
+              AdGuard runs on every node, each on its own virtual IP. Change a filter on the primary and the replicas
+              follow. Reboot a server and the house still resolves.
+            </p>
+            <a class="more" href={u('/docs/architecture/adguard-ha/')}>AdGuard high availability</a>
+          </div>
+        </article>
+
+        <article class="ch ch-feature ch-flip" aria-labelledby="ch-ai">
+          <div class="ch-read">
+            <TubeBank value="200" size="lg" label="200 thousand tokens of context" />
+            <p class="plate engr">Thousand tokens · TensorFold, example lab</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-ai" class="h3">Local AI on the Spark</h3>
+            <p class="prose-m">
+              One language model and one embedding model, served on the Spark's GB10 and reachable from your apps through
+              Lucia's OpenAI-compatible API. Memory is budgeted so the rest of the system keeps breathing.
+            </p>
+            <a class="more" href={u('/docs/architecture/local-ai/')}>Local AI</a>
+          </div>
+          <Shot class="ch-shot" name="playground" route="#/ai" alt="Lucia's Playground page with the hosted model Qwen3.8-Flash-Next ready, served context 200,000 tokens, backend TensorFold." />
+        </article>
+
+        <article class="ch" aria-labelledby="ch-domains">
+          <div class="ch-read">
+            <TubeBank value="443" size="md" label="HTTPS on port 443" />
+            <p class="plate engr">Port, with a real certificate</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-domains" class="h3">Names and certificates</h3>
+            <p class="prose-m">
+              Connect a Cloudflare zone and every app gets a name under your domain and a Let's Encrypt certificate, with
+              local DNS answered by AdGuard. Skip it and Lucia serves everything from its own private CA. Public access is
+              off until you turn it on.
+            </p>
+            <a class="more" href={u('/docs/architecture/networking-and-dns/')}>Networking and DNS</a>
+          </div>
+        </article>
+
+        <article class="ch" aria-labelledby="ch-id">
+          <div class="ch-read">
+            <svg class="keyswitch" viewBox="0 0 120 64" aria-hidden="true">
+              <circle cx="32" cy="32" r="22" fill="#121316" stroke="#3a3d42" stroke-width="1.5" />
+              <circle cx="32" cy="32" r="13" fill="#1c1e22" stroke="#5a6068" stroke-width="1.5" />
+              <rect x="30" y="20" width="4" height="24" rx="1.5" fill="#a6acb4" transform="rotate(35 32 32)" />
+              <circle cx="78" cy="22" r="3.5" fill="#ff8a00" />
+              <circle cx="78" cy="42" r="3.5" fill="#3a3d42" />
+              <path d="M88 22h22M88 42h22" stroke="#3a3d42" stroke-width="1.5" />
+            </svg>
+            <p class="plate engr">One account</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-id" class="h3">One sign-in for the lab</h3>
+            <p class="prose-m">
+              Authentik runs the front door. One account covers Lucia, the apps a person's groups can open, and, for
+              owners, the servers themselves.
+            </p>
+            <a class="more" href={u('/docs/architecture/identity/')}>Identity</a>
+          </div>
+        </article>
+
+        <article class="ch" aria-labelledby="ch-obs">
+          <div class="ch-read">
+            <TubeBank value="10" size="md" label="10 seconds between Spark samples" />
+            <p class="plate engr">Seconds per Spark sample</p>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-obs" class="h3">Watching the watcher</h3>
+            <p class="prose-m">
+              Traces, metrics and logs from Lucia and your nodes land in Grafana, along with the inference server's
+              Prometheus metrics. The Spark's own health is sampled every 10 seconds.
+            </p>
+            <a class="more" href={u('/docs/architecture/observability/')}>Observability</a>
+          </div>
+        </article>
+
+        <article class="ch" aria-labelledby="ch-upd">
+          <div class="ch-read">
+            <ul class="lamps" aria-label="Update flow">
+              <li><span class="lamp-step" aria-hidden="true"></span><span>Check</span></li>
+              <li><span class="lamp-step" aria-hidden="true"></span><span>Install all</span></li>
+              <li><span class="lamp-step" aria-hidden="true"></span><span>Restart what changed</span></li>
+            </ul>
+          </div>
+          <div class="ch-copy">
+            <h3 id="ch-upd" class="h3">Patch Tuesday, any day</h3>
+            <p class="prose-m">
+              Lucia lists the Spark's pending packages and security fixes, installs them in one pass or on a schedule, and
+              restarts only the services still holding old files.
+            </p>
+            <a class="more" href={u('/docs/architecture/spark-updates/')}>Spark updates</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="job-run" class="run-sec wrap" aria-labelledby="run-title">
+    <div class="sec-head">
+      <h2 id="run-title" class="h2">A job run, start to finish.</h2>
+      <p class="prose-m">This is a real job from the lab that wrote this page. It runs at seven every morning.</p>
+    </div>
+
+    <div class="run">
+      <figure class="job-card">
+        <figcaption class="job-head">
+          <span class="h3">Fix stopped containers</span>
+          <span class="engr">Daily, 7:00</span>
+        </figcaption>
+        <p class="engr">Saved prompt</p>
+        <blockquote>
+          Scan all apps for failed containers that are offline that aren't supposed to be in the "Stopped" state. Pull
+          the logs. Triage the issue, and resolve it as long as it does not require modification to the application. If
+          it requires modifications, notify the user.
+        </blockquote>
+        <p class="engr">Allowed without asking</p>
+        <ul class="perm">
+          <li class="on"><span class="sw" aria-hidden="true"></span>Start, stop, restart and update apps</li>
+          <li><span class="sw" aria-hidden="true"></span>Create and change custom apps</li>
+          <li><span class="sw" aria-hidden="true"></span>Move apps between servers</li>
+        </ul>
+      </figure>
+
+      <ol class="trace">
+        <li>
+          <span class="node" aria-hidden="true"></span>
+          <h3 class="h3">Detect</h3>
+          <p>Checks every app for containers that are down but were never meant to be stopped.</p>
+        </li>
+        <li>
+          <span class="node" aria-hidden="true"></span>
+          <h3 class="h3">Pull logs</h3>
+          <p>Reads the failing container's logs on whichever server runs it.</p>
+        </li>
+        <li>
+          <span class="node" aria-hidden="true"></span>
+          <h3 class="h3">Triage</h3>
+          <p>Works out whether a restart will do, or whether the app itself needs changing.</p>
+        </li>
+        <li>
+          <span class="node" aria-hidden="true"></span>
+          <h3 class="h3">Fix, if allowed</h3>
+          <p>Restarts or updates the app, because this job was allowed to. Anything outside that list waits for you.</p>
+        </li>
+        <li class="last">
+          <span class="node" aria-hidden="true"></span>
+          <h3 class="h3">Notify</h3>
+          <p>Writes up what happened in the run's chat thread and pings your phone if you need to look.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="keys-sec" aria-labelledby="keys-title">
+    <div class="wrap keys">
+      <div class="keys-copy">
+        <h2 id="keys-title" class="h2">The owner holds the keys.</h2>
+        <p class="prose-m">
+          Lucia is helpful the way a good junior engineer is helpful: it does the reading, shows its work, and asks
+          before it touches anything that matters.
+        </p>
+        <dl class="modes">
+          <div><dt class="engr">Plan</dt><dd>Changes nothing at all. It reads, reasons and tells you what it would do.</dd></div>
+          <div><dt class="engr">Execute</dt><dd>Makes the changes you have allowed. Everything else waits for your approval in the chat.</dd></div>
+          <div><dt class="engr">Jobs</dt><dd>Act unasked only inside the permissions saved on that one job.</dd></div>
+        </dl>
+        <p class="prose-m always">
+          In a chat it <strong>always asks first</strong> before deleting an app, restoring a backup, putting an app on
+          the internet, updating or restarting a server, or running a command on one.
+        </p>
+      </div>
+      <Shot name="assistant-settings" route="#/settings/assistant" alt="Lucia's Assistant settings: a list of changes it may make without asking, all unchecked by default." />
+    </div>
+  </section>
+
+  <section id="assumptions" class="assume-sec wrap" aria-labelledby="assume-title">
+    <div class="sec-head">
+      <h2 id="assume-title" class="h2">What Lucia assumes about your lab.</h2>
+      <p class="prose-m">Opinionated on purpose. If your lab looks like this, setup is short. If it doesn't, read this first.</p>
+    </div>
+    <dl class="spec-plate">
+      <div><dt class="engr">Controller</dt><dd>An NVIDIA DGX Spark on DGX OS, past NVIDIA's first-run setup. Lucia, Authentik and Local AI live here.</dd></div>
+      <div><dt class="engr">Gateway</dt><dd>UniFi Network. It stays your DHCP server; Lucia never brings its own.</dd></div>
+      <div><dt class="engr">Servers</dt><dd>Network-bootable machines that Debian 13 installs on. Lucia owns them after enrollment.</dd></div>
+      <div><dt class="engr">Domain</dt><dd>Optional. A Cloudflare zone and a scoped API token for public certificates; without one, a private CA.</dd></div>
+      <div><dt class="engr">Apps</dt><dd>Docker Compose. Each app is one Compose file placed on one server.</dd></div>
+      <div><dt class="engr">You</dt><dd>Comfortable with SSH, and happy to let something else hold the pager.</dd></div>
+    </dl>
+    <a class="more" href={u('/docs/getting-started/requirements/')}>Full requirements</a>
+  </section>
+
+  <section class="notyet-sec wrap" aria-labelledby="notyet-title">
+    <div class="notyet">
+      <div>
+        <h2 id="notyet-title" class="h2">Not yet.</h2>
+        <p class="prose-m">Some tubes are still dark. We would rather say so than let you find out at 2 a.m.</p>
+      </div>
+      <ul class="dark-list">
+        <li>
+          <div class="dark-read"><TubeBank value="08" size="sm" dim label="8 GiB held back" /><p class="plate engr">Coming soon</p></div>
+          <div><h3 class="h3">Voice</h3><p class="prose-m">Wake word, speech and voice print sign-in are planned. Local AI already keeps 8 GiB free for them.</p></div>
+        </li>
+        <li>
+          <div class="dark-read"><TubeBank value="000" size="sm" blank label="No release yet" /><p class="plate engr">Coming soon</p></div>
+          <div><h3 class="h3">Releases</h3><p class="prose-m">There is no packaged release. You build from source, and the docs walk you through it.</p></div>
+        </li>
+        <li>
+          <div class="dark-read"><TubeBank value="00" size="sm" blank label="No signed desktop download yet" /><p class="plate engr">Coming soon</p></div>
+          <div><h3 class="h3">Desktop download</h3><p class="prose-m">The one-window setup app works today if you build it yourself. There's no signed download yet, so SmartScreen and Gatekeeper will grumble.</p></div>
+        </li>
+      </ul>
+    </div>
+    <a class="more" href={u('/docs/reference/limitations/')}>Every known limitation</a>
+  </section>
+
+  <section class="close-sec" aria-labelledby="close-title">
+    <div class="wrap close">
+      <h2 id="close-title" class="display">Go back to bed.</h2>
+      <p class="prose-m">Lucia has the pager.</p>
+      <div class="ctas">
+        <Button kind="lit" href={install}>Install from source</Button>
+        <Button href={repo} external>Star on GitHub</Button>
+        <Button kind="soon">Desktop bootstrap</Button>
+      </div>
+    </div>
+    <footer class="wrap foot">
+      <span class="engr">Lucia</span>
+      <a href={u('/docs/')}>Docs</a>
+      <a href={repo} rel="noopener">GitHub</a>
+      <a href={`${repo}/blob/main/LICENSE`} rel="noopener">MIT License</a>
+      <span class="foot-note">Screenshots are from a working lab, unretouched.</span>
+    </footer>
+  </section>
+</Lab>
+
+<style>
+  /* Hero */
+  .hero { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: clamp(32px, 5vw, 72px); align-items: center; padding-block: clamp(40px, 7vw, 88px) clamp(48px, 7vw, 96px); }
+  .lede { margin-top: 26px; font-size: 1.125rem; max-width: 50ch; }
+  .ctas { margin-top: 34px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .fine { margin-top: 22px; font-size: 0.875rem; color: var(--ink-3); }
+
+  .instrument {
+    padding: 26px 28px 20px; border-radius: 14px;
+    background: linear-gradient(180deg, #1c1e22, #121316);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px #2a2d32, 0 30px 60px rgb(0 0 0 / 0.6);
+  }
+  .inst-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+  .on-duty { display: inline-flex; align-items: center; gap: 8px; color: var(--plasma-hi); }
+  .lamp-on { width: 7px; height: 7px; border-radius: 50%; background: var(--plasma); box-shadow: 0 0 8px var(--plasma); flex: none; }
+  .instrument :global(.clock) { justify-content: center; }
+  .inst-scale { display: flex; justify-content: space-around; margin-top: 12px; }
+  .readout { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 20px; border-top: 1px solid #2a2d32; }
+  .readout div { padding: 12px 6px 2px 14px; border-left: 1px solid #2a2d32; }
+  .readout div:first-child { border-left: 0; padding-left: 4px; }
+  .readout dd { font: 500 1.0625rem/1.2 var(--cond); letter-spacing: 0.16em; text-transform: uppercase; color: var(--plasma); margin-top: 4px; }
+
+  /* Section heads */
+  .sec-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr); gap: 24px 64px; align-items: end; margin-bottom: 44px; }
+  .sec-head .prose-m { padding-bottom: 6px; }
+
+  /* Rack */
+  .rack-sec { padding-block: clamp(64px, 9vw, 120px); border-top: 1px solid var(--rule); background: linear-gradient(180deg, #111215, transparent 40%); }
+  .rack {
+    position: relative; padding: 10px 40px; border-radius: 10px;
+    background: #101113;
+    box-shadow: inset 0 0 0 1px var(--rule), 0 24px 60px rgb(0 0 0 / 0.4);
+  }
+  .rack::before, .rack::after {
+    content: ''; position: absolute; top: 14px; bottom: 14px; width: 12px;
+    background: radial-gradient(circle, #050506 2.5px, #2a2d32 3px, transparent 3.5px) 0 0 / 12px 44px repeat-y;
+  }
+  .rack::before { left: 14px; }
+  .rack::after { right: 14px; }
+  .ch {
+    display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px 48px; align-items: center;
+    padding: 34px 28px; border-bottom: 1px solid var(--rule);
+  }
+  .ch:last-child { border-bottom: 0; }
+  .ch-feature { grid-template-columns: 240px minmax(0, 0.9fr) minmax(0, 1.1fr); padding-block: 44px; }
+  .ch-flip .ch-shot { order: -1; }
+  .ch-flip { grid-template-columns: minmax(0, 1.1fr) 240px minmax(0, 0.9fr); }
+  .ch-read { display: grid; justify-items: start; gap: 12px; }
+  .ch-read-pair { grid-auto-flow: column; justify-content: start; gap: 22px; }
+  .ch-read-pair > div { display: grid; gap: 12px; }
+  .plate { font-size: 0.75rem; color: #8a9098; }
+  .ch-copy { display: grid; gap: 12px; justify-items: start; }
+  .ch-copy .prose-m { max-width: 56ch; }
+  .more {
+    display: inline-flex; align-items: center; gap: 10px; margin-top: 4px;
+    font: 500 0.875rem/1 var(--cond); letter-spacing: 0.2em;     text-transform: uppercase; color: var(--ink); text-decoration: none; padding-block: 8px;
+  }
+      .more:hover { color: var(--plasma-hi); }
+  .more::after { content: ''; width: 30px; height: 1px; background: currentColor; transform: scaleX(0.6); transform-origin: left; transition: transform 0.2s var(--ease-out); }
+  .more:hover::after { transform: scaleX(1); }
+
+  .lamps { list-style: none; padding: 0; display: grid; gap: 10px; }
+  .lamps li { display: grid; grid-template-columns: 7px auto; column-gap: 12px; align-items: center; font-size: 0.9375rem; color: var(--ink); }
+  .lamps li .engr { grid-column: 2; font-size: 0.6875rem; }
+  .lamp-step { width: 7px; height: 7px; border-radius: 50%; background: #5a6068; flex: none; }
+  .keyswitch { width: 120px; height: 64px; }
+
+  /* Job run */
+  .run-sec { padding-block: clamp(64px, 9vw, 120px); }
+  .run { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 72px); align-items: start; }
+  .job-card {
+    margin: 0; padding: 26px 28px; border-radius: 12px; background: var(--panel);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 0 0 1px var(--rule-2);
+    display: grid; gap: 12px;
+  }
+  .job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--rule-2); margin-bottom: 6px; }
+  .job-head .engr { color: var(--ink-2); }
+  .job-card blockquote {
+    margin: 0 0 10px; padding: 14px 16px; border-radius: 8px; background: #0f1012;
+    box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.6), 0 0 0 1px var(--rule);
+    color: var(--ink); font-size: 0.9875rem; line-height: 1.6;
+  }
+  .perm { list-style: none; padding: 0; display: grid; gap: 10px; color: var(--ink-2); font-size: 0.9375rem; }
+  .perm li { display: flex; align-items: center; gap: 12px; }
+  .sw { flex: none; width: 30px; height: 16px; border-radius: 8px; background: #26292e; box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.7); position: relative; }
+  .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #5a6068; }
+  .perm .on { color: var(--ink); }
+  .perm .on .sw { background: #3a2410; }
+  .perm .on .sw::after { left: 16px; background: var(--plasma); box-shadow: 0 0 8px var(--plasma); }
+
+  .trace { list-style: none; padding: 6px 0 0; display: grid; }
+  .trace li { position: relative; display: grid; grid-template-columns: 26px 1fr; column-gap: 18px; padding-bottom: 30px; }
+  .trace li::before { content: ''; position: absolute; left: 12px; top: 18px; bottom: -4px; width: 1px; background: var(--mesh); }
+  .trace li.last { padding-bottom: 0; }
+  .trace li.last::before { display: none; }
+  .node { grid-row: span 2; width: 25px; height: 25px; border-radius: 50%; background: #121316; box-shadow: inset 0 0 0 1px var(--mesh); position: relative; z-index: 1; }
+  .node::after { content: ''; position: absolute; inset: 8px; border-radius: 50%; background: #5a6068; }
+  .trace .h3 { font-size: 1.375rem; padding-top: 1px; }
+  .trace p { color: var(--ink-2); margin-top: 6px; max-width: 52ch; }
+
+  /* Keys */
+  .keys-sec { padding-block: clamp(64px, 9vw, 120px); border-top: 1px solid var(--rule); background: linear-gradient(180deg, #121316, transparent); }
+  .keys { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: clamp(32px, 5vw, 72px); align-items: center; }
+  .keys-copy { display: grid; gap: 22px; }
+  .modes { display: grid; border-top: 1px solid var(--rule-2); }
+  .modes div { display: grid; grid-template-columns: 96px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule-2); }
+  .modes dt { color: var(--ink-hi); padding-top: 3px; }
+  .modes dd { color: var(--ink-2); }
+  .always { font-size: 0.9875rem; }
+
+  /* Assumptions */
+  .assume-sec { padding-block: clamp(64px, 9vw, 120px); }
+  .spec-plate {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 26px;
+    border-radius: 10px; background: #121316; box-shadow: inset 0 0 0 1px var(--rule-2);
+  }
+  .spec-plate div { display: grid; grid-template-columns: 120px 1fr; gap: 16px; padding: 20px 26px; border-bottom: 1px solid var(--rule); }
+  .spec-plate div:nth-child(odd) { border-right: 1px solid var(--rule); }
+  .spec-plate div:nth-last-child(-n + 2) { border-bottom: 0; }
+  .spec-plate dt { padding-top: 3px; }
+  .spec-plate dd { color: var(--ink); }
+
+  /* Not yet */
+  .notyet-sec { padding-block: 0 clamp(64px, 9vw, 120px); }
+  .notyet { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 32px 72px; align-items: start; padding-top: clamp(48px, 6vw, 80px); border-top: 1px solid var(--rule); margin-bottom: 26px; }
+  .notyet .prose-m { margin-top: 16px; }
+  .dark-list { list-style: none; padding: 0; display: grid; gap: 26px; }
+  .dark-list li { display: grid; grid-template-columns: 120px 1fr; gap: 24px; align-items: center; }
+  .dark-list .h3 { font-size: 1.25rem; }
+  .dark-read { display: grid; justify-items: start; gap: 10px; }
+  .dark-list .prose-m { margin-top: 4px; }
+
+  /* Close */
+  .close-sec { padding-top: clamp(72px, 10vw, 140px); border-top: 1px solid var(--rule); }
+  .close { text-align: center; display: grid; justify-items: center; }
+  .close .prose-m { margin-top: 14px; font-size: 1.125rem; }
+  .close .ctas { justify-content: center; }
+  .foot { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: center; margin-top: clamp(72px, 10vw, 120px); padding-block: 26px 40px; border-top: 1px solid var(--rule); font-size: 0.875rem; }
+  .foot a { color: var(--ink-2); }
+  .foot a:hover { color: var(--plasma-hi); }
+  .foot-note { margin-left: auto; color: var(--ink-3); }
+
+  @media (max-width: 1080px) {
+    .ch-feature, .ch-flip { grid-template-columns: 200px minmax(0, 1fr); }
+    .ch-feature .ch-shot { grid-column: 1 / -1; order: 0; }
+    .ch { grid-template-columns: 200px minmax(0, 1fr); }
+  }
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; }
+    .sec-head, .run, .keys, .notyet { grid-template-columns: 1fr; }
+    .spec-plate { grid-template-columns: 1fr; }
+    .spec-plate div:nth-child(odd) { border-right: 0; }
+    .spec-plate div:nth-last-child(2) { border-bottom: 1px solid var(--rule); }
+  }
+  @media (max-width: 640px) {
+    .hero-copy { display: contents; }
+    .hero .display { order: 1; }
+    .hero .instrument { order: 2; }
+    .hero .lede { order: 3; margin-top: 0; }
+    .hero .ctas { order: 4; margin-top: 0; }
+    .hero .fine { order: 5; margin-top: 0; }
+    .hero { gap: 24px; }
+    .rack { padding: 4px 0; background: transparent; box-shadow: none; }
+    .rack::before, .rack::after { display: none; }
+    .ch, .ch-feature, .ch-flip { grid-template-columns: 1fr; padding: 30px 0; }
+    .instrument { padding: 20px 16px 16px; }
+    .readout dd { font-size: 0.9375rem; letter-spacing: 0.1em; }
+    .spec-plate div, .modes div { grid-template-columns: 1fr; gap: 4px; }
+    .dark-list li { grid-template-columns: 1fr; gap: 12px; }
+    .foot-note { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .more::after { transition: none; } }
+</style>
