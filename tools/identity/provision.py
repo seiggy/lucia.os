@@ -400,6 +400,7 @@ class Provisioner:
 
     def wait_gateway_tls(self, timeout=60):
         context = ssl.create_default_context(cafile=str(self.state / "trust" / "lucia-root-ca.crt"))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         deadline = time.monotonic() + timeout
         reason = "the gateway was not reachable"
         while time.monotonic() < deadline:

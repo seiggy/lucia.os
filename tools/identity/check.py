@@ -146,6 +146,7 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
         second.wait_gateway_tls(timeout=2)
         assert connect.call_count == 2
         assert tls.wrap_socket.call_args.kwargs["server_hostname"] == "identity-gateway"
+        assert tls.minimum_version == ssl.TLSVersion.TLSv1_2
     with patch("provision.ssl.create_default_context"), \
             patch("provision.socket.create_connection", side_effect=ConnectionRefusedError("private-diagnostic")), \
             patch("provision.time.sleep"), patch("provision.time.monotonic", side_effect=[0, 0, 2]):
