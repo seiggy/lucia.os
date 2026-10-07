@@ -119,6 +119,8 @@ public static partial class StackEndpoints
             await stacks.Serve(id, await ReadOwnerBody<ServeModelRequest>(context, 4 * 1024, "modelId and optionally context", ct), Actor(context), ct));
         inventory.MapDelete("/ai-serving", (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
             stacks.Serve(id, new(null), Actor(context), ct));
+        inventory.MapPut("/ai-serving/load-on-startup", async (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
+            await stacks.LoadOnStartup(id, await ReadOwnerBody<LoadOnStartupRequest>(context, 4 * 1024, "models", ct), Actor(context), ct));
         inventory.MapGet("/containers", (Guid id, StackStore stacks) => stacks.Inventory(id));
         inventory.MapPut("/gpu", async (Guid id, HttpContext context, StackStore stacks, CancellationToken ct) =>
             await stacks.SaveNodeGpu(id, await ReadOwnerBody<SaveNodeGpuRequest>(context, 4 * 1024, "cudaLine", ct), ct));

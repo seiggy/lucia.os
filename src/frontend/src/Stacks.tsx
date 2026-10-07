@@ -813,6 +813,10 @@ function SettingsFields({ app, server, values: given, onChange, disabled, env = 
     if (field.kind === 'secret') return <label key={field.id} className="stack-field-wide">{field.label}<input type="password" value={values[field.id] ?? ''} disabled={disabled}
       maxLength={128} spellCheck={false} autoComplete="new-password" aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}
       placeholder={envValue(env, secretKey(field.id)) ? 'Saved. Leave blank to keep it.' : ''} onChange={event => onChange(field.id, event.target.value.trim())} />{hint}</label>
+    if (field.kind === 'range') return <label key={field.id} className="stack-field-wide">{field.label}
+      <span className="stack-range"><input type="range" min={field.min!} max={field.max!} step={1} value={values[field.id] ?? ''} disabled={disabled}
+        aria-describedby={field.help ? `setting-${field.id}-hint` : undefined} onChange={event => onChange(field.id, event.target.value)} />
+        <output>{values[field.id]}</output></span>{hint}</label>
     if (field.kind !== 'gpus') return <label key={field.id} className={field.kind === 'text' ? 'stack-field-wide' : undefined}>{field.label}<input value={values[field.id] ?? ''} disabled={disabled} required={!field.optional}
       inputMode={field.kind === 'port' ? 'numeric' : undefined} maxLength={field.kind === 'port' ? 5 : 128} spellCheck={false} autoComplete="off"
       className={field.kind === 'port' ? 'stack-number' : undefined} aria-describedby={field.help ? `setting-${field.id}-hint` : undefined}

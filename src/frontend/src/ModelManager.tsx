@@ -83,7 +83,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
   const [token, setToken] = useState('')
   const [query, setQuery] = useState('')
   const [kind, setKind] = useState<ModelKind>('Chat')
-  const searchKind: ModelKind = dedicated ? 'Chat' : kind
+  const searchKind: ModelKind = vllm ? 'Chat' : kind
   const [results, setResults] = useState<SearchItem[] | null>(null)
   const [limitReached, setLimitReached] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -283,7 +283,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
     : value === 'unloaded' ? 'Loads when an app asks for it' : value === 'failed' ? 'Failed to load' : value
   return <>
     <div className="page-intro"><h1>{server ? `Models on ${server.hostname}` : view === 'library' ? 'Models' : 'Find models'}</h1><p>{server
-      ? router ? `llama.cpp on ${server.hostname}. It serves every downloaded GGUF LLM and loads the one each request names, one at a time.`
+      ? router ? `llama.cpp on ${server.hostname}. It serves every downloaded GGUF and loads the ones requests name, as many at once as its app settings allow.`
         : dedicated ? `${engineName} on ${server.hostname}. It serves one model at a time, with all of its GPU memory.`
         : `Local AI on ${server.hostname}. One LLM and one embedding model, sized to its GPU memory.` : view === 'library'
       ? 'What runs in your lab. One LLM and one embedding model, with room reserved for the rest of your system.'
@@ -300,12 +300,24 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
     {router && serving && <section hidden={view !== 'library'} className="surface model-manager-section" aria-labelledby="serving-heading">
       <h2 id="serving-heading">Available to apps</h2>
       {servedState === 'ready' ? serving.models?.length
-        ? <div className="model-slots">{serving.models.map(item => <div key={item.id}><h3>{item.id}</h3><p className="muted">{routerStatus(item.status)}</p></div>)}</div>
+        ? <div className="model-slots">{serving.models.map(item => {
+          const listed = serving.models!.map(model => model.id.toLowerCase())
+          const pinned = (serving.loadOnStartup ?? []).filter(name => listed.includes(name.toLowerCase()))
+          const checked = pinned.some(name => name.toLowerCase() === item.id.toLowerCase())
+          const full = !checked && pinned.length >= (serving.modelsMax ?? 1)
+          return <div key={item.id}><h3>{item.id}</h3><p className="muted">{routerStatus(item.status)}</p>
+            <label className="model-checkbox model-load-at-start"><input type="checkbox" checked={checked} disabled={disabled || full} onChange={() => setConfirmation({
+              label: checked ? 'Stop loading at start' : 'Load at start', path: `${server!.serving}/load-on-startup`, method: 'PUT',
+              body: { models: checked ? pinned.filter(name => name.toLowerCase() !== item.id.toLowerCase()) : [...pinned, item.id] },
+              successMessage: 'Saved. llama.cpp restarts within about 20 seconds.',
+              description: `${checked ? `Stop loading ${item.id} when llama.cpp starts?` : `Load ${item.id} whenever llama.cpp starts?`} llama.cpp restarts now to apply it, so apps get errors until it’s back, which takes a minute or two.`,
+            })} /><span>Load at start{full ? ` · ${serving.modelsMax === 1 ? 'only 1 model loads' : `only ${serving.modelsMax} models load`} at once` : ''}</span></label></div>
+        })}</div>
         : <p className="muted">Nothing yet. Each GGUF LLM you download is copied to {server?.hostname ?? 'this server'}’s own disk, then listed here.</p>
         : <p className="muted">{servedState === 'starting' ? 'llama.cpp is starting.'
           : servedState === 'stopped' ? <>Local AI is stopped. <a href={`#/apps/${serving.stack}`}>Start it in Apps</a>.</>
           : <>llama.cpp stopped{serving.service?.exitCode ? ` with exit code ${serving.service.exitCode}` : ''}. <a href={`#/apps/${serving.stack}`}>Read its logs in Apps</a>.</>}</p>}
-      <p className="section-note">Apps name the model in their requests exactly as it’s listed here. A new download is listed once it’s copied from the library to this server’s disk, so it loads in seconds rather than over the network. The first request to a model loads it; llama.cpp unloads the previous one to make room.</p>
+      <p className="section-note">Apps name the model in their requests exactly as it’s listed here. A new download is listed once it’s copied from the library to this server’s disk, so it loads in seconds rather than over the network. The first request to a model loads it, and llama.cpp unloads the least recently used one when it’s holding as many as its app settings allow. Models set to load at start are ready as soon as llama.cpp starts. To load more than one at start, raise Models loaded at once in <a href={`#/apps/${serving.stack}`}>its app settings</a>.</p>
     </section>}
     {vllm && serving && <section hidden={view !== 'library'} className="surface model-manager-section" aria-labelledby="serving-heading">
       <h2 id="serving-heading">Serving now</h2>
@@ -366,7 +378,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
     <div hidden={view !== 'find'}>
     {server && <p className="section-note">{server.hostname} downloads from Hugging Face without an account, so only public models are available. {vllm
       ? 'vLLM runs safetensors repositories built on an architecture it supports, and search shows only those. Whether a model fits is checked when vLLM starts serving it.'
-      : dedicated ? 'llama.cpp serves every GGUF LLM you download here. It fits each one and its context to GPU memory when an app first asks for it.'
+      : dedicated ? 'llama.cpp serves every GGUF LLM and embedding model you download here. It fits each one and its context to GPU memory when an app first asks for it.'
       : 'Its memory fit is checked after the download.'}</p>}
     {!server && <details className="surface model-manager-section provider-connection">
       <summary>Hugging Face connection <span>{provider?.configured ? 'Connected' : 'Add or manage an access token'}</span></summary>
@@ -390,7 +402,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
     <section className="surface model-manager-section" aria-labelledby="browse-models-heading">
       <h2 id="browse-models-heading">Find a model</h2>
       <form className="model-search" onSubmit={event => void search(event)}>
-        {!dedicated && <label>Model type<select value={kind} onChange={event => {
+        {!vllm && <label>Model type<select value={kind} onChange={event => {
           setKind(event.target.value as ModelKind); setResults(null); setRepository(null); setFile(''); setAdvanced(false)
         }} disabled={busy || searching}><option value="Chat">LLM</option><option value="Embedding">Embedding model</option></select></label>}
         <label>Search Hugging Face<input value={query} onChange={event => setQuery(event.target.value)} maxLength={100} placeholder={vllm ? 'For example, Qwen3' : kind === 'Chat' ? 'For example, Qwen GGUF' : 'For example, BGE GGUF'} disabled={busy || searching} /></label>
@@ -400,7 +412,9 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
         <label htmlFor="hf-repository">Or open a repository</label><div><input id="hf-repository" value={repositoryInput} onChange={event => setRepositoryInput(event.target.value)} placeholder={vllm ? 'owner/model' : 'owner/model-GGUF'} maxLength={200} disabled={busy || searching} />
           <button className="text-link" disabled={busy || searching || !repositoryInput.trim()}>Open <Icon name="arrow" /></button></div>
       </form>
-      {searchKind === 'Embedding' && <p className="section-note">This host currently supports BERT/XLM-R sentence-encoder GGUFs. A repository’s embedding tag alone does not prove compatibility.</p>}
+      {searchKind === 'Embedding' && <p className="section-note">{router
+        ? 'llama.cpp runs most GGUF embedding models, such as BGE, Nomic Embed or Qwen3 Embedding, and checks the file when an app first asks for it.'
+        : 'This host currently supports BERT/XLM-R sentence-encoder GGUFs. A repository’s embedding tag alone does not prove compatibility.'}</p>}
       {results && <div className="model-search-results">{results.length === 0 ? <p className="muted">{vllm ? 'No matching repositories vLLM can run were returned.' : 'No matching GGUF repositories were returned.'} Try a different query or open a repository directly.</p>
         : results.map(item => <button key={item.repository} className="model-search-result" disabled={busy || searching} onClick={() => void browse(item.repository)}>
           <span><strong>{item.repository}</strong><small>{[item.parameters ? `${parameterCount(item.parameters)} parameters` : null,
@@ -445,7 +459,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
         const snapshot = model.source.format === 'Safetensors'
         const servable = vllm && model.source.kind === 'Chat' && snapshot
         return <article key={model.id}>
-          <div className="model-library-row"><div><h3>{title(model)}</h3><p className="muted">{snapshot ? 'Safetensors for vLLM' : model.source.repository} · {model.source.kind === 'Chat' ? 'LLM' : 'Embedding'} · {loaded ? (dedicated ? 'Serving' : 'Loaded') : model.state}</p>
+          <div className="model-library-row"><div><h3>{title(model)}</h3><p className="muted">{snapshot ? 'Safetensors for vLLM' : model.source.repository} · {(model.inspection?.kind ?? model.source.kind) === 'Chat' ? 'LLM' : 'Embedding'} · {loaded ? (dedicated ? 'Serving' : 'Loaded') : model.state}</p>
             {model.inspection && <p className="model-meta">{bytes(model.inspection.fileBytes)} · {model.inspection.architecture} · {model.inspection.nativeContextTokens.toLocaleString()} model-limit tokens</p>}
             {snapshot && model.state === 'Ready' && model.source.sizeBytes && <p className="model-meta">{bytes(model.source.sizeBytes)}</p>}</div>
             <div className="model-actions">

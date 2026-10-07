@@ -239,10 +239,16 @@ public sealed class ModelCatalog(
     internal const string LlamaPresetsFileName = "llama-models.ini";
     private const string MirroredMarker = ".mirrored";
 
-    private static bool Llama(LocalModel model) => model is { State: ModelDownloadState.Ready, Source: { Format: ModelFormat.Gguf, Kind: ModelKind.Chat } };
+    private static bool Llama(LocalModel model) => model is { State: ModelDownloadState.Ready, Source.Format: ModelFormat.Gguf };
 
-    /// <summary>The llama.cpp router's preset file: every Ready GGUF LLM, named <c>owner/repo:QUANT</c> as llama.cpp names them.</summary>
-    internal static string LlamaPresets(string root, IEnumerable<LocalModel> models)
+    // llama.cpp embeds at most one batch per input, so embedding models get a batch as long as their context.
+    private const int LlamaEmbeddingContext = 8192;
+
+    /// <summary>
+    /// The llama.cpp router's preset file: every Ready GGUF, named <c>owner/repo:QUANT</c> as llama.cpp names them, with
+    /// embedding models served as embeddings and the named ones loaded when the router starts.
+    /// </summary>
+    internal static string LlamaPresets(string root, IEnumerable<LocalModel> models, IReadOnlySet<string>? loadOnStartup = null)
     {
         var ini = new StringBuilder("version = 1\n");
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -251,7 +257,14 @@ public sealed class ModelCatalog(
             // INI has no quoting, so only plain paths are listed.
             if (!Regex.IsMatch(model.Source.File, @"\A[A-Za-z0-9._/-]+\z")) continue;
             var name = $"{model.Source.Repository}:{LlamaTag(model.Source.File)}";
-            if (names.Add(name)) ini.Append($"\n[{name}]\nmodel = {root}/{model.Id:N}/files/{model.Source.File}\n");
+            if (!names.Add(name)) continue;
+            ini.Append($"\n[{name}]\nmodel = {root}/{model.Id:N}/files/{model.Source.File}\n");
+            if (model.Source.Kind == ModelKind.Embedding || model.Inspection?.Kind == ModelKind.Embedding)
+            {
+                var context = Math.Min(LlamaEmbeddingContext, model.Inspection?.NativeContextTokens is > 0 and var native ? native : LlamaEmbeddingContext);
+                ini.Append($"embeddings = true\nc = {context}\nbatch-size = {context}\nubatch-size = {context}\n");
+            }
+            if (loadOnStartup?.Contains(name) == true) ini.Append("load-on-startup = true\n");
         }
         return ini.ToString();
     }
@@ -271,7 +284,7 @@ public sealed class ModelCatalog(
     }
 
     /// <summary>
-    /// Keeps the cache equal to the library's Ready GGUF LLMs: copies new ones, drops removed ones, and lists a model in
+    /// Keeps the cache equal to the library's Ready GGUFs: copies new ones, drops removed ones, and lists a model in
     /// the preset file only once every file of it is on local disk.
     /// </summary>
     private async Task MirrorAsync(string cache, CancellationToken stoppingToken)
@@ -319,7 +332,9 @@ public sealed class ModelCatalog(
     {
         var path = Path.Combine(cache, LlamaPresetsFileName);
         File.WriteAllText(path + ".tmp", LlamaPresets(cache,
-            _models.Values.Where(m => File.Exists(Path.Combine(cache, m.Id.ToString("N"), MirroredMarker)))));
+            _models.Values.Where(m => File.Exists(Path.Combine(cache, m.Id.ToString("N"), MirroredMarker))),
+            (_options.LlamaLoadOnStartup ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)));
         File.Move(path + ".tmp", path, overwrite: true);
     }
 

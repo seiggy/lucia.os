@@ -539,7 +539,7 @@ internal static class StackChecks
         var rendered = localAi.Render(settings, gpuNode, new Dictionary<string, string>());
         var env = StackCatalog.ReadEnv(rendered.Env);
         check(!rendered.Compose.Contains('\r'), "Local AI's compose has Windows line endings.");
-        check(rendered.Compose.Contains("lucia-inference:0.1.5-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
+        check(rendered.Compose.Contains("lucia-inference:0.1.8-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
             && rendered.Compose.Contains("HostPlatform__MemoryBudgetGiB: \"23\"") && rendered.Require.Contains("cuda=13")
             && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
             "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");
@@ -588,6 +588,19 @@ internal static class StackChecks
             && llama.Contains("\n  llama-cache:") && llama.Split("/models").Length == 3 && llama.Contains("condition: service_healthy")
             && llama.Contains("LLAMA_API_KEY: ${LUCIA_INFERENCE_KEY}") && !llama.Contains("vllm") && llama.Split("device_ids").Length == 2 && !llama.Contains("\n\n\n"),
             "llama.cpp rendered the wrong image, ports, command, cache, key or GPU reservation.");
+        check(localAi.Render(new Dictionary<string, string>(llamaSettings) { ["models-max"] = "2" }, gpuNode, env).Compose.Contains("\"--models-max\", \"2\","),
+            "llama.cpp ignored the models-loaded-at-once setting.");
+        foreach (var count in new[] { "0", "6", "two", "-1" })
+            Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "llamacpp", ["models-max"] = count }), $"models-max {count} was accepted.");
+        check(llama.Contains("HostPlatform__LlamaLoadOnStartup: \"\"") && llama.Contains("lucia.load-on-startup: \"\""), "llama.cpp loads models at start nobody chose.");
+        var pinnedLlama = localAi.Render(StackCatalog.Settings(localAi, new(llamaSettings)
+            { ["models-max"] = "2", ["llama-load"] = "a/embed-GGUF:Q8_0, unsloth/Big-GGUF:Q5_K_M" }), gpuNode, env).Compose;
+        check(pinnedLlama.Contains("HostPlatform__LlamaLoadOnStartup: \"a/embed-GGUF:Q8_0,unsloth/Big-GGUF:Q5_K_M\"")
+            && pinnedLlama.Contains("lucia.load-on-startup: \"a/embed-GGUF:Q8_0,unsloth/Big-GGUF:Q5_K_M\""),
+            "llama.cpp's worker or container didn't get the models to load at start.");
+        foreach (var (load, max) in new[] { ("a/x:Q4,a/y:Q4", "1"), ("a/x:Q4\"", "2"), ("x:Q4", "2"), ("a/x", "2") })
+            Rejects(() => localAi.Render(new Dictionary<string, string>(llamaSettings) { ["models-max"] = max, ["llama-load"] = load }, gpuNode, env),
+                $"Loaded at start {load} with models-max {max} was accepted.");
         check(!library.Contains("LlamaCache") && !library.Contains("llama-cache"), "vLLM's worker mirrored models for llama.cpp.");
         var created = DateTimeOffset.UnixEpoch;
         LocalModel Gguf(string repository, string file, ModelDownloadState state = ModelDownloadState.Ready, ModelKind kind = ModelKind.Chat) =>
@@ -595,15 +608,29 @@ internal static class StackChecks
         var first = Gguf("Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF", "L3.3-70B-Magnum-Diamond-Q4_K_M.gguf");
         var sharded = Gguf("unsloth/Big-GGUF", "Q5_K_M/Big-Q5_K_M-00001-of-00002.gguf");
         var plain = Gguf("a/plain-GGUF", "plain.gguf");
+        var embed = Gguf("a/embed-GGUF", "e-Q8_0.gguf", kind: ModelKind.Embedding) with
+        {
+            Inspection = new("bert", ModelKind.Embedding, 1, 1, 512, 0, 0, []),
+        };
+        var longEmbed = Gguf("a/long-embed-GGUF", "long-F16.gguf", kind: ModelKind.Embedding);
         var presets = ModelCatalog.LlamaPresets("/models/lucialab01", [first, sharded,
             Gguf("Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF", "copy/L3.3-70B-Magnum-Diamond-Q4_K_M.gguf"),
-            Gguf("a/b-GGUF", "b-Q4_K_M.gguf", ModelDownloadState.Downloading), Gguf("a/embed-GGUF", "e-Q8_0.gguf", kind: ModelKind.Embedding),
+            Gguf("a/b-GGUF", "b-Q4_K_M.gguf", ModelDownloadState.Downloading), embed, longEmbed,
             Gguf("a/odd-GGUF", "odd;x-Q4_K_M.gguf"), plain]);
         check(presets == "version = 1\n"
             + $"\n[Doctor-Shotgun/L3.3-70B-Magnum-Diamond-GGUF:Q4_K_M]\nmodel = /models/lucialab01/{first.Id:N}/files/L3.3-70B-Magnum-Diamond-Q4_K_M.gguf\n"
             + $"\n[unsloth/Big-GGUF:Q5_K_M]\nmodel = /models/lucialab01/{sharded.Id:N}/files/Q5_K_M/Big-Q5_K_M-00001-of-00002.gguf\n"
-            + $"\n[a/plain-GGUF:plain]\nmodel = /models/lucialab01/{plain.Id:N}/files/plain.gguf\n",
-            "llama.cpp presets listed a model that isn't a Ready GGUF LLM, a duplicate name, or a path INI can't hold.");
+            + $"\n[a/plain-GGUF:plain]\nmodel = /models/lucialab01/{plain.Id:N}/files/plain.gguf\n"
+            + $"\n[a/embed-GGUF:Q8_0]\nmodel = /models/lucialab01/{embed.Id:N}/files/e-Q8_0.gguf\nembeddings = true\nc = 512\nbatch-size = 512\nubatch-size = 512\n"
+            + $"\n[a/long-embed-GGUF:F16]\nmodel = /models/lucialab01/{longEmbed.Id:N}/files/long-F16.gguf\nembeddings = true\nc = 8192\nbatch-size = 8192\nubatch-size = 8192\n",
+            "llama.cpp presets listed a model that isn't a Ready GGUF, a duplicate name, a path INI can't hold, or an embedding model without its batch.");
+        check(ModelCatalog.LlamaPresets("/m", [plain, embed], new HashSet<string>(["A/Embed-GGUF:Q8_0"], StringComparer.OrdinalIgnoreCase))
+                == $"version = 1\n\n[a/plain-GGUF:plain]\nmodel = /m/{plain.Id:N}/files/plain.gguf\n"
+                + $"\n[a/embed-GGUF:Q8_0]\nmodel = /m/{embed.Id:N}/files/e-Q8_0.gguf\nembeddings = true\nc = 512\nbatch-size = 512\nubatch-size = 512\nload-on-startup = true\n",
+            "llama.cpp presets didn't mark exactly the chosen model to load at start.");
+        var pooled = Gguf("a/pooled-GGUF", "p-Q4_K_M.gguf") with { Inspection = new("mistral3", ModelKind.Embedding, 1, 1, 262144, 0, 0, []) };
+        check(ModelCatalog.LlamaPresets("/m", [pooled]).EndsWith("embeddings = true\nc = 8192\nbatch-size = 8192\nubatch-size = 8192\n"),
+            "llama.cpp served a pooling GGUF downloaded as chat without embeddings.");
         foreach (var (bad, why, target) in new (Dictionary<string, string>, string, ManagedNodeFacts)[] {
             (new() { ["gpus"] = "GPU-00000000-0000-0000-0000-000000000000", ["port"] = "8080" }, "with a GPU the server doesn't have", gpuNode),
             (settings, "without a CUDA line", gpuNode with { Gpu = null }),

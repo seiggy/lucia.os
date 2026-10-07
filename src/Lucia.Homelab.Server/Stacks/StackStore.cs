@@ -34,6 +34,7 @@ public sealed record MoveStackRequest(string Node);
 /// <param name="ModelId">A downloaded safetensors model for vLLM to serve, or null to serve nothing.</param>
 /// <param name="Context"><c>auto</c> (the most the GPUs fit) or a token count.</param>
 public sealed record ServeModelRequest(Guid? ModelId, string? Context = null);
+public sealed record LoadOnStartupRequest(string[]? Models);
 /// <summary>A move in progress: the source stops the stack and streams its data to the target, which then starts it.</summary>
 public sealed record StackMove(Guid Id, string From, string To, string Desired, DateTimeOffset StartedAt, string StartedBy);
 /// <summary>An AI app's OpenAI API as this host reaches it. <paramref name="Problem"/> says why it can't be used, as a sentence.</summary>
@@ -592,7 +593,24 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         {
             stack = stack.Name, engine, model, name = model is null ? "" : settings.GetValueOrDefault("vllm-name"), context = settings.GetValueOrDefault("vllm-context"),
             stack.Desired, stack.Revision, ready, service, models,
+            loadOnStartup = engine == "llamacpp" ? LocalAiApp.LlamaLoad(settings) : null,
+            modelsMax = engine == "llamacpp" ? int.Parse(settings.GetValueOrDefault("models-max") ?? "1", CultureInfo.InvariantCulture) : (int?)null,
         };
+    }
+
+    /// <summary>Chooses the models llama.cpp loads when it starts, and redeploys Local AI so it restarts with them.</summary>
+    public async Task<object> LoadOnStartup(Guid nodeId, LoadOnStartupRequest request, string actor, CancellationToken ct)
+    {
+        var (stack, _) = await LocalAiStack(nodeId, ct);
+        var settings = new Dictionary<string, string>(stack.Manifest.Template!.Settings!, StringComparer.Ordinal);
+        if (settings.GetValueOrDefault("engine") != "llamacpp")
+            throw new HardwareOnboardingException(409, "not_llamacpp", "Only llama.cpp loads models when it starts. Switch Local AI's engine in Apps first.");
+        if (request.Models is not { Length: <= 5 } models)
+            throw new HardwareOnboardingException(400, "invalid_setting", "Choose up to 5 models to load at start.");
+        settings["llama-load"] = string.Join(',', models);
+        LocalAiApp.LlamaLoad(settings);
+        return await Save(stack.Name, new SaveStackRequest(null, null,
+            stack.Manifest with { Template = stack.Manifest.Template with { Settings = settings } }, stack.Revision), actor, ct);
     }
 
     /// <summary>Points vLLM at a downloaded safetensors model, or at nothing, and redeploys Local AI.</summary>

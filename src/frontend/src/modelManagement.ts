@@ -28,6 +28,8 @@ export interface ServingStatus {
   stack: string; engine: 'lucia' | 'vllm' | 'llamacpp'; model: string | null; name: string | null; context: string | null; desired: string; revision: number
   ready: boolean; service: { state: string; health: string | null; exitCode: number | null } | null
   models: { id: string; status: string }[] | null
+  /** llama.cpp's model names it loads when it starts, and how many it keeps loaded at once. */
+  loadOnStartup: string[] | null; modelsMax: number | null
 }
 export interface LocalModel {
   id: string; source: DownloadRequest; state: 'Queued' | 'Downloading' | 'Ready' | 'Failed' | 'Canceled' | 'Interrupted'
@@ -128,7 +130,8 @@ export function parseServing(value: unknown): ServingStatus {
     context: x.context ? text(x.context) : null, desired: text(x.desired), revision: number(x.revision), ready: boolean(x.ready),
     service: service && { state: text(service.state), health: service.health == null ? null : text(service.health),
       exitCode: service.exitCode == null ? null : number(service.exitCode) },
-    models: x.models == null ? null : array(x.models, item => { const m = record(item); return { id: text(m.id), status: text(m.status) } }) }
+    models: x.models == null ? null : array(x.models, item => { const m = record(item); return { id: text(m.id), status: text(m.status) } }),
+    loadOnStartup: x.loadOnStartup == null ? null : array(x.loadOnStartup, text), modelsMax: x.modelsMax == null ? null : number(x.modelsMax) }
 }
 export function parseLocalModels(value: unknown): LocalModel[] {
   return array(value, value => {

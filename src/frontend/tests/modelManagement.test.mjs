@@ -44,6 +44,10 @@ assert.deepEqual(parseSearch({ items: [], limitReached: false }), { items: [], l
   assert.deepEqual(parseServing(serving).service, { state: 'running', health: 'starting', exitCode: null })
   assert.equal(parseServing({ ...serving, model: null, name: null, service: null }).model, null)
   assert.equal(parseServing({ ...serving, engine: 'llamacpp' }).engine, 'llamacpp')
+  assert.deepEqual(parseServing({ ...serving, engine: 'llamacpp', loadOnStartup: ['a/b-GGUF:Q4_K_M'], modelsMax: 2 }),
+    { ...parseServing({ ...serving, engine: 'llamacpp' }), loadOnStartup: ['a/b-GGUF:Q4_K_M'], modelsMax: 2 })
+  assert.equal(parseServing(serving).loadOnStartup, null)
+  assert.throws(() => parseServing({ ...serving, loadOnStartup: [3] }))
   assert.throws(() => parseServing({ ...serving, engine: 'ollama' }))
   assert.throws(() => parseServing({ ...serving, model: '../x' }))
   const [snapshot] = parseLocalModels([{ id: serving.model, state: 'Ready', createdAt: '2026-09-22T00:00:00Z', updatedAt: '2026-09-22T00:00:00Z',

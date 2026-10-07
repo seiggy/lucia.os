@@ -57,6 +57,9 @@ public sealed class HostPlatformOptions
     // preset file its router serves them from. Loading 40 GB from a 1 GbE share takes minutes; from NVMe, seconds.
     public string? LlamaCache { get; set; }
 
+    // Comma-separated llama.cpp model names its router loads when it starts.
+    public string? LlamaLoadOnStartup { get; set; }
+
     public Guid? ChatModelId { get; set; }
     public Guid? EmbeddingModelId { get; set; }
 }

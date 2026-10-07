@@ -38,6 +38,8 @@
 .model-repository > label { margin-top: 24px; }
 .model-checkbox { display: flex !important; align-items: flex-start; gap: 12px; font-size: 14px; font-weight: 400 !important; margin: 24px 0; max-width: 70ch; }
 .model-checkbox input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
+.model-checkbox.model-load-at-start { margin: 12px 0 0; min-height: 44px; align-items: center; }
+.model-load-at-start input { margin-top: 0; }
 .model-estimate { margin: 24px 0; }
 .model-estimate h3 { font-size: 16px; margin-bottom: 12px; }
 .model-estimate > p { font-size: 14px; }

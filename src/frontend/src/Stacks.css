@@ -148,6 +148,10 @@
 .network-section .stack-inline-input > input:not([type]) { width: 14ch; margin: 0; }
 .stack-gpu-picks { grid-column: 1 / -1; min-width: 0; margin: 18px 0 0; padding: 0; border: 0; }
 .stack-catalog-fields > .stack-field-wide { grid-column: 1 / -1; max-width: 544px; }
+.stack-range { display: flex; align-items: center; gap: 16px; margin-top: 6px; }
+.network-section .stack-range input[type="range"] { flex: 1; min-width: 0; height: 44px; margin: 0; padding: 0; border: 0; background: none; accent-color: var(--accent); cursor: pointer; }
+.network-section .stack-range input[type="range"]:disabled { cursor: default; opacity: .6; }
+.stack-range output { min-width: 2ch; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
 .stack-gpu-picks legend { margin-bottom: 8px; padding: 0; font-size: 14px; font-weight: 650; }
 .stack-gpu-picks .network-checkbox { margin: 0 0 8px; }
 .stack-compose-details { margin: 24px 0 20px; }

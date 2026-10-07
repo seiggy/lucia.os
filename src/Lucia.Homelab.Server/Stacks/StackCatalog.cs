@@ -18,7 +18,7 @@ public sealed record StackTemplate(string Id, int Version, Dictionary<string, st
 /// <param name="When">Shown only when another setting has a value, written <c>id=value</c>.</param>
 /// <param name="Optional">An empty value is allowed.</param>
 public sealed record CatalogField(string Id, string Label, string Kind, string? Default = null, string? Help = null,
-    CatalogOption[]? Options = null, string? When = null, bool Optional = false);
+    CatalogOption[]? Options = null, string? When = null, bool Optional = false, int? Min = null, int? Max = null);
 public sealed record CatalogOption(string Value, string Label, string Help);
 public sealed record CatalogGpu(string Uuid, string Model, long? MemoryBytes, string? Unsupported);
 /// <param name="Unmet">The placement requirement the server misses, for the portal to describe.</param>
@@ -99,19 +99,21 @@ public static class StackCatalog
             {
                 "port" => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var port) && port is >= 1 and <= 65535,
                 "gpus" => value.Length is > 0 and <= 1024,
+                "range" => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var number) && number >= field.Min && number <= field.Max,
                 "choice" => field.Options!.Any(option => option.Value == value),
                 // It's written to the app's .env unquoted.
                 "secret" => value.Length <= 128 && Unquoted(value),
-                _ => value.Length is > 0 and <= 128 && !value.Any(char.IsControl),
+                _ => value.Length > 0 && value.Length <= (field.Max ?? 128) && !value.Any(char.IsControl),
             };
             if (!valid)
                 throw new HardwareOnboardingException(400, "invalid_setting", field.Kind switch
                 {
                     "port" => $"{field.Label} must be a port from 1 to 65535.",
                     "gpus" => "Choose at least one GPU.",
+                    "range" => $"{field.Label} must be a whole number from {field.Min} to {field.Max}.",
                     "choice" => $"{field.Label} must be one of: {string.Join(", ", field.Options!.Select(option => option.Label))}.",
                     "secret" => $"{field.Label} must be up to 128 letters, digits and . _ ~ + / = -",
-                    _ => $"{field.Label} needs a value of up to 128 characters.",
+                    _ => $"{field.Label} needs a value of up to {field.Max ?? 128} characters.",
                 });
             result[field.Id] = value;
         }
@@ -149,12 +151,12 @@ public static class StackCatalog
 
 /// <summary>
 /// Local AI on an NVIDIA server, with an OpenAI-compatible <c>/v1</c> on the chosen port. The engine is Lucia Inference
-/// (TensorSharp, GGUF models loaded on demand), vLLM (one safetensors model, served from startup) or llama.cpp (one GGUF
-/// model, served from startup). Either way Lucia's
+/// (TensorSharp, GGUF models loaded on demand), vLLM (one safetensors model, served from startup) or llama.cpp (the library's
+/// GGUF LLMs and embedding models, loaded on demand). Either way Lucia's
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -163,11 +165,14 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
         [
             new("lucia", "Lucia Inference", "Runs GGUF models and switches between them as you choose them. Best for trying models."),
             new("vllm", "vLLM", "Serves one safetensors model, fast, to many requests at once. Best for a model every app shares."),
-                       new("llamacpp", "llama.cpp", "Serves every downloaded GGUF LLM, loading the one each request names. Best for large quantized models."),
+                       new("llamacpp", "llama.cpp", "Serves every downloaded GGUF, loading the one each request names. Best for large quantized models."),
                    ]),
         new("gpus", "GPUs", "gpus", Help: "Local AI gets these GPUs to itself. Their memory sets how large a model it can load."),
         new("port", "Port", "port", "8080", "Apps on your network reach local AI at http://<server>:<port>/v1."),
         new("library-port", "Library port", "port", "8081", "Lucia manages the model library through this port.", When: "engine=vllm|llamacpp"),
+        new("models-max", "Models loaded at once", "range", "1", "llama.cpp keeps up to this many models in GPU memory, such as an LLM "
+            + "beside an embedding model, and unloads the least recently used one to make room. Raise it only if the GPUs fit them together.",
+            When: "engine=llamacpp", Min: 1, Max: 5),
         new("library", "Model library", "text", Help: "An NFS share to keep models on, written host:/path, such as a NAS. "
             + "Downloads go to a folder named after this server. Leave it blank to keep models on this server.", Optional: true),
         // vLLM's served model, set from the Models page. llama.cpp serves the whole library, so it ignores these;
@@ -176,13 +181,15 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
         new("vllm-name", "Served model name", "hidden", Optional: true),
         new("vllm-context", "Served context", "hidden", "auto"),
         new("vllm-file", "Served GGUF file", "hidden", Optional: true),
+        // llama.cpp model names, comma-separated, loaded when it starts. Set from the Models page.
+        new("llama-load", "Loaded at start", "hidden", Optional: true, Max: 1024),
     ])
 {
     // Pinned by digest so every server runs exactly what was tested. Published from deployment/inference/Dockerfile.
     private static readonly Dictionary<int, string> Images = new()
     {
-        [12] = "seiggy/lucia-inference:0.1.5-cuda12@sha256:20115802198c371465c50ccbe5864fd8b8bff04743c10d6f7a1782261034555f",
-        [13] = "seiggy/lucia-inference:0.1.5-cuda13@sha256:c82e4d1a137184b7a6739f9a7bf75cb636e9518bf3e87d1b541f1514ad465a95",
+        [12] = "seiggy/lucia-inference:0.1.8-cuda12@sha256:a9a5b2e0c3368b0bc23c12977bc8d2c9bd8437b18c8ff6898bca04b644660a87",
+        [13] = "seiggy/lucia-inference:0.1.8-cuda13@sha256:7668db75424bf957fd63c2eb354eeef6f8568a5826c661650c001ee4d85b8913",
     };
 
     private static readonly Dictionary<int, string> VllmImages = new()
@@ -263,7 +270,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
                   HostPlatform__InferenceApiKey: ${LUCIA_INFERENCE_KEY}
                   HostPlatform__MemoryBudgetGiB: "{{budget.ToString(CultureInfo.InvariantCulture)}}"
                   HostPlatform__ModelDirectory: {{root}}
-            {{(dedicated ? "      Worker__LibraryOnly: \"true\"\n" : "")}}{{(engine == "llamacpp" ? "      HostPlatform__LlamaCache: /cache\n" : "")}}    volumes:
+            {{(dedicated ? "      Worker__LibraryOnly: \"true\"\n" : "")}}{{(engine == "llamacpp" ? $"      HostPlatform__LlamaCache: /cache\n      HostPlatform__LlamaLoadOnStartup: \"{string.Join(',', LlamaLoad(settings))}\"\n" : "")}}    volumes:
                   - {{volume}}:/models{{nocopy}}
                   - data:/data
             {{(engine == "llamacpp" ? "      - llama-cache:/cache\n" : "")}}{{(dedicated ? "" : devices)}}
@@ -333,7 +340,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
     }
 
     /// <summary>
-    /// llama.cpp's router serving every library GGUF the worker has copied to the node's own disk, one loaded at a time.
+    /// llama.cpp's router serving every library GGUF the worker has copied to the node's own disk, up to models-max loaded at once.
     /// </summary>
     private static string Llama(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, int line, string devices)
     {
@@ -343,6 +350,9 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
               llama:
                 image: {{LlamaImages[line]}}
                 restart: unless-stopped
+                labels:
+                  # llama.cpp reads load-on-startup only when it starts, so a new choice recreates it.
+                  lucia.load-on-startup: "{{string.Join(',', LlamaLoad(settings))}}"
                 depends_on:
                   inference:
                     condition: service_healthy
@@ -352,7 +362,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
                   LLAMA_API_KEY: ${LUCIA_INFERENCE_KEY}
                   # Prometheus metrics at /metrics?model=<name>, which Lucia's telemetry relay scrapes.
                   LLAMA_ARG_ENDPOINT_METRICS: "1"
-                command: ["--models-preset", "/cache/llama-models.ini", "--models-max", "1", "--host", "0.0.0.0", "--port", "8080"]
+                command: ["--models-preset", "/cache/llama-models.ini", "--models-max", "{{settings["models-max"]}}", "--host", "0.0.0.0", "--port", "8080"]
                 volumes:
                   - llama-cache:/cache:ro
                 healthcheck:
@@ -390,6 +400,24 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 8, "Local AI
             throw new HardwareOnboardingException(409, engine == "vLLM" ? "vllm_driver_too_old" : "llamacpp_driver_too_old",
                 $"The NVIDIA driver supports up to CUDA {node.Status!.Runtime!.CudaVersion}. {engine} needs CUDA {cuda12}: update the driver, or use Lucia Inference.");
     }
+
+    /// <summary>The models llama.cpp loads when it starts, refused when a name isn't one llama.cpp uses or there are more than it keeps loaded.</summary>
+    internal static string[] LlamaLoad(IReadOnlyDictionary<string, string> settings)
+    {
+        var names = (settings.GetValueOrDefault("llama-load") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (names.Any(name => !LlamaName().IsMatch(name)))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Loaded at start names a model llama.cpp doesn't list. Choose again on the Models page.");
+        var max = int.Parse(settings.GetValueOrDefault("models-max") ?? "1", CultureInfo.InvariantCulture);
+        if (names.Length > max)
+            throw new HardwareOnboardingException(400, "invalid_setting", $"{names.Length} models load at start, but llama.cpp keeps {max} loaded at once. "
+                + "Raise Models loaded at once, or load fewer at start on the Models page.");
+        return names;
+    }
+
+    // As ModelCatalog.LlamaPresets names them: owner/repo:TAG.
+    [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+:[A-Za-z0-9._-]+\z")]
+    private static partial Regex LlamaName();
 
     // UUIDs go into the compose file, so only the exact NVIDIA form is accepted.
     [GeneratedRegex(@"\AGPU-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z", RegexOptions.IgnoreCase)]

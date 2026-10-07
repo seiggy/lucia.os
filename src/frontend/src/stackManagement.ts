@@ -22,10 +22,10 @@ export interface ImageUpdate { image: string; current: string; tag: string; majo
 export interface AppAddress { ip: string; status: { state: 'Held' | 'InUse' | 'NoSubnet'; message: string | null } | null }
 export interface StackRestore { id: string; snapshot: string; startedAt: string; startedBy: string }
 export interface CatalogOption { value: string; label: string; help: string }
-/** `when` is `id=value` or `id=one|other`: the field applies only while that setting has one of those values. Hidden fields are set by Lucia's own screens. */
+/** `when` is `id=value` or `id=one|other`: the field applies only while that setting has one of those values. Hidden fields are set by Lucia's own screens. `range` fields are whole numbers from `min` to `max`. */
 export interface CatalogField {
-  id: string; label: string; kind: 'port' | 'text' | 'gpus' | 'choice' | 'secret' | 'hidden'; default: string | null; help: string | null
-  options: CatalogOption[]; when: string | null; optional: boolean
+  id: string; label: string; kind: 'port' | 'text' | 'gpus' | 'choice' | 'secret' | 'hidden' | 'range'; default: string | null; help: string | null
+  options: CatalogOption[]; when: string | null; optional: boolean; min: number | null; max: number | null
 }
 export interface CatalogGpu { uuid: string; model: string; memoryBytes: number | null; unsupported: string | null }
 export interface CatalogServer { nodeId: string; hostname: string; unmet: string | null; reason: string | null; gpus: CatalogGpu[] | null }
@@ -211,14 +211,16 @@ export function parseCatalog(value: unknown): CatalogApp[] {
       onSpark: app.runsOnSpark === true,
       fields: list(app.fields, field => {
         const row = object(field)
-        if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'secret' && row.kind !== 'hidden') throw invalid()
+        if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'secret' && row.kind !== 'hidden' && row.kind !== 'range') throw invalid()
         const options = absent(row.options) ? [] : list(row.options, option => {
           const item = object(option)
           return { value: text(item.value), label: text(item.label), help: text(item.help) }
         }, 16)
         if (row.kind === 'choice' && options.length === 0) throw invalid()
+        const min = absent(row.min) ? null : integer(row.min), max = absent(row.max) ? null : integer(row.max)
+        if (row.kind === 'range' && (min === null || max === null || min > max)) throw invalid()
         return { id: text(row.id), label: text(row.label), kind: row.kind, default: optional(row.default), help: optional(row.help),
-          options, when: optional(row.when), optional: row.optional === true }
+          options, when: optional(row.when), optional: row.optional === true, min, max }
       }, 32),
       servers: list(app.servers, server => {
         const row = object(server)
@@ -264,6 +266,7 @@ export function settingsProblem(app: CatalogApp, values: Record<string, string>)
     if (field.kind === 'choice' && !field.options.some(option => option.value === value)) return `Choose the ${field.label.toLowerCase()}.`
     if (field.kind === 'port' && !(/^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65535)) return `${field.label} must be a port from 1 to 65535.`
     if (field.kind === 'gpus' && !value) return 'Choose at least one GPU.'
+    if (field.kind === 'range' && !(/^\d{1,3}$/.test(value) && Number(value) >= field.min! && Number(value) <= field.max!)) return `${field.label} must be from ${field.min} to ${field.max}.`
     if (field.kind === 'text' && value.length > 128) return `${field.label} can be up to 128 characters.`
     if (field.kind === 'secret' && !/^[A-Za-z0-9._~+/=-]{0,128}$/.test(value)) return `${field.label} can be up to 128 letters, digits and . _ ~ + / = -`
   }

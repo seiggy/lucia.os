@@ -30,6 +30,8 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
             throw new InvalidDataException("The GGUF has no model tensors.");
         var architecture = file.GetString("general.architecture")
             ?? throw new InvalidDataException("The GGUF does not declare its architecture.");
+        // llama.cpp serves any GGUF that declares mean, CLS or last-token pooling as an embedding model, however it was downloaded.
+        if (!requireTensorSharp && file.GetUint32($"{architecture}.pooling_type", 0) is >= 1 and <= 3) kind = ModelKind.Embedding;
         var context = checked((int)file.GetUint32($"{architecture}.context_length"));
         if (context <= 0)
             throw new InvalidDataException("The GGUF must declare a positive context length.");
@@ -37,10 +39,11 @@ public sealed class ModelInspector(IOptions<HostPlatformOptions> options)
         var tensorTypes = file.Tensors.Values.Select(t => t.Type.ToString()).Distinct().Order().ToArray();
         if (kind == ModelKind.Embedding)
         {
-            if (architecture != "bert" || file.GetString("tokenizer.ggml.model") is not ("bert" or "t5")
+            // TensorSharp embeds BERT and XLM-R only; llama.cpp runs any encoder it can load, and checks that itself.
+            if (requireTensorSharp && (architecture != "bert" || file.GetString("tokenizer.ggml.model") is not ("bert" or "t5")
                 || file.GetUint32("bert.pooling_type") is < 1 or > 3
                 || file.GetUint32("bert.embedding_length") == 0
-                || !file.Tensors.ContainsKey("token_embd.weight"))
+                || !file.Tensors.ContainsKey("token_embd.weight")))
                 throw new NotSupportedException("Embeddings require a supported BERT or XLM-R sentence-encoder GGUF with tokenizer, dimensions, pooling, and token embeddings.");
             // CPU embeddings keep GGUF quantized rows and dequantize per row, so resident weights track the file.
             return new(architecture, kind, fileBytes, fileBytes, context, 0, 0, tensorTypes);
