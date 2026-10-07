@@ -128,6 +128,8 @@
 .assistant .assistant-card { display: grid; gap: 12px; padding: 12px; border: 0; border-top: 1px solid var(--amber-line); border-radius: 0; }
 .assistant-card > p { overflow-wrap: anywhere; }
 .assistant-card-form { display: grid; gap: 12px; }
+.assistant-risk { margin: 0; font-size: 14px; line-height: 1.5; }
+.assistant-risk strong { color: var(--failed-ink); }
 .assistant-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .assistant .assistant-card .button { gap: 8px; min-height: 40px; padding: 8px 14px; border-radius: 12px; font-size: 14px; }
 .assistant .assistant-card .text-link { min-height: 32px; padding: 0; justify-content: flex-start; text-align: left; }

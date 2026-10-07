@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "tsc src/dashboard.ts src/navigation.ts src/playground.ts src/authentication.ts src/onboarding.ts src/sparkTelemetry.ts src/modelManagement.ts src/networkManagement.ts src/packageUpdates.ts src/stackManagement.ts src/directory.ts src/assistant.ts --outDir .checks --module nodenext --target es2022 --skipLibCheck && node tests/dashboard.test.mjs && node tests/navigation.test.mjs && node tests/playground.test.mjs && node tests/authentication.test.mjs && node tests/onboarding.test.mjs && node tests/sparkTelemetry.test.mjs && node tests/modelManagement.test.mjs && node tests/networkManagement.test.mjs && node tests/packageUpdates.test.mjs && node tests/stackManagement.test.mjs && node tests/directory.test.mjs && node tests/assistant.test.mjs",
+    "test": "tsc src/dashboard.ts src/navigation.ts src/playground.ts src/authentication.ts src/onboarding.ts src/sparkTelemetry.ts src/modelManagement.ts src/networkManagement.ts src/packageUpdates.ts src/stackManagement.ts src/directory.ts src/assistant.ts src/assistantJobs.ts --outDir .checks --module nodenext --target es2022 --skipLibCheck && node tests/dashboard.test.mjs && node tests/navigation.test.mjs && node tests/playground.test.mjs && node tests/authentication.test.mjs && node tests/onboarding.test.mjs && node tests/sparkTelemetry.test.mjs && node tests/modelManagement.test.mjs && node tests/networkManagement.test.mjs && node tests/packageUpdates.test.mjs && node tests/stackManagement.test.mjs && node tests/directory.test.mjs && node tests/assistant.test.mjs && node tests/assistantJobs.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

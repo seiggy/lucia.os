@@ -38,6 +38,9 @@ public sealed class AssistantStream(string messageId, string? model)
     /// <summary>The turn was stopped or failed, so its message is kept even when empty.</summary>
     public bool Interrupted => _stopped || _failure is not null;
 
+    public bool Stopped => _stopped;
+    public string? Failure => _failure;
+
     public object Start() => new { type = "start", messageId };
 
     public List<object> Map(AgentResponseUpdate update)
@@ -219,6 +222,7 @@ public sealed class AssistantStream(string messageId, string? model)
 public sealed class AssistantRun(string messageId, CancellationToken stopping)
 {
     private readonly List<string> _chunks = [];
+    private readonly TaskCompletionSource _ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _done;
 
@@ -228,11 +232,22 @@ public sealed class AssistantRun(string messageId, CancellationToken stopping)
     public Task Completion { get; set; } = Task.CompletedTask;
     public bool Done => _done;
 
+    /// <summary>Completes when the turn has ended and its chat is saved; <see cref="Completion"/> lingers for reconnects.</summary>
+    public Task Ended => _ended.Task;
+
+    /// <summary>"succeeded", "stopped" or "failed", once the turn has ended.</summary>
+    public string Outcome { get; set; } = "succeeded";
+    public string? Error { get; set; }
+
     public void Publish(object chunk) => Add(JsonSerializer.Serialize(chunk, AssistantStream.Json), false);
 
     public void Publish(List<object> chunks) => chunks.ForEach(Publish);
 
-    public void Complete() => Add("[DONE]", true);
+    public void Complete()
+    {
+        Add("[DONE]", true);
+        _ended.TrySetResult();
+    }
 
     /// <summary>Chunks from <paramref name="from"/> on, whether the turn has ended, and a task that completes on the next change.</summary>
     public (List<string> Chunks, bool Done, Task Changed) Read(int from)

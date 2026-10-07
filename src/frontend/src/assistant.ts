@@ -13,8 +13,8 @@ export type AssistantMetadata = {
   error?: string
 }
 export type AssistantMessage = { id: string; role: 'user' | 'assistant'; parts: AssistantPart[]; metadata?: AssistantMetadata }
-export type Transcript = { title: string; messages: AssistantMessage[]; running: boolean }
-export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean }
+export type Transcript = { title: string; messages: AssistantMessage[]; running: boolean; job?: string }
+export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean; job?: string }
 export type AssistantModel = { id: string; name: string }
 export type AssistantSource = { id: string; name: string; models: AssistantModel[]; reason?: string }
 export type AssistantModels = { connected: boolean; defaultModel?: string; sources: AssistantSource[]; models: AssistantModel[] }
@@ -45,6 +45,16 @@ export function newChatId(): string {
 }
 
 export const isChatId = (value: unknown): value is string => typeof value === 'string' && chatIdPattern.test(value)
+const jobOf = (value: unknown) => isChatId(value) ? { job: value } : {}
+
+export const chatKey = 'lucia.assistant.chat.v1'
+export const openChatEvent = 'lucia:open-chat'
+// Jobs and notifications open a chat in the dock: a mounted panel switches to it, and one that mounts later reads it back.
+export function openAssistantChat(id: string) {
+  if (!isChatId(id)) return
+  try { localStorage.setItem(chatKey, id) } catch { /* The event still opens it. */ }
+  window.dispatchEvent(new CustomEvent(openChatEvent, { detail: id }))
+}
 export const isModelId = (value: unknown): value is string => typeof value === 'string' && modelPattern.test(value)
 // Picking this asks for a GitHub sign-in; it is never sent.
 export const signInModel = 'github:'
@@ -92,7 +102,7 @@ export function parseSessions(value: unknown): ChatSummary[] {
     if (!record(item) || !isChatId(item.id) || typeof item.title !== 'string' || typeof item.updated !== 'string'
       || typeof item.running !== 'boolean') throw unexpected()
     return { id: item.id, title: item.title || 'Chat', updated: item.updated, running: item.running,
-      ...(typeof item.model === 'string' && item.model ? { model: item.model } : {}) }
+      ...(typeof item.model === 'string' && item.model ? { model: item.model } : {}), ...jobOf(item.job) }
   })
 }
 
@@ -153,7 +163,7 @@ export function parseTranscript(value: unknown): Transcript {
     if (item.role === 'user' ? !messageText({ parts }) : !parts.length && !metadata) return []
     return [{ id: item.id, role: item.role, parts, ...(metadata ? { metadata } : {}) }]
   })
-  return { title: typeof value.title === 'string' && value.title.trim() ? value.title : 'Chat', messages, running: value.running }
+  return { title: typeof value.title === 'string' && value.title.trim() ? value.title : 'Chat', messages, running: value.running, ...jobOf(value.job) }
 }
 
 // Choosing GitHub stays chosen until Copilot can be used, so a refusal after signing in still explains itself.
@@ -343,16 +353,27 @@ const changeLabels = new Map([
   ['run_backup', 'Back up apps'],
   ['upgrade_app_images', 'Upgrade app images'],
   ['check_node_updates', 'Check servers for updates'],
+  // Only a job may be granted these.
+  ['delete_app', 'Delete apps'],
+  ['restore_backup', 'Restore app backups'],
+  ['set_public_route', 'Put apps on the internet or take them off'],
+  ['node_action', 'Update or restart servers'],
+  ['run_command', 'Run commands on servers'],
 ])
 
 export const toolLabel = (tool: AssistantTool) => changeLabels.get(tool.name) ?? tool.description
 
 // "Approve for the rest of this chat" grants the whole change tool, or the whole site for a web read; destructive calls always ask.
-export function grantText(part: AssistantToolPart): string | undefined {
+// In a job's chat the grant is saved to the job, destructive tools included.
+export function grantScope(part: AssistantToolPart, job = false): string | undefined {
   const host = part.toolName === 'read_web_page' && record(part.input) ? urlHost(part.input.url) : undefined
-  const label = changeLabels.get(part.toolName)
-  const scope = host ? `read ${host}` : label && label[0].toLowerCase() + label.slice(1)
-  return scope && `Approve, and let it ${scope} for the rest of this chat`
+  const label = !job && isDestructiveTool(part.toolName) ? undefined : changeLabels.get(part.toolName)
+  return host ? `read ${host}` : label && label[0].toLowerCase() + label.slice(1)
+}
+
+export function grantText(part: AssistantToolPart, job = false): string | undefined {
+  const scope = grantScope(part, job)
+  return scope && (job ? `Approve, and let this job ${scope} without asking` : `Approve, and let it ${scope} for the rest of this chat`)
 }
 
 function inputText(input: unknown, field: string) {

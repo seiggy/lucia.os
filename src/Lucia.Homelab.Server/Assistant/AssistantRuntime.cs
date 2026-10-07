@@ -192,6 +192,8 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         config.Tools = kit is null ? null : [.. kit.Tools];
         config.AvailableTools = kit is null ? [] : [.. kit.Tools.Select(tool => tool.Name)];
         config.DisabledMcpServers = ["github-mcp-server"];
+        // Copilot saves a large tool result to a file for its own file tools to read; Lucia's kit has none, so pass results through whole.
+        config.LargeOutput = new LargeToolOutputConfig { Enabled = false };
         config.OnPermissionRequest = kit?.Permission
             ?? (static (_, _) => Task.FromResult(PermissionDecision.Reject("Lucia's assistant has no tools in this request.")));
         config.WorkingDirectory = Path.Combine(Root, "workspace");

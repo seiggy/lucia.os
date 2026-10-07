@@ -80,7 +80,7 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
             <span>{toolLabel(tool)}</span>
           </label>)}
         </div>
-        <p className="section-note">It always asks before it deletes an app, restores a backup, puts an app on the internet or takes it off, updates or restarts a server, or runs a command on one.</p>
+        <p className="section-note">In chats, it always asks before it deletes an app, restores a backup, puts an app on the internet or takes it off, updates or restarts a server, or runs a command on one. An assistant job may do these unasked only if you allow it in that job’s settings.</p>
       </section>
       <section className="surface network-section">
         <h2>Sites it may read without asking</h2>

@@ -29,6 +29,8 @@ export type Route =
   | { page: 'domain-settings' }
   | { page: 'ssh-key-settings' }
   | { page: 'assistant-settings' }
+  | { page: 'notification-settings' }
+  | { page: 'jobs' }
   | { page: 'people-settings'; view: 'people' | 'groups' | 'apps' }
   | { page: 'apps'; view: 'list' | 'containers' | 'catalog' | 'new' | 'app' | 'install' | 'backups' | 'spark'; name?: string; node?: string }
   | { page: 'ai' }
@@ -37,7 +39,8 @@ export type Route =
   | { page: 'not-found' }
 
 export function parseRoute(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
+  // A notification's link adds ?chat= to open that chat; the page itself ignores it.
+  const parts = hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean)
   if (parts.length === 0 || (parts.length === 1 && parts[0] === 'home')) return { page: 'home' }
   if (parts.length === 1 && parts[0] === 'settings') return { page: 'settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'adguard') return { page: 'adguard-settings' }
@@ -47,6 +50,8 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'domains') return { page: 'domain-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'ssh-keys') return { page: 'ssh-key-settings' }
   if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'assistant') return { page: 'assistant-settings' }
+  if (parts.length === 2 && parts[0] === 'settings' && parts[1] === 'notifications') return { page: 'notification-settings' }
+  if (parts.length === 2 && parts[0] === 'ai' && parts[1] === 'jobs') return { page: 'jobs' }
   if (parts[0] === 'settings' && parts[1] === 'people' && parts.length <= 3) {
     if (parts.length === 2) return { page: 'people-settings', view: 'people' }
     if (parts[2] === 'groups' || parts[2] === 'apps') return { page: 'people-settings', view: parts[2] }

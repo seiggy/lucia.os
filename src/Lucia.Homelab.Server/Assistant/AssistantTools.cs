@@ -70,7 +70,7 @@ public sealed class AssistantTool(AIFunction inner, string tier, Func<string, Ca
 /// </summary>
 public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackStore stacks, NodeRequests requests,
     UniFiConnectionService unifi, AdGuardConnectionService adguard, DomainOnboardingStore domains, AssistantBroker broker,
-    ILogger<AssistantTools> logger)
+    ILogger<AssistantTools> logger, AssistantPush? push = null)
 {
     private const string NodeHelp = "The server: its hostname, DNS name, address or id.";
     private const string AppHelp = "The app's name, from list_apps.";
@@ -301,6 +301,22 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                         throw new AssistantException(400, "no_way_to_answer", "Offer choices, or let the owner type an answer.");
                     return await broker.AskAsync(session, call, "answer", ct) is { } answer ? new { Answer = answer }
                         : "The owner chose not to answer. Go on without it if you can; otherwise say what you need and stop.";
+                }),
+            Tool(ToolTier.Read, "notify_owner",
+                "Sends the owner a notification on their phone or browser that opens this chat. Use it when a scheduled job finds "
+                + "something the owner must know or do; in a chat they're watching, just say it.",
+                async Task<object?> ([Description("A short title, such as \"Jellyfin needs an update\".")] string title,
+                    [Description("What happened and what the owner should do, in a sentence or two.")] string message, AIFunctionArguments args,
+                    CancellationToken ct = default) =>
+                {
+                    var (session, _) = Call(args);
+                    if (string.IsNullOrWhiteSpace(title) || title.Length > 120 || string.IsNullOrWhiteSpace(message) || message.Length > 1500)
+                        throw new AssistantException(400, "invalid_notification", "Give a title of up to 120 and a message of up to 1,500 characters.");
+                    if (push is null || session.Length != 49 || session[16] != '-')
+                        return "Notifications aren't available here. Say it in the chat instead.";
+                    return await push.SendAsync(session[..16], title.Trim(), message.Trim(), "/#/?chat=" + session[17..], ct) > 0
+                        ? "Sent."
+                        : "The owner has no devices that take notifications. Say it in the chat instead.";
                 }),
             Tool(ToolTier.Secret, "request_secret",
                 "Asks the owner to type a password, key or token for a custom app; Lucia saves it in the app's environment and you never "

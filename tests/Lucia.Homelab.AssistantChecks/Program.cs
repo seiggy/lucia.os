@@ -260,10 +260,10 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:13,web:1,secret:1,change:7,destructive:5"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:14,web:1,secret:1,change:7,destructive:5"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
-        "The assistant has 13 read, 1 web, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+        "The assistant has 14 read, 1 web, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolWeb = ToolSchema("read_web_page");
     Check(Required(toolWeb).SequenceEqual(["url"]) && (int)toolWeb["properties"]!["start"]!["default"]! == 0,
         $"read_web_page needs a URL, and starts at the top of the page (got {toolWeb.ToJsonString()}).");
@@ -611,6 +611,84 @@ try
     })
         Check(AssistantTools.Warning(warnTool, JsonSerializer.SerializeToNode(warnInput)) == warnText,
             $"{warnTool} {JsonSerializer.Serialize(warnInput)} warns '{warnText}' (got '{AssistantTools.Warning(warnTool, JsonSerializer.SerializeToNode(warnInput))}').");
+
+    // A job's chat runs what the job may do, destructive tools included, and "always" saves the grant to the job.
+    List<string> jobSaved = [], jobWaited = [];
+    var jobWaits = new AssistantJobWaits();
+    var jobGrants = new AssistantJobGrants("Nightly", ["tool:wipe"], grant => { jobSaved.Add(grant); return Task.CompletedTask; },
+        tool => { jobWaited.Add(tool); return Task.CompletedTask; }, jobWaits);
+    var jobRun = new AssistantRun("m-job", default);
+    var jobKit = broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, "execute"), govSettings, govTools, new AssistantStream("m-job", null), jobRun, jobGrants);
+    Check(Verdict(await GovCall(jobKit, "wipe", new { app = "grafana" })) == "approve"
+        && (string)GovNew(jobRun)[2]["reason"]! == "This job may do this without asking.", "A job runs the destructive tools it was granted.");
+    var jobAsk = GovCall(jobKit, "run_command", new { node = "lucialab02", command = "id" });
+    govChunks = GovNew(jobRun);
+    Check(!jobAsk.IsCompleted && Types(govChunks) == "tool-input-available,tool-approval-request" && jobWaited.SequenceEqual(["run_command"])
+        && jobWaits.Open.Count == 1, "Anything else waits for the owner, who is told about it.");
+    Check(runs.Respond(owner, chat, (string)govChunks[1]["approvalId"]!, true, null, always: true) && Verdict(await jobAsk) == "approve"
+        && jobSaved.SequenceEqual(["tool:run_command"]) && jobGrants.Has("tool:run_command") && jobWaits.Open.IsEmpty && jobWaits.Expired == 0,
+        "'Always' in a job's chat saves to the job, destructive tools too.");
+    Check(Verdict(await GovCall(jobKit, "run_command", new { node = "lucialab02", command = "id" })) == "approve", "The job then runs it without asking.");
+    var (_, plainRun, plainKit) = GovTurn();
+    var plainWipe = GovCall(plainKit, "wipe", new { app = "grafana" });
+    Check(!plainWipe.IsCompleted, "A job's grants don't reach other chats.");
+    plainRun.Stop.Cancel();
+    await plainWipe;
+
+    // Web Push: RFC 8291's own example encrypts to the same bytes.
+    static byte[] B64(string text) => Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(text);
+    var pushPublic = B64("BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8");
+    using (var pushServer = System.Security.Cryptography.ECDiffieHellman.Create(new System.Security.Cryptography.ECParameters
+    {
+        Curve = System.Security.Cryptography.ECCurve.NamedCurves.nistP256, D = B64("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"),
+        Q = new() { X = pushPublic[1..33], Y = pushPublic[33..65] },
+    }))
+        Check(AssistantPush.Encrypt(B64("V2hlbiBJIGdyb3cgdXAsIEkgd2FudCB0byBiZSBhIHdhdGVybWVsb24"),
+            B64("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"), B64("BTBZMqHH6r4Tts7J_aSIgg"), pushServer,
+            B64("DGv6ra1nlYgDCS1FRnbzlw")).SequenceEqual(B64("DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8")
+                .Concat(B64("8pfeW0KbunFT06SuDKoJH9Ql87S1QUrdirN6GcG7sFz1y1sqLgVi1VhjVkHsUoEsbI_0LpXMuGvnzQ"))), "Push messages match RFC 8291's example.");
+    var push = new AssistantPush(options, new EphemeralDataProtectionProvider(), NullLogger<AssistantPush>.Instance, new HttpClient());
+    Check(B64(push.PublicKey()) is { Length: 65 } && push.PublicKey() == push.PublicKey(), "The VAPID key is a P-256 public key, kept.");
+    var pushKeys = new PushKeys("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4", "BTBZMqHH6r4Tts7J_aSIgg");
+    await Reject(() => push.AddAsync(owner, new("Laptop", "https://169.254.169.254/push", pushKeys), "https://lucia.example", default), 400, "invalid_device",
+        "Only known push services are notified, so a device can't aim Lucia's requests elsewhere.");
+    await Reject(() => push.AddAsync(owner, new("Laptop", "http://fcm.googleapis.com/fcm/send/x", pushKeys), "https://lucia.example", default), 400,
+        "invalid_device", "Push services are reached over HTTPS.");
+    await Reject(() => push.AddAsync(owner, new("Laptop", "https://fcm.googleapis.com/fcm/send/x", new PushKeys("AAAA", "BTBZMqHH6r4Tts7J_aSIgg")),
+        "https://lucia.example", default), 400, "invalid_device", "Bad push keys are refused.");
+    var device = await push.AddAsync(owner, new("Laptop", "https://fcm.googleapis.com/fcm/send/x", pushKeys), "https://lucia.example", default);
+    var again = await push.AddAsync(owner, new("Phone", "https://fcm.googleapis.com/fcm/send/x", pushKeys), "https://lucia.example", default);
+    Check(again.Id == device.Id && (await push.DevicesAsync(owner, default)) is [{ Name: "Phone" }] && (await push.DevicesAsync(stranger, default)).Count == 0,
+        "Registering a browser again updates it, and devices are the owner's own.");
+    await push.RemoveAsync(owner, device.Id, default);
+    Check((await push.DevicesAsync(owner, default)).Count == 0, "A device can be removed.");
+
+    // Jobs: saved per owner, validated, and scheduled by cron in the job's time zone.
+    var jobs = new AssistantJobs(options, runs, new StoppedLifetime(), NullLogger<AssistantJobs>.Instance);
+    AssistantJobRequest JobRequest(string cron = "0 7 * * *", string[]? tools = null, string zone = "America/Chicago") =>
+        new("Nightly triage", ["Check the apps.", "Fix what you can."], cron, zone, null, true, tools, ["docs.docker.com"]);
+    await Reject(() => jobs.SaveAsync(owner, null, JobRequest("every day"), "tester via assistant", "tester", default), 400, "invalid_job", "Schedules are cron.");
+    await Reject(() => jobs.SaveAsync(owner, null, JobRequest(zone: "Mars/Olympus"), "tester via assistant", "tester", default), 400, "invalid_job",
+        "Time zones are real.");
+    await Reject(() => jobs.SaveAsync(owner, null, JobRequest(tools: ["shell"]), "tester via assistant", "tester", default), 400, "invalid_job",
+        "Jobs may only be granted the assistant's own change tools.");
+    await Reject(() => jobs.SaveAsync(owner, null, JobRequest() with { Prompts = [] }, "tester via assistant", "tester", default), 400, "invalid_job",
+        "A job needs a prompt.");
+    var savedJob = JsonSerializer.SerializeToNode(await jobs.SaveAsync(owner, null, JobRequest(), "tester via assistant", "tester", default), AssistantStream.Json)!;
+    var jobId = (string)savedJob["id"]!;
+    Check(savedJob["next"] is not null && !(bool)savedJob["running"]! && (string)savedJob["timeZone"]! == "America/Chicago"
+        && JsonSerializer.SerializeToNode(await jobs.ListAsync(stranger, default))!.AsArray().Count == 0, "A saved job shows its next run, and only to its owner.");
+    var nextRuns = AssistantJobs.Next(new("0 7 * * *", "America/Chicago"), new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+    Check(nextRuns.Count == 3 && nextRuns[0] == new DateTimeOffset(2026, 1, 1, 13, 0, 0, TimeSpan.Zero), "7am in Chicago is 13:00 UTC in winter.");
+    await jobs.TickAsync(new DateTimeOffset(2026, 1, 1, 13, 0, 30, TimeSpan.Zero), new DateTimeOffset(2026, 1, 1, 13, 1, 0, TimeSpan.Zero), default);
+    Check((await jobs.RunsAsync(owner, jobId, default)).Count == 0, "A job that isn't due doesn't run.");
+    File.WriteAllText(Path.Combine(directory, "users", owner, "jobs", jobId + ".runs.json"), JsonSerializer.Serialize(
+        new[] { new AssistantJobRun("r1", chat, "schedule", DateTimeOffset.UtcNow, null, "running", null) }, AssistantStream.Json));
+    Check((await jobs.RunsAsync(owner, jobId, default)) is [{ Status: "failed", Error: "Lucia restarted during this run." }],
+        "A run Lucia lost track of shows as failed.");
+    await Reject(() => jobs.GetAsync(owner, "../../etc", default), 404, "job_not_found", "Job ids are only ever job ids.");
+    await jobs.DeleteAsync(owner, jobId, default);
+    Check(JsonSerializer.SerializeToNode(await jobs.ListAsync(owner, default))!.AsArray().Count == 0, "A job can be deleted.");
 
     var (_, webRun, webKit) = GovTurn();
     Check(Verdict(await GovCall(webKit, "fetch", new { url = "https://docs.docker.com/compose/" })) == "approve", "Reading an allowed site runs.");

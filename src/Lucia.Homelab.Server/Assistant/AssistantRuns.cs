@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace Lucia.Homelab.Server.Assistant;
 
 public sealed record AssistantChatRequest(string SessionId, string MessageId, string Text, string Mode, string? Model, string? Route);
-public sealed record AssistantSessionInfo(string Title, DateTimeOffset Updated, string? Model);
+public sealed record AssistantSessionInfo(string Title, DateTimeOffset Updated, string? Model, string? JobId = null);
 public sealed record AssistantTranscript(List<UiMessage> Messages);
 
 /// <summary>Runs chat turns in the background so they survive disconnects, and keeps each owner's chats as JSON files.</summary>
@@ -19,6 +19,9 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private string Root => Path.GetFullPath(options.Value.Directory);
+
+    /// <summary>Set by the jobs service, which needs the runs itself: a job's chat then uses the job's permissions.</summary>
+    internal AssistantJobs? Jobs { get; set; }
 
     public AssistantRun? Find(string owner, string id) => _runs.GetValueOrDefault(Key(owner, SessionId(id)));
 
@@ -37,7 +40,9 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
 
     /// <param name="actor">Who Lucia's history credits with the assistant's changes.</param>
     /// <param name="user">The signed-in Lucia user, for the SSH login the assistant suggests.</param>
-    public async Task<AssistantRun> StartAsync(string owner, AssistantChatRequest request, string actor, string? user, CancellationToken ct)
+    /// <param name="job">The job this turn runs for, unattended. A new chat then belongs to it.</param>
+    public async Task<AssistantRun> StartAsync(string owner, AssistantChatRequest request, string actor, string? user, CancellationToken ct,
+        AssistantJob? job = null)
     {
         var id = SessionId(request.SessionId);
         if (request.MessageId is null || !MessageIdPattern().IsMatch(request.MessageId) || request.Mode is not ("plan" or "execute")
@@ -55,7 +60,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             if (_runs.TryGetValue(key, out var active) && !active.Done)
                 throw new AssistantException(409, "run_active", "This chat is still answering. Stop it or wait for it to finish.");
             var transcript = await LoadAsync(folder, ct) ?? new([]);
-            var info = (ReadInfo(folder) ?? new(Title(request.Text), default, null)) with
+            var info = (ReadInfo(folder) ?? new(job?.Name ?? Title(request.Text), default, null, job?.Id)) with
             {
                 Updated = DateTimeOffset.UtcNow, Model = request.Model
             };
@@ -69,12 +74,30 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             var run = new AssistantRun(Guid.NewGuid().ToString("N"), lifetime.ApplicationStopping);
             _runs[key] = run;
             var route = request.Route is { } page && RoutePattern().IsMatch(page) ? page : "unknown";
-            var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}\n</lucia-context>\n\n{request.Text}";
+            var unattended = job is null ? "" : "\nRun: the scheduled job \"" + job.Name + "\". Nobody is watching: work on your own, and use "
+                + "notify_owner for anything the owner must know or do.";
+            var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}{unattended}\n</lucia-context>\n\n{request.Text}";
             run.Completion = Task.Run(() => ExecuteAsync(key, folder, run,
                 new(owner, key, prompt, request.Model, request.Mode, actor, user), transcript, info));
             return run;
         }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Runs a job's prompts one after another in a new chat <paramref name="sessionId"/>, stopping at the first turn that fails
+    /// or is stopped. Returns how the last turn ended.
+    /// </summary>
+    public async Task<(string Outcome, string? Error)> RunJobAsync(string owner, AssistantJob job, string sessionId, CancellationToken ct)
+    {
+        foreach (var text in job.Prompts)
+        {
+            var run = await StartAsync(owner, new(sessionId, "job-" + Guid.NewGuid().ToString("N"), text, "execute", job.Model, null),
+                job.Actor, job.User, ct, job);
+            await run.Ended.WaitAsync(ct);
+            if (run.Outcome != "succeeded") return (run.Outcome, run.Error);
+        }
+        return ("succeeded", null);
     }
 
     public object List(string owner)
@@ -88,6 +111,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
                 .Select(session => new
                 {
                     id = session.Id, title = session.Info!.Title, updated = session.Info.Updated, model = session.Info.Model,
+                    job = session.Info.JobId,
                     running = _runs.GetValueOrDefault(Key(owner, session.Id)) is { Done: false }
                 }).ToArray()
             : [];
@@ -102,7 +126,8 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             ?? throw new AssistantException(404, "session_not_found", "This chat no longer exists.");
         // A turn that finishes while this loads is replayed by reattaching, so leave its answer out.
         var messages = run is { Done: false } ? transcript.Messages.Where(message => message.Id != run.MessageId) : transcript.Messages;
-        return new { id, title = ReadInfo(folder)?.Title ?? "Chat", messages, running = run is { Done: false } };
+        var info = ReadInfo(folder);
+        return new { id, title = info?.Title ?? "Chat", job = info?.JobId, messages, running = run is { Done: false } };
     }
 
     public async Task DeleteAsync(string owner, string id, CancellationToken ct)
@@ -133,8 +158,10 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         run.Publish(stream.Start());
         try
         {
+            var job = info.JobId is { } jobId && Jobs is { } jobs
+                ? await jobs.GrantsAsync(turn.Owner, jobId, Path.GetFileName(folder), run.Stop.Token) : null;
             var kit = tools is null ? null
-                : broker.Kit(turn, await broker.SettingsAsync(turn.Owner, run.Stop.Token), tools.Create(turn.Actor, turn.User), stream, run);
+                : broker.Kit(turn, await broker.SettingsAsync(turn.Owner, run.Stop.Token), tools.Create(turn.Actor, turn.User), stream, run, job);
             await foreach (var update in runtime.RunAsync(turn, kit, run.Stop.Token))
                 lock (stream) run.Publish(stream.Map(update));
             lock (stream) run.Publish(stream.Finish());
@@ -159,6 +186,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             await SaveAsync(folder, transcript, info with { Updated = DateTimeOffset.UtcNow });
         }
         catch (Exception e) { logger.LogError("Saving an assistant chat failed ({ErrorType}).", e.GetType().Name); }
+        lock (stream) (run.Outcome, run.Error) = stream.Stopped ? ("stopped", null) : stream.Failure is { } failure ? ("failed", failure) : ("succeeded", null);
         run.Complete();
         // Keep the finished turn briefly so a chat bar that reconnects mid-turn can still replay its end.
         try { await Task.Delay(TimeSpan.FromSeconds(30), lifetime.ApplicationStopping); }
@@ -219,7 +247,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     private static partial Regex MessageIdPattern();
 
     [GeneratedRegex("^[A-Za-z0-9._:/-]{1,100}$")]
-    private static partial Regex ModelPattern();
+    internal static partial Regex ModelPattern();
 
     [GeneratedRegex("^/[A-Za-z0-9/_.-]{0,200}$")]
     private static partial Regex RoutePattern();

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode, RefObject } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
@@ -17,7 +17,7 @@ import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationTitl
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool'
 import { SelectGroup, SelectLabel } from './components/ui/select'
 import {
-  approvalNote, chatTitle, chooseModel, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, pageRoute,
+  approvalNote, chatKey, chatTitle, chooseModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute,
   parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
   waitingPart, waitingParts,
 } from './assistant'
@@ -32,8 +32,9 @@ type Auth = { session: AuthenticationSession; refreshSession: () => Promise<void
 type AuthRef = RefObject<Auth>
 type Failure = Error & { code?: string }
 
-const chatKey = 'lucia.assistant.chat.v1'
 const modelKey = 'lucia.assistant.model.v1'
+// A job's chat saves "always" approvals to the job instead of the chat.
+const JobChat = createContext(false)
 // Streamdown's fullscreen, download, and link-confirmation overlays portal outside the dock's styles.
 const replyControls = { table: false, code: { copy: true, download: false }, mermaid: false }
 const noLinkSafety = { enabled: false }
@@ -98,15 +99,21 @@ const CardFailure = ({ children }: { children: string }) => <p className="assist
 
 function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
   const { working, failure, run } = useAnswer(onAnswer, onDone)
+  const job = useContext(JobChat)
   // False after Back, so Decline… takes focus again when it returns.
   const [declining, setDeclining] = useState<boolean>()
   const [reason, setReason] = useState('')
+  // A risky tool allowed for a job runs unwatched from then on, so that grant is confirmed first.
+  const [risking, setRisking] = useState<boolean>()
+  const riskNote = useRef<HTMLParagraphElement>(null)
+  useEffect(() => { if (risking) riskNote.current?.focus() }, [risking])
   const form = useRef<HTMLFormElement>(null)
   // Focusing the reason only reveals the field; bring its buttons into view too.
   useEffect(() => { if (declining) form.current?.scrollIntoView({ block: 'nearest' }) }, [declining])
   if (part.state !== 'approval-requested') return null
   const path = `approvals/${encodeURIComponent(part.approval.id)}`
-  const grant = grantText(part)
+  const grant = grantText(part, job)
+  const risky = job && isDestructiveTool(part.toolName)
   function decline(event: FormEvent) {
     event.preventDefault()
     void run(path, { approved: false, reason: reason.trim() || undefined })
@@ -121,12 +128,21 @@ function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
         <button type="submit" className="button secondary" aria-disabled={working}>Decline</button>
         <button type="button" className="text-link" onClick={() => setDeclining(false)}>Back</button>
       </div>
-    </form> : <ConfirmationActions className="assistant-card-actions">
+    </form> : risking ? <div className="assistant-card-form" role="group" aria-label="Allow this for every run of the job">
+      <p className="assistant-risk" tabIndex={-1} ref={riskNote}><strong>Nobody checks this before it happens.</strong> From now on this job
+        may {grantScope(part, job)} while no one is watching. Only allow what its prompts truly need.</p>
+      <div className="assistant-card-actions">
+        <button type="button" className="button secondary assistant-danger" aria-disabled={working}
+          onClick={() => void run(path, { approved: true, always: true })}>Approve and allow for this job</button>
+        <button type="button" className="text-link" onClick={() => setRisking(false)}>Back</button>
+      </div>
+    </div> : <ConfirmationActions className="assistant-card-actions">
       <ConfirmationAction className={`button secondary${isDestructiveTool(part.toolName) ? ' assistant-danger' : ''}`} aria-disabled={working}
         onClick={() => void run(path, { approved: true })}>Approve</ConfirmationAction>
       <ConfirmationAction className="button secondary" aria-disabled={working} autoFocus={declining === false}
         onClick={() => working || setDeclining(true)}>Decline…</ConfirmationAction>
-      {grant && <button type="button" className="text-link" aria-disabled={working} onClick={() => void run(path, { approved: true, always: true })}>{grant}</button>}
+      {grant && <button type="button" className="text-link" aria-disabled={working} autoFocus={risking === false}
+        onClick={() => risky ? working || setRisking(true) : void run(path, { approved: true, always: true })}>{grant}{risky && '…'}</button>}
     </ConfirmationActions>}
     {failure && <CardFailure>{failure}</CardFailure>}
   </Confirmation>
@@ -426,6 +442,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
   const picked = useRef<string>(undefined)
   const [phase, setPhase] = useState<'loading' | 'resuming' | 'ready'>(fresh ? 'ready' : 'loading')
   const [loadError, setLoadError] = useState<Error | null>(null)
+  const [job, setJob] = useState(false)
   const [sent, setSent] = useState(false)
   const transport = useMemo(() => new DefaultChatTransport<ChatMessage>({
     api: '/api/assistant/chat',
@@ -460,6 +477,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
         const transcript = parseTranscript(await response.json())
         if (controller.signal.aborted) return
         setMessages(transcript.messages)
+        setJob(!!transcript.job)
         onTitle(transcript.title)
         if (transcript.running) {
           setPhase('resuming')
@@ -570,7 +588,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
   } else if (ready && status === 'ready' && last?.role === 'user')
     notice = <p className="assistant-note">This message didn’t get an answer.<button type="button" className="text-link" onClick={retry}>Try again</button></p>
 
-  return <div className="assistant-chat" hidden={hidden}>
+  return <JobChat.Provider value={job}><div className="assistant-chat" hidden={hidden}>
     <Conversation className="assistant-conversation" initial="instant" resize={reducedMotion ? 'instant' : 'smooth'}
       aria-label="Conversation" aria-busy={busy || phase === 'loading'}>
       <ConversationContent className="assistant-messages">
@@ -625,7 +643,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
         </PromptInputFooter>
       </PromptInput>
     </div>
-  </div>
+  </div></JobChat.Provider>
 }
 
 type HistoryProps = { auth: AuthRef; current: string; focusKey: number; onOpen: (chat: ChatSummary) => void; onForget: (id: string) => void }
@@ -678,7 +696,7 @@ function ChatHistory({ auth, current, focusKey, onOpen, onForget }: HistoryProps
         : !chats.length ? <p className="assistant-empty-history">No saved chats yet. Chats you start are kept on your host.</p>
           : <ul className="assistant-history-list">{chats.map(chat => <li key={chat.id}>
             <button type="button" className="assistant-history-open" aria-current={chat.id === current ? 'true' : undefined} onClick={() => onOpen(chat)}>
-              <strong>{chat.title}</strong><span>{chat.running ? 'Answering now' : updated(chat.updated)}</span>
+              <strong>{chat.title}</strong><span>{chat.job ? 'Job run · ' : ''}{chat.running ? 'Answering now' : updated(chat.updated)}</span>
             </button>
             <button type="button" className="assistant-icon-button" aria-label={`Delete “${chat.title}”`} title="Delete chat"
               aria-expanded={confirming === chat.id} onClick={() => ask(chat.id)}><Icon name="trash" /></button>
@@ -809,6 +827,16 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
     setFocusCount(count => count + 1)
     writeStored(chatKey, summary.id)
   }
+  const openRef = useRef(openChat)
+  useLayoutEffect(() => { openRef.current = openChat })
+  useEffect(() => {
+    const open = (event: Event) => {
+      const id = (event as CustomEvent<unknown>).detail
+      if (isChatId(id)) openRef.current({ id, title: 'Chat', updated: '', running: false })
+    }
+    window.addEventListener(openChatEvent, open)
+    return () => window.removeEventListener(openChatEvent, open)
+  }, [])
   function toggleHistory() {
     if (view === 'chat') return setView('history')
     setView('chat')

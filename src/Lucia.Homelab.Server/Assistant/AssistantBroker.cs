@@ -32,6 +32,39 @@ public sealed record AssistantKit(IReadOnlyList<AIFunction> Tools, Func<Permissi
 #pragma warning restore GHCP001
 
 /// <summary>
+/// What a job's chat may do without asking: "tool:name" and "host:name" grants, which may include destructive tools.
+/// <paramref name="save"/> keeps a grant the owner adds by approving "always"; <paramref name="waiting"/> tells them a call waits,
+/// and <paramref name="waits"/> holds the run's open approvals so the jobs page can show it waiting.
+/// </summary>
+public sealed class AssistantJobGrants(string name, IEnumerable<string> grants, Func<string, Task> save, Func<string, Task> waiting,
+    AssistantJobWaits? waits = null)
+{
+    private readonly ConcurrentDictionary<string, byte> _grants = new(grants.Select(grant => KeyValuePair.Create(grant, (byte)0)));
+    private readonly AssistantJobWaits _waits = waits ?? new();
+
+    public string Name => name;
+    public bool Has(string grant) => _grants.ContainsKey(grant);
+    public Task Waiting(string approvalId, string tool, DateTimeOffset until)
+    {
+        _waits.Open[approvalId] = until;
+        return waiting(tool);
+    }
+    public void Answered(string approvalId, bool expired)
+    {
+        if (_waits.Open.TryRemove(approvalId, out _) && expired) Interlocked.Increment(ref _waits.Expired);
+    }
+
+    public Task Add(string grant) => _grants.TryAdd(grant, 0) ? save(grant) : Task.CompletedTask;
+}
+
+/// <summary>A job run's approvals: those still open, by when they expire, and how many expired unanswered.</summary>
+public sealed class AssistantJobWaits
+{
+    public ConcurrentDictionary<string, DateTimeOffset> Open { get; } = new();
+    public int Expired;
+}
+
+/// <summary>
 /// Decides every tool call the assistant makes. Lucia's policy, evaluated by the Agent Governance Toolkit, sorts a call into
 /// run, ask or refuse; asking shows the owner an approval in the chat and holds the call until they answer. "Allow for this
 /// chat" grants live in memory, so they end with the chat or a restart. Decisions are logged, and counted on <see cref="GovernanceMeter"/>.
@@ -53,6 +86,10 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             condition: "mode == 'plan' and tier == 'change' or mode == 'plan' and tier == 'destructive' or mode == 'plan' and tier == 'secret'"
             action: deny
             priority: 100
+          - name: job-granted
+            condition: "tier == 'destructive' and job_granted"
+            action: allow
+            priority: 95
           - name: destructive-always-asks
             condition: "tier == 'destructive'"
             action: require_approval
@@ -88,13 +125,15 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _grants = new();
     private readonly ConcurrentDictionary<string, Question> _questions = new();
 
-    private sealed record Pending(string SessionKey, string? Grant, TaskCompletionSource<(bool Approved, string? Reason)> Answer);
+    private sealed record Pending(string SessionKey, string? Grant, AssistantJobGrants? Job, TaskCompletionSource<(bool Approved, string? Reason)> Answer);
 
     private sealed record Question(string Kind, TaskCompletionSource<string?> Answer);
 
     private enum Verdict { Allow, Ask, Deny }
 
-    public AssistantKit Kit(AssistantTurn turn, AssistantSettings settings, IReadOnlyList<AssistantTool> tools, AssistantStream stream, AssistantRun run)
+    /// <param name="job">A job's chat: its grants run without asking, destructive ones included, and "always" adds to them.</param>
+    public AssistantKit Kit(AssistantTurn turn, AssistantSettings settings, IReadOnlyList<AssistantTool> tools, AssistantStream stream, AssistantRun run,
+        AssistantJobGrants? job = null)
     {
         var tiers = tools.ToDictionary(tool => tool.Name, tool => tool.Tier);
         var calls = 0;
@@ -113,11 +152,19 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
                     return PermissionDecision.Reject("Give an absolute http or https URL.");
                 host = uri.IdnHost.TrimEnd('.').ToLowerInvariant();
             }
-            var grant = tier switch { ToolTier.Change => "tool:" + call.ToolName, ToolTier.Web => "host:" + host, _ => null };
+            var grant = tier switch
+            {
+                ToolTier.Change => "tool:" + call.ToolName,
+                ToolTier.Destructive when job is not null => "tool:" + call.ToolName,
+                ToolTier.Web => "host:" + host,
+                _ => null,
+            };
             var granted = grant is not null && _grants.TryGetValue(turn.SessionKey, out var grants) && grants.ContainsKey(grant);
+            var jobGranted = grant is not null && job?.Has(grant) == true;
             var automatic = settings.AutoTools.Contains(call.ToolName);
             var listed = host is not null && settings.Hosts.Contains(host);
-            var (verdict, rule) = Decide(turn, call.ToolName, tier, autonomy: automatic || granted ? "auto" : "ask", hostAllowed: listed || granted);
+            var (verdict, rule) = Decide(turn, call.ToolName, tier, autonomy: automatic || granted || jobGranted ? "auto" : "ask",
+                hostAllowed: listed || granted || jobGranted, jobGranted);
             logger.LogInformation("Assistant tool call {Tool} ({Tier}, {Mode} mode): {Verdict} by {Rule}.",
                 call.ToolName, tier, turn.Mode, verdict, rule ?? "default");
 
@@ -129,6 +176,7 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
                 var allowed = verdict == Verdict.Allow;
                 var why = !allowed ? rule == "plan-mode-changes-nothing" ? "Plan mode doesn't change anything. Switch to Execute to run it." : "Lucia's policy doesn't allow this."
                     : granted ? "You allowed this for this chat."
+                    : jobGranted ? "This job may do this without asking."
                     : host is not null ? $"{host} is on the assistant's allowed sites."
                     : "Runs automatically in your assistant settings.";
                 lock (stream)
@@ -148,11 +196,12 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
                 ToolTier.Web => $"{host} isn't on the assistant's allowed sites.",
                 _ => "This changes your lab.",
             };
-            var pending = new Pending(turn.SessionKey, grant, new(TaskCreationOptions.RunContinuationsAsynchronously));
+            var pending = new Pending(turn.SessionKey, grant, job, new(TaskCreationOptions.RunContinuationsAsynchronously));
             _pending[approvalId] = pending;
             try
             {
                 lock (stream) run.Publish(stream.Ask(toolCallId, call.ToolName, input, approvalId, reason, automatic: false));
+                if (job is not null) _ = job.Waiting(approvalId, call.ToolName, DateTimeOffset.UtcNow + AnswerWait);
                 var (approved, answer) = await pending.Answer.Task.WaitAsync(AnswerWait, run.Stop.Token);
                 lock (stream) run.Publish(stream.Answer(approvalId, approved, answer));
                 return approved ? PermissionDecision.ApproveOnce()
@@ -160,21 +209,39 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             }
             catch (TimeoutException)
             {
+                job?.Answered(approvalId, expired: true);
                 lock (stream) run.Publish(stream.Answer(approvalId, false, "No answer within 30 minutes."));
                 return PermissionDecision.Reject("The owner didn't answer within 30 minutes, so the call didn't run.");
             }
             catch (OperationCanceledException) { return PermissionDecision.Reject("The owner stopped this turn."); }
-            finally { _pending.TryRemove(approvalId, out _); }
+            finally
+            {
+                _pending.TryRemove(approvalId, out _);
+                job?.Answered(approvalId, expired: false);
+            }
         });
     }
 
-    /// <summary>Answers a waiting approval. False when it was already answered, has expired, or belongs to another chat.</summary>
+    /// <summary>
+    /// Answers a waiting approval. False when it was already answered, has expired, or belongs to another chat.
+    /// "Always" lasts for the chat, or in a job's chat is saved to the job.
+    /// </summary>
     public bool Respond(string sessionKey, string approvalId, bool approved, string? reason, bool always)
     {
         if (!_pending.TryGetValue(approvalId, out var pending) || pending.SessionKey != sessionKey
             || !pending.Answer.TrySetResult((approved, reason))) return false;
-        if (approved && always && pending.Grant is { } grant) _grants.GetOrAdd(sessionKey, _ => new()).TryAdd(grant, 0);
+        if (approved && always && pending.Grant is { } grant)
+        {
+            if (pending.Job is { } job) _ = Save(job, grant);
+            else _grants.GetOrAdd(sessionKey, _ => new()).TryAdd(grant, 0);
+        }
         return true;
+    }
+
+    private async Task Save(AssistantJobGrants job, string grant)
+    {
+        try { await job.Add(grant); }
+        catch (Exception e) { logger.LogWarning("A job's new permission could not be saved ({ErrorType}).", e.GetType().Name); }
     }
 
     public void Forget(string sessionKey) => _grants.TryRemove(sessionKey, out _);
@@ -237,9 +304,12 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
 
     public void Dispose() => _kernel.Dispose();
 
-    private (Verdict Verdict, string? Rule) Decide(AssistantTurn turn, string tool, string tier, string autonomy, bool hostAllowed)
+    private (Verdict Verdict, string? Rule) Decide(AssistantTurn turn, string tool, string tier, string autonomy, bool hostAllowed, bool jobGranted)
     {
-        Dictionary<string, object> context = new() { ["tier"] = tier, ["mode"] = turn.Mode, ["autonomy"] = autonomy, ["host_allowed"] = hostAllowed };
+        Dictionary<string, object> context = new()
+        {
+            ["tier"] = tier, ["mode"] = turn.Mode, ["autonomy"] = autonomy, ["host_allowed"] = hostAllowed, ["job_granted"] = jobGranted,
+        };
         var result = _kernel.EvaluateToolCall("did:mesh:lucia-" + turn.Owner, tool, context);
         var verdict = $"{result.PolicyDecision?.Action}".Replace("_", "").ToLowerInvariant() switch
         {

@@ -8,7 +8,7 @@ import { ModelManager } from './ModelManager'
 import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
 import { AssistantDock } from './AssistantDock'
-import { parseDock } from './assistant'
+import { openAssistantChat, openChatEvent, parseDock } from './assistant'
 import type { DockState } from './assistant'
 import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
@@ -16,6 +16,8 @@ import { StorageSettings } from './StorageSettings'
 import { RegistrySettings } from './RegistrySettings'
 import { SshKeySettings } from './SshKeySettings'
 import { AssistantSettings } from './AssistantSettings'
+import { Jobs } from './Jobs'
+import { NotificationPrompt, NotificationSettings } from './NotificationSettings'
 import { People } from './People'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
@@ -158,9 +160,25 @@ function App() {
     root.style.setProperty('--accent-ink', colors.accentInk)
   }, [preferences, scheme])
   useEffect(() => {
-    const navigate = () => setRoute(parseRoute(location.hash))
+    // A notification links to #/?chat=id: open that chat in the dock, and drop it from the address.
+    const linkedChat = () => {
+      const chat = /[?&]chat=([a-f0-9]{32})\b/.exec(location.hash)?.[1]
+      if (!chat) return
+      history.replaceState(history.state, '', location.hash.split('?')[0] || '#/')
+      openAssistantChat(chat)
+    }
+    const navigate = () => {
+      linkedChat()
+      setRoute(parseRoute(location.hash))
+    }
+    const open = () => setDock(current => current.open ? current : { ...current, open: true })
+    window.addEventListener(openChatEvent, open)
+    linkedChat()
     window.addEventListener('hashchange', navigate)
-    return () => window.removeEventListener('hashchange', navigate)
+    return () => {
+      window.removeEventListener('hashchange', navigate)
+      window.removeEventListener(openChatEvent, open)
+    }
   }, [])
   useEffect(() => {
     document.title = authentication.loading ? 'Connecting · Lucia'
@@ -215,6 +233,8 @@ function App() {
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'assistant-settings' ? <AssistantSettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'notification-settings' ? <NotificationSettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'jobs' ? <Jobs session={session} refreshSession={authentication.refresh} />
         : route.page === 'people-settings' ? <People session={session} refreshSession={authentication.refresh} view={route.view} />
           : route.page === 'domain-settings' ? <DomainOnboarding session={session} refreshSession={authentication.refresh} />
         : route.page === 'ai' ? null
@@ -226,6 +246,7 @@ function App() {
     {!session.enabled && <div className="development-note"><strong>Development mode</strong><span>Browser sign-in is disabled on this development host.</span></div>}
     <PortalNavigation route={route} session={session} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock, waiting: assistantWaiting } : undefined} />
     {storageNotice && <div className="storage-notice" role="alert"><Icon name="attention" /><p>{storageNotice}</p><button className="icon-button" aria-label="Dismiss appearance notice" onClick={() => setStorageNotice(null)}><Icon name="close" /></button></div>}
+    {assistantAvailable && <NotificationPrompt session={session} refreshSession={authentication.refresh} />}
     <main id="main-content" ref={main} tabIndex={-1}>
       {content}
       {(playgroundVisited || route.page === 'ai') && <div hidden={route.page !== 'ai'}>

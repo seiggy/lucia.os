@@ -29,6 +29,9 @@ public static class AssistantEndpoints
         builder.Services.AddSingleton<AssistantBroker>();
         builder.Services.AddSingleton<AssistantTools>();
         builder.Services.AddSingleton<AssistantRuns>();
+        builder.Services.AddSingleton(services => ActivatorUtilities.CreateInstance<AssistantPush>(services, AssistantPush.CreateClient()));
+        builder.Services.AddSingleton<AssistantJobs>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<AssistantJobs>());
     }
 
     /// <summary>The Spark's model over loopback, which the host proxy lets through with the inference key.</summary>
@@ -60,9 +63,7 @@ public static class AssistantEndpoints
             .RequireAuthorization("HostOwner").AddEndpointFilter<AssistantFilter>();
         group.MapPost("/chat", async (HttpContext context, AssistantRuns runs, CancellationToken ct) =>
         {
-            // Owner API keys carry no username: the assistant's changes are then credited to "owner via assistant".
-            var user = context.User.FindFirst("preferred_username")?.Value is { Length: > 0 and <= 64 } name ? name : null;
-            var actor = (user is { Length: <= 50 } ? user : "owner") + " via assistant";
+            var (actor, user) = Actor(context);
             var run = await runs.StartAsync(Owner(context), await Read<AssistantChatRequest>(context, ct), actor, user, ct);
             await StreamAsync(context, run, ct);
             return Results.Empty;
@@ -132,6 +133,60 @@ public static class AssistantEndpoints
             await github.DisconnectAsync(Owner(context));
             return Results.NoContent();
         });
+        // Scheduled jobs: each run is a chat of its own, acting as whoever last saved the job.
+        group.MapGet("/jobs", (HttpContext context, AssistantJobs jobs, CancellationToken ct) => jobs.ListAsync(Owner(context), ct));
+        group.MapPost("/jobs", async (HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+        {
+            var (actor, user) = Actor(context);
+            return await jobs.SaveAsync(Owner(context), null, await Read<AssistantJobRequest>(context, ct), actor, user, ct);
+        });
+        group.MapPost("/jobs/schedule", async (HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+            new { next = AssistantJobs.Next(await Read<AssistantSchedule>(context, ct), DateTimeOffset.UtcNow) });
+        group.MapGet("/jobs/{id}", (string id, HttpContext context, AssistantJobs jobs, CancellationToken ct) => jobs.GetAsync(Owner(context), id, ct));
+        group.MapPut("/jobs/{id}", async (string id, HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+        {
+            var (actor, user) = Actor(context);
+            return await jobs.SaveAsync(Owner(context), id, await Read<AssistantJobRequest>(context, ct), actor, user, ct);
+        });
+        group.MapDelete("/jobs/{id}", async (string id, HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+        {
+            await jobs.DeleteAsync(Owner(context), id, ct);
+            return Results.NoContent();
+        });
+        group.MapPost("/jobs/{id}/run", (string id, HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+            jobs.RunNowAsync(Owner(context), id, ct));
+        group.MapGet("/jobs/{id}/runs", (string id, HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
+            jobs.RunsAsync(Owner(context), id, ct));
+        // Browser notifications: the page subscribes with this key, then registers the subscription as a device.
+        group.MapGet("/push", (AssistantPush push) => new { publicKey = push.PublicKey() });
+        group.MapGet("/push/devices", async (HttpContext context, AssistantPush push, CancellationToken ct) =>
+            (await push.DevicesAsync(Owner(context), ct)).Select(Device));
+        group.MapPost("/push/devices", async (HttpContext context, AssistantPush push, CancellationToken ct) =>
+            Device(await push.AddAsync(Owner(context), await Read<PushSubscriptionRequest>(context, ct), "https://" + context.Request.Host.Host, ct)));
+        group.MapPut("/push/devices/{id}", async (string id, HttpContext context, AssistantPush push, CancellationToken ct) =>
+        {
+            await push.RenameAsync(Owner(context), id, (await Read<PushRename>(context, ct)).Name, ct);
+            return Results.NoContent();
+        });
+        group.MapDelete("/push/devices/{id}", async (string id, HttpContext context, AssistantPush push, CancellationToken ct) =>
+        {
+            await push.RemoveAsync(Owner(context), id, ct);
+            return Results.NoContent();
+        });
+        group.MapPost("/push/devices/{id}/test", async (string id, HttpContext context, AssistantPush push, CancellationToken ct) =>
+            await push.SendAsync(Owner(context), "Lucia", "Notifications work on this device.", "/#/settings/notifications", ct, id) > 0
+                ? Results.NoContent()
+                : throw new AssistantException(502, "push_failed", "The browser's push service didn't take the message. Try registering again."));
+    }
+
+    private static object Device(PushDevice device) =>
+        new { device.Id, device.Name, device.Endpoint, device.Added, device.LastUsed };
+
+    /// <summary>Who the assistant's changes are credited to. Owner API keys carry no username: then "owner via assistant".</summary>
+    private static (string Actor, string? User) Actor(HttpContext context)
+    {
+        var user = context.User.FindFirst("preferred_username")?.Value is { Length: > 0 and <= 64 } name ? name : null;
+        return ((user is { Length: <= 50 } ? user : "owner") + " via assistant", user);
     }
 
     /// <summary>Replays the turn from its first chunk, then follows it until it ends or the browser leaves.</summary>
