@@ -152,6 +152,7 @@ builder.AddContainer("identity-worker", "goauthentik/server", "2026.8.3")
         service.ShmSize = "512mb";
     });
 
+IResourceBuilder<ParameterResource>? gatewayRelayToken = null;
 if (hostSettings is not null)
 {
     var host = hostSettings.RootElement;
@@ -232,6 +233,15 @@ if (hostSettings is not null)
     // Observability app. It and its exporters share the host's network and listen on loopback only.
     var relayDirectory = Path.Combine(host.GetProperty("data_directory").GetString()!, "telemetry");
     Directory.CreateDirectory(relayDirectory);
+    // The gateway sends its access logs with the relay's token too, so it exists before either starts. ControllerRelay keeps it.
+    var relayToken = Path.Combine(relayDirectory, "relay-token");
+    if (!File.Exists(relayToken))
+    {
+        File.WriteAllText(relayToken, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_'));
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(relayToken, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+    gatewayRelayToken = builder.AddParameter("gateway-relay-token", () => File.ReadAllText(relayToken).Trim(),
+        publishValueAsDefault: false, secret: true);
     managedHost.WithEnvironment("Telemetry__RelayDirectory", "/data/telemetry");
     static void Relay(Service service, string name)
     {
@@ -320,6 +330,16 @@ if (hostSettings is not null)
 // Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4); Lucia's DomainIngressConfiguration.CloudflareRanges matches.
 const string CloudflareRanges = "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18," +
     "190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22";
+// Access logs go to the Observability app through the controller's relay endpoint, as the machine's relay does. The gateway
+// posts to the controller directly, so its own posts aren't logged; as the controller's trusted proxy it names the public
+// origin itself. The shell expands the relay token from the environment. Credentials and query strings stay out of the logs.
+var accessLogs = hostSettings is null ? "" :
+    "--experimental.otlplogs=true --accesslog=true --accesslog.fields.headers.names.User-Agent=keep " +
+    "--accesslog.fields.queryparameters.defaultmode=drop --accesslog.otlp=true --accesslog.otlp.servicename=lucia-gateway " +
+    "--accesslog.otlp.http.endpoint=http://lucia-host:8080/api/host/telemetry/relay/v1/logs " +
+    "--accesslog.otlp.http.headers.X-Forwarded-Proto=https --accesslog.otlp.http.headers.X-Forwarded-Host=" +
+    new Uri(hostSettings.RootElement.GetProperty("authentication").GetProperty("public_origin").GetString()!).Authority + " " +
+    "--accesslog.otlp.http.headers.X-Lucia-Relay=\"$LUCIA_RELAY_TOKEN\" ";
 var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
     .WithImageSHA256("31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d")
     .WithEntrypoint("/bin/sh")
@@ -333,7 +353,7 @@ var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
             // this entrypoint, and its public-sources middleware (published with public access) admits only Cloudflare.
             "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file " +
             "--entrypoints.public.forwardedHeaders.trustedIPs=" + CloudflareRanges + " " : "") +
-        "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
+        accessLogs + "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
     .WithBindMount(StatePath("gateway"), "/config", isReadOnly: true)
     .WithBindMount(StatePath("certificates"), "/certificates", isReadOnly: true)
     .WithHttpsEndpoint(port: ports.GetProperty("authentik").GetInt32(), targetPort: 8443, name: "https")
@@ -359,6 +379,9 @@ if (hostSettings is not null)
     gateway.WithHttpsEndpoint(port: 8445, targetPort: 8445, name: "public");
     gateway.WithBindMount(Path.Combine(hostSettings.RootElement.GetProperty("data_directory").GetString()!, "domains", "certificates"),
         "/domain-certificates", isReadOnly: true);
+    // Traefik reports its command line, relay token included, unless the resource attributes replace it.
+    gateway.WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", $"host.name={Environment.MachineName.ToLowerInvariant()},lucia.node={Environment.MachineName.ToLowerInvariant()},process.command_args=traefik")
+        .WithEnvironment("LUCIA_RELAY_TOKEN", gatewayRelayToken!);
 }
 
 builder.AddContainer("identity-renewer", "smallstep/step-ca", "0.30.2")
