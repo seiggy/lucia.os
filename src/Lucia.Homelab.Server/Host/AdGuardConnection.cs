@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -69,6 +70,11 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
     private readonly AdGuardTransport _transport;
     // Single host instance; serialize replacement/disconnect against every DNS operation.
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private volatile IPAddress? _primary;
+
+    /// <summary>The fleet's primary AdGuard. Saved-connection calls go here instead of resolving its name, so they keep working
+    /// while the name points at an instance that's down. Null resolves the name as usual.</summary>
+    internal IPAddress? PrimaryAddress { get => _primary; set => _primary = value; }
 
     public AdGuardConnectionService(IOptions<AdGuardManagementOptions> options, IDataProtectionProvider protection)
         : this(options, protection, new AdGuardTransport()) { }
@@ -116,7 +122,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
         try
         {
             var record = await RequireConnectionAsync(cancellationToken);
-            await VerifyRecordAsync(record, cancellationToken);
+            await VerifyRecordAsync(record, cancellationToken, _primary);
             await _store.WriteAsync(record, cancellationToken);
             return Status(record);
         }
@@ -148,7 +154,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
                 {
                     Version = status.Version, DnsPort = status.DnsPort, DnsAddresses = status.DnsAddresses
                 };
-            }, cancellationToken);
+            }, cancellationToken, _primary);
         }
         finally { _gate.Release(); }
     }
@@ -159,7 +165,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
         try
         {
             var record = await RequireConnectionAsync(cancellationToken);
-            return await _transport.RunAsync(record, (session, ct) => session.ListAsync(ct), cancellationToken);
+            return await _transport.RunAsync(record, (session, ct) => session.ListAsync(ct), cancellationToken, _primary);
         }
         finally { _gate.Release(); }
     }
@@ -192,7 +198,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
                         "The exact domain and answer pair no longer exists. Refresh and reconcile the DNS operation.");
                 await session.MutateAsync(rewrite, add, ct);
                 return true;
-            }, cancellationToken);
+            }, cancellationToken, _primary);
         }
         finally { _gate.Release(); }
     }
@@ -202,7 +208,10 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
         new Uri((await RequireConnectionAsync(cancellationToken)).BaseUrl!).IdnHost;
 
     /// <summary>Serves the chain as names[0]. Returns false when AdGuard already serves it.</summary>
-    public async Task<bool> PushCertificateAsync(IReadOnlyList<string> names, string chainPem, string keyPem, CancellationToken cancellationToken = default)
+    /// <param name="address">The instance to install it on; null means the primary.</param>
+    /// <param name="plainHttp">Reach the instance over HTTP at its address, for one that has no certificate yet.</param>
+    public async Task<bool> PushCertificateAsync(IReadOnlyList<string> names, string chainPem, string keyPem, CancellationToken cancellationToken = default,
+        IPAddress? address = null, bool plainHttp = false)
     {
         var name = names[0];
         await _gate.WaitAsync(cancellationToken);
@@ -212,7 +221,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
             if (!names.Contains(new Uri(record.BaseUrl!).IdnHost))
                 throw new AdGuardManagementException(409, "adguard_connection_changed", "The AdGuard connection changed; the certificate will be reissued.");
             var chain = Convert.ToBase64String(Encoding.UTF8.GetBytes(chainPem));
-            return await _transport.RunAsync(record, async (session, ct) =>
+            return await _transport.RunAsync(plainHttp && address is not null ? Plain(record, address) : record, async (session, ct) =>
             {
                 var settings = await session.TlsStatusAsync(ct);
                 if (settings["enabled"]?.GetValue<bool>() == true && settings["server_name"]?.GetValue<string>() == name
@@ -227,12 +236,48 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
                 settings["private_key_saved"] = false;
                 await session.ConfigureTlsAsync(settings, ct);
                 return true;
-            }, cancellationToken);
+            }, cancellationToken, address ?? _primary);
         }
         finally { _gate.Release(); }
     }
 
-    private async Task VerifyRecordAsync(AdGuardStoredConnection record, CancellationToken cancellationToken)
+    /// <summary>Whether the instance at this address answers as the connection's account with DNS running.</summary>
+    internal async Task<bool> ProbeAsync(IPAddress address, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await RequireConnectionAsync(cancellationToken);
+            return await _transport.RunAsync(record, async (session, ct) => (await session.StatusAsync(ct)).Running, cancellationToken, address);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Finishes a new instance's first-run wizard with the connection's account. False when there's no wizard to finish.</summary>
+    internal async Task<bool> InstallAsync(IPAddress address, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await RequireConnectionAsync(cancellationToken);
+            return await _transport.InstallAsync(address, record.Username!, record.Password!, cancellationToken);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>The account adguardhome-sync signs in with. Only for the sync child process's environment.</summary>
+    internal async Task<(string Username, string Password)> AccountAsync(CancellationToken cancellationToken)
+    {
+        var record = await RequireConnectionAsync(cancellationToken);
+        return (record.Username!, record.Password!);
+    }
+
+    private static AdGuardStoredConnection Plain(AdGuardStoredConnection record, IPAddress address) => new()
+    {
+        State = record.State, BaseUrl = $"http://{address}", Username = record.Username, Password = record.Password, AllowInsecureHttp = true,
+    };
+
+    private async Task VerifyRecordAsync(AdGuardStoredConnection record, CancellationToken cancellationToken, IPAddress? pin = null)
     {
         var version = await _transport.RunAsync(record, async (session, ct) =>
         {
@@ -243,7 +288,7 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
             await session.ListAsync(ct);
             await session.RewritesEnabledAsync(ct);
             return status.Version;
-        }, cancellationToken);
+        }, cancellationToken, pin);
         record.ServerVersion = version;
         record.LastVerifiedAt = DateTimeOffset.UtcNow;
     }

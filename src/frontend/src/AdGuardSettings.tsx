@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { Icon } from './Icon'
-import { parseAdGuardCertificate, parseAdGuardStatus } from './networkManagement'
-import type { AdGuardCertificate, AdGuardStatus } from './networkManagement'
+import { parseAdGuardCertificate, parseAdGuardFleet, parseAdGuardStatus } from './networkManagement'
+import type { AdGuardCertificate, AdGuardFleet, AdGuardStatus } from './networkManagement'
 import './NetworkSettings.css'
 
 export function AdGuardSettings({ session, refreshSession }: {
@@ -71,6 +71,7 @@ export function AdGuardSettings({ session, refreshSession }: {
     </section>}
     {status?.configured && status.baseUrl && <CertificateSection key={status.baseUrl} host={new URL(status.baseUrl).hostname}
       session={session} refreshSession={refreshSession} />}
+    {status?.configured && <FleetSection session={session} refreshSession={refreshSession} />}
     <section className="surface network-section">
       <h2>{status?.configured ? 'Replace connection settings' : 'Connect AdGuard Home'}</h2>
       <form onSubmit={event => { event.preventDefault(); void change('PUT') }}>
@@ -148,5 +149,49 @@ function CertificateSection({ host, session, refreshSession }: {
           ? `AdGuard serves ${certificate.coveredNames.join(' and ')} with a certificate valid until ${new Date(certificate.notAfter).toLocaleDateString()}. Installed ${new Date(certificate.pushedAt).toLocaleString()}.`
           : `Issuing a certificate for ${name}. This takes a few minutes while DNS checks propagate.`}</p>}
     {moving && <p className="network-warning">To finish the move, replace the connection’s API origin below with <code>https://{name}</code>. The next renewal then drops {host}.</p>}
+  </section>
+}
+
+function FleetSection({ session, refreshSession }: { session: AuthenticationSession; refreshSession: () => Promise<void> }) {
+  const [fleet, setFleet] = useState<AdGuardFleet | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const endpoint = '/api/host/connections/adguard/instances'
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const value = parseAdGuardFleet(await (await ownerRequest(session, refreshSession, endpoint, 'GET', undefined, signal)).json())
+      if (!signal?.aborted) setFleet(value)
+    } catch (failure) { if (!signal?.aborted) setError(failure instanceof Error ? failure.message : 'AdGuard servers are unavailable.') }
+  }, [session, refreshSession])
+  useEffect(() => {
+    const controller = new AbortController()
+    void load(controller.signal)
+    const timer = window.setInterval(() => void load(controller.signal), 30000)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [load])
+  async function promote(name: string) {
+    setBusy(name); setError(null)
+    try { setFleet(parseAdGuardFleet(await (await ownerRequest(session, refreshSession, `${endpoint}/${encodeURIComponent(name)}/primary`, 'POST')).json())) }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'The primary was not changed.') }
+    finally { setBusy(null) }
+  }
+  const addresses = fleet?.instances.flatMap(item => item.address ? [item.address] : []) ?? []
+  return <section className="surface network-section">
+    <h2>AdGuard servers</h2>
+    <p className="section-note">Lucia runs AdGuard on every server and copies the primary’s settings to the others each minute. Change settings on the primary. If it stops answering for three minutes, the most recently synced server takes over.</p>
+    {error && <p className="network-error" role="alert">{error}</p>}
+    {fleet?.problem && <p className="network-warning">{fleet.problem}</p>}
+    {fleet?.promotedAt && <p className="section-note">{fleet.promotedFrom ?? 'The primary'} stopped answering, so another server became the primary {new Date(fleet.promotedAt).toLocaleString()}.</p>}
+    {addresses.length > 0 && <p className="section-note">Give devices every address as a DNS server, in your router’s DHCP settings: <strong>{addresses.join(', ')}</strong>.</p>}
+    {fleet && fleet.instances.length > 0 && <table className="network-table"><caption className="network-table-caption">AdGuard servers</caption>
+      <thead><tr><th>Server</th><th>Address</th><th>State</th><th>Last synced</th><th aria-label="Actions"></th></tr></thead>
+      <tbody>{fleet.instances.map(item => <tr key={item.name}>
+        <th>{item.node}<span className="network-cell-note">{item.primary ? 'Primary' : 'Copy'} · {item.name}</span></th>
+        <td>{item.address ?? 'None'}{item.hostName && <span className="network-cell-note">{item.hostName}</span>}</td>
+        <td>{item.setup ? 'Setting up' : item.healthy ? 'Answering' : 'Not answering'}{item.error && <span className="network-cell-note">{item.error}</span>}</td>
+        <td>{item.primary ? 'Source' : item.syncedAt ? new Date(item.syncedAt).toLocaleString() : 'Not yet'}</td>
+        <td>{!item.primary && item.healthy && !item.setup && <button className="text-link" disabled={busy !== null} onClick={() => void promote(item.name)}>
+          {busy === item.name ? 'Switching…' : 'Make primary'}</button>}</td>
+      </tr>)}</tbody></table>}
   </section>
 }

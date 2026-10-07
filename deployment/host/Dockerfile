@@ -13,6 +13,9 @@ RUN apt-get update \
     && /opt/certbot/bin/certbot --version \
     && rm -rf /var/lib/apt/lists/*
 
+# Copies AdGuard settings from the primary instance to the others; Lucia runs it once per sync.
+COPY --from=ghcr.io/bakito/adguardhome-sync:v0.9.3@sha256:b3499852640866c5742fd72cca190f40e2741c279d60fd62b9130cd8142aafec /opt/go/adguardhome-sync /opt/adguardhome-sync/adguardhome-sync
+
 ENV PATH="/opt/hf/bin:${PATH}" \
     ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_ENVIRONMENT=Production \

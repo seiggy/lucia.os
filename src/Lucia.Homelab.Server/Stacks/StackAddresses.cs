@@ -7,6 +7,8 @@ namespace Lucia.Homelab.Server.Stacks;
 
 /// <param name="State"><c>Held</c>, <c>InUse</c> (another device answers for it) or <c>NoSubnet</c>.</param>
 public sealed record NodeAddressStatus(string Address, string State, string? Message = null);
+/// <param name="AddressState">What its node last reported for its address, or null without a fresh report.</param>
+internal sealed record AppInstance(string Name, string Node, string? Address, string? AddressState, DateTimeOffset CreatedAt);
 /// <param name="Address">Empty or missing removes the app's address.</param>
 public sealed record StackAddressRequest(string? Address);
 
@@ -42,6 +44,19 @@ public sealed partial class StackStore
         }
         finally { _gate.Release(); }
     }
+
+    /// <summary>Every stack of one catalog app, with what its node last reported about its address.</summary>
+    internal async Task<AppInstance[]> Instances(string template, CancellationToken ct)
+    {
+        var names = await NodeNames(ct);
+        return [.. (await Read(ct)).Where(stack => stack.Manifest.Template?.Id == template).Select(stack => new AppInstance(stack.Name, stack.Assigned,
+            stack.Manifest.Address, (NodeOf(stack.Assigned, names) is { } id ? Fresh(id)?.Report.Addresses : null)
+                ?.FirstOrDefault(item => item.Address == stack.Manifest.Address)?.State, stack.CreatedAt))];
+    }
+
+    /// <summary>Every address a stack or managed server uses.</summary>
+    internal async Task<HashSet<string>> TakenAddresses(CancellationToken ct) =>
+        [.. (await Read(ct)).Select(stack => stack.Manifest.Address).OfType<string>(), .. (await nodes.Addresses(ct)).Select(item => item.Address)];
 
     /// <summary>The address, checked: a private dotted-quad IPv4 that no other stack or managed server uses.</summary>
     private async Task<string?> ValidAddress(string? value, string name, IEnumerable<StoredStack> stacks, CancellationToken ct)

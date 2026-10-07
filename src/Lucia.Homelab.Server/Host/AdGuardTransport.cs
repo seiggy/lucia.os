@@ -34,8 +34,9 @@ internal sealed class AdGuardTransport
         if (_timeout <= TimeSpan.Zero || _timeout > OperationTimeout) throw new ArgumentOutOfRangeException(nameof(timeout));
     }
 
+    /// <param name="pin">Connect here instead of resolving the origin's host; TLS still validates the host name.</param>
     internal async Task<T> RunAsync<T>(AdGuardStoredConnection record,
-        Func<AdGuardSession, CancellationToken, Task<T>> operation, CancellationToken ct)
+        Func<AdGuardSession, CancellationToken, Task<T>> operation, CancellationToken ct, IPAddress? pin = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_timeout);
@@ -45,7 +46,7 @@ internal sealed class AdGuardTransport
         {
             var origin = new Uri(record.BaseUrl!);
             var host = origin.IdnHost.Trim('[', ']');
-            var addresses = IPAddress.TryParse(host, out var literal) ? [literal] : await _resolve(host, deadline.Token);
+            var addresses = pin is not null ? [pin] : IPAddress.TryParse(host, out var literal) ? [literal] : await _resolve(host, deadline.Token);
             if (addresses.Length is < 1 or > 64 || addresses.Any(address => !IsPrivate(address)))
                 throw new AdGuardManagementException(400, "adguard_private_network_required",
                     "AdGuard must resolve exclusively to private RFC1918 or IPv6 ULA addresses. Public, loopback, link-local, metadata and multicast endpoints are not allowed.");
@@ -67,6 +68,42 @@ internal sealed class AdGuardTransport
         catch (JsonException) { throw InvalidResponse(); }
         catch (Exception)
         { throw new AdGuardManagementException(502, "adguard_unavailable", "AdGuard could not complete the operation securely."); }
+    }
+
+    /// <summary>
+    /// Finishes a fresh AdGuard's first-run wizard on port 3000: web on port 80, DNS on 53, with these credentials. Returns
+    /// false when the wizard isn't there (not started yet, or already set up). This crosses the LAN in plain HTTP once.
+    /// </summary>
+    internal async Task<bool> InstallAsync(IPAddress address, string username, string password, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_timeout);
+        using var suppression = SuppressInstrumentationScope.Begin();
+        var origin = new Uri($"http://{address}:3000");
+        using var http = new HttpClient(_createHandler(origin, [address])) { Timeout = Timeout.InfiniteTimeSpan };
+        try
+        {
+            using (var probe = await http.GetAsync(origin + "control/install/get_addresses", deadline.Token))
+                if (probe.StatusCode != HttpStatusCode.OK) return false;
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException or SocketException) { return false; }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+        var body = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            web = new { ip = "0.0.0.0", port = 80 }, dns = new { ip = "0.0.0.0", port = 53 }, username, password,
+        });
+        try
+        {
+            using var content = new ByteArrayContent(body);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var response = await http.PostAsync(origin + "control/install/configure", content, deadline.Token);
+            if (response.StatusCode != HttpStatusCode.OK)
+                throw new AdGuardManagementException(502, "adguard_install_failed", "AdGuard's first-run setup refused Lucia's settings.");
+            return true;
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException or SocketException or OperationCanceledException && !ct.IsCancellationRequested)
+        { throw new AdGuardManagementException(502, "adguard_install_failed", "AdGuard's first-run setup didn't finish."); }
+        finally { CryptographicOperations.ZeroMemory(body); }
     }
 
     internal static bool IsPrivate(IPAddress address)
@@ -158,7 +195,8 @@ internal sealed class AdGuardSession(HttpClient http, AdGuardStoredConnection re
                 item.ValueKind != JsonValueKind.String || item.GetString() is not { Length: >= 1 and <= 2048 } address
                 || address.Any(char.IsControl)
                 || AdGuardValidation.SensitiveMetadata(item.GetString()!, record.Username!, record.Password!))
-            || AdGuardValidation.String(root, "language") is not { Length: >= 1 and <= 32 }
+            // Empty until someone picks a language in AdGuard's web interface, as after Lucia's own first-run setup.
+            || AdGuardValidation.String(root, "language") is not { Length: <= 32 }
             || !root.TryGetProperty("protection_disabled_duration", out var duration)
             || duration.ValueKind != JsonValueKind.Number || !duration.TryGetInt64(out _))
             throw AdGuardTransport.InvalidResponse();

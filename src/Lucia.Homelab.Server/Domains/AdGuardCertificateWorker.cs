@@ -18,7 +18,7 @@ public sealed record AdGuardCertificateToggle(bool Enabled, string? Name = null)
 /// twice a day. The connection's host name is always covered too, so Lucia keeps reaching AdGuard while the
 /// owner moves it to a new name. Turning it off leaves AdGuard's TLS settings as they are.</summary>
 public sealed class AdGuardCertificateWorker(DomainOnboardingStore store, CertbotCertificateService certificates,
-    CloudflareDomainService cloudflare, AdGuardConnectionService adguard, ILogger<AdGuardCertificateWorker> logger)
+    CloudflareDomainService cloudflare, AdGuardConnectionService adguard, ILogger<AdGuardCertificateWorker> logger, AdGuardFleet? fleet = null)
     : BackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -27,6 +27,23 @@ public sealed class AdGuardCertificateWorker(DomainOnboardingStore store, Certbo
     private string FilePath => Path.Combine(store.Root, "adguard-certificate.json");
 
     public async Task<AdGuardCertificateStatus> GetStatusAsync(CancellationToken ct) => Status(await ReadAsync(ct));
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (fleet is not null) fleet.Changed += Wake;
+        return base.StartAsync(cancellationToken);
+    }
+
+    /// <summary>The certificate last issued for AdGuard, names[0] being the name it serves, for setting up a new instance.</summary>
+    internal static async Task<(string[] Names, string Chain, string Key)?> InstalledAsync(string root, CancellationToken ct)
+    {
+        var path = Path.Combine(root, "adguard-certificate.json");
+        if (!File.Exists(path)) return null;
+        var state = JsonSerializer.Deserialize<AdGuardCertificateState>(await File.ReadAllBytesAsync(path, ct), Json);
+        if (state is not { Enabled: true, Certificate: { } receipt } || !File.Exists(receipt.CertificateFile)) return null;
+        string[] names = [.. (state.Name is { } name ? [name] : Array.Empty<string>()).Concat(receipt.DnsNames).Distinct(StringComparer.Ordinal)];
+        return (names, await File.ReadAllTextAsync(receipt.CertificateFile, ct), await File.ReadAllTextAsync(receipt.KeyFile, ct));
+    }
 
     public async Task<AdGuardCertificateStatus> SetEnabledAsync(bool enabled, string? name, CancellationToken ct)
     {
@@ -81,7 +98,10 @@ public sealed class AdGuardCertificateWorker(DomainOnboardingStore store, Certbo
         try { host = CertbotCertificateService.ValidateDnsName(await adguard.CertificateNameAsync(ct)); }
         catch (CertbotException)
         { throw new AdGuardCertificateException("Connect AdGuard by DNS name, not IP address, so its certificate has a name to cover."); }
-        string[] names = state.Name is null || state.Name == host ? [host] : [state.Name, host];
+        // Each AdGuard instance's own name too, which adguardhome-sync reaches it by.
+        var ns = (await Nodes.ManagedNodeDns.ActiveNaming(store, ct))?.Namespace;
+        string[] names = [.. new[] { state.Name ?? host, host }.Concat(ns is null || fleet is null ? [] : (await fleet.RecordsAsync(ns, ct)).Select(record => record.Domain))
+            .Distinct(StringComparer.Ordinal)];
         var access = await cloudflare.GetTokenAsync(ct);
         var token = access.Token ?? throw new AdGuardCertificateException("Reconnect Cloudflare in domain setup.");
         var fresh = state.Lineage is null || state.Certificate is null || !state.Certificate.DnsNames.Order().SequenceEqual(names.Order());
@@ -95,8 +115,16 @@ public sealed class AdGuardCertificateWorker(DomainOnboardingStore store, Certbo
         }
         else receipt = await certificates.RenewAsync(request, token, ct);
         await UpdateAsync(current => current with { Lineage = lineage, Certificate = receipt }, ct);
-        var pushed = await adguard.PushCertificateAsync(names,
-            await File.ReadAllTextAsync(receipt.CertificateFile, ct), await File.ReadAllTextAsync(receipt.KeyFile, ct), ct);
+        var (chain, key) = (await File.ReadAllTextAsync(receipt.CertificateFile, ct), await File.ReadAllTextAsync(receipt.KeyFile, ct));
+        var pushed = false;
+        AdGuardManagementException? failure = null;
+        var targets = fleet is null ? [] : await fleet.TargetsAsync(ct);
+        foreach (var address in targets.Length == 0 ? [null] : targets.Cast<System.Net.IPAddress?>())
+        {
+            try { pushed |= await adguard.PushCertificateAsync(names, chain, key, ct, address); }
+            catch (AdGuardManagementException error) { failure ??= error; }
+        }
+        if (failure is not null) throw failure;
         var now = DateTimeOffset.UtcNow;
         await UpdateAsync(current => current with { CheckedAt = now, PushedAt = pushed || current.PushedAt is null ? now : current.PushedAt, Error = null }, ct);
     }

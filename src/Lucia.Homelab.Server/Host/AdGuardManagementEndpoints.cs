@@ -62,6 +62,8 @@ public static class AdGuardManagementEndpoints
         group.MapGet("/certificate", ([FromServices] Domains.AdGuardCertificateWorker worker, CancellationToken ct) => worker.GetStatusAsync(ct));
         group.MapPut("/certificate", ([FromBody] Domains.AdGuardCertificateToggle toggle, [FromServices] Domains.AdGuardCertificateWorker worker,
             CancellationToken ct) => worker.SetEnabledAsync(toggle.Enabled, toggle.Name, ct));
+        group.MapGet("/instances", ([FromServices] AdGuardFleet fleet, CancellationToken ct) => fleet.StatusAsync(ct));
+        group.MapPost("/instances/{name}/primary", (string name, [FromServices] AdGuardFleet fleet, CancellationToken ct) => fleet.MakePrimaryAsync(name, ct));
     }
 
     private static AdGuardManagementException TooLarge() =>

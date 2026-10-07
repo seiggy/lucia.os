@@ -107,6 +107,22 @@ export function parseAdGuardCertificate(value: unknown): AdGuardCertificate {
     checkedAt: optional(x.checkedAt, date), pushedAt: optional(x.pushedAt, date), error: optional(x.error, text),
     coveredNames: optional(x.coveredNames, strings) ?? [] }
 }
+export interface AdGuardInstance {
+  name: string; node: string; address: string | null; hostName: string | null; primary: boolean; healthy: boolean; setup: boolean
+  healthyAt: string | null; syncedAt: string | null; error: string | null
+}
+export interface AdGuardFleet { instances: AdGuardInstance[]; problem: string | null; promotedAt: string | null; promotedFrom: string | null }
+export function parseAdGuardFleet(value: unknown): AdGuardFleet {
+  const x = object(value)
+  if (!Array.isArray(x.instances) || x.instances.length > 100) throw invalid()
+  return { problem: optional(x.problem, text), promotedAt: optional(x.promotedAt, date), promotedFrom: optional(x.promotedFrom, text),
+    instances: x.instances.map(item => {
+      const i = object(item)
+      return { name: text(i.name), node: text(i.node), address: optional(i.address, text), hostName: optional(i.hostName, text),
+        primary: boolean(i.primary), healthy: boolean(i.healthy), setup: boolean(i.setup), healthyAt: optional(i.healthyAt, date),
+        syncedAt: optional(i.syncedAt, date), error: optional(i.error, text) }
+    }) }
+}
 export interface UniFiStatus {
   configured: boolean; baseUrl: string | null; site: string | null; certificateSha256: string | null
   networkVersion: string | null; reserveNodeAddresses: boolean; lastVerifiedAt: string | null

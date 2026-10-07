@@ -536,7 +536,7 @@ try
     Check(ReferenceEquals(app.Services.GetRequiredService<ILocalDnsProvider>(), service), "DI interface not shared with service.");
     var routes = ((IEndpointRouteBuilder)app).DataSources.SelectMany(s => s.Endpoints).OfType<RouteEndpoint>()
         .Where(e => e.RoutePattern.RawText!.StartsWith("/api/host/connections/adguard")).ToArray();
-    Check(routes.Length == 6 && routes.All(e => e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
+    Check(routes.Length == 8 && routes.All(e => e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
         .Any(a => a.Policy == "HostOwner")), "Routes not Owner-only or unexpected CRUD routes exposed.");
     using (var response = await api.GetAsync("/api/host/connections/adguard"))
         Check(response.StatusCode == HttpStatusCode.Unauthorized, "Anonymous owner route allowed.");

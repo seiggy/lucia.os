@@ -101,6 +101,35 @@ internal static class OperationsChecks
                 "A changed node address did not replace Lucia's own record.");
             await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, [], default);
             check(dns.Entries is [{ Domain: "taken.lab.example.com" }], "A removed node's record was kept, or another record was deleted.");
+            var primary = new AdGuardRewrite("taken.lab.example.com", "192.168.1.231");
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, [primary], default, new HashSet<string> { primary.Domain });
+            check(dns.Entries is [var moved] && moved == primary, "AdGuard's name didn't follow the primary over a record made by hand.");
+
+            var at = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+            Lucia.Homelab.Server.Stacks.AppInstance Instance(string name) => new(name, name, "192.168.1.230", "Ready", at);
+            var entries = new Dictionary<string, AdGuardInstanceState>
+            {
+                ["down"] = new(HealthyAt: at.AddMinutes(-5), SyncedAt: at),
+                ["stale"] = new(HealthyAt: at, SyncedAt: at.AddMinutes(-11)),
+                ["older"] = new(HealthyAt: at, SyncedAt: at.AddMinutes(-2)),
+                ["newer"] = new(HealthyAt: at, SyncedAt: at.AddMinutes(-1)),
+                ["new"] = new(Setup: true, HealthyAt: at, SyncedAt: at),
+            };
+            check(AdGuardFleet.Successor(entries.Keys.Select(Instance), entries, at) == "newer"
+                && AdGuardFleet.Successor(new[] { "down", "stale", "new" }.Select(Instance), entries, at) is null,
+                "Failover must pick the healthy, set-up instance that synced most recently within ten minutes.");
+            check(AdGuardFleet.NextAddress(["192.168.1.230", null], new HashSet<string> { "192.168.1.231" }) == "192.168.1.232"
+                && AdGuardFleet.NextAddress(["192.168.1.254"], new HashSet<string>()) is null && AdGuardFleet.NextAddress([], new HashSet<string>()) is null,
+                "The next AdGuard address must be the first free one after the highest, within the /24.");
+            check(AdGuardFleet.SyncError("""{"level":"info","msg":"Sync done"}""", 0, "pw") is null
+                && AdGuardFleet.SyncError("""{"level":"ERROR","msg":"Error syncing","error":": 401 Unauthorized"}""", 0, "pw") == "Error syncing: 401 Unauthorized"
+                && AdGuardFleet.SyncError("""{"level":"error","msg":"login pw failed"}""", 0, "pw") == "The sync failed."
+                && AdGuardFleet.SyncError("panic", 2, "pw") == "The sync exited with code 2.",
+                "Sync errors must come from error-level log lines, without the password.");
+            var environment = AdGuardFleet.SyncEnvironment("a.lab", "b.lab", "u", "p");
+            check(environment["ORIGIN_URL"] == "https://a.lab" && environment["REPLICA1_URL"] == "https://b.lab" && environment["FEATURES_TLS_CONFIG"] == "false"
+                && environment["FEATURES_DHCP_SERVER_CONFIG"] == "false" && environment["REPLICA1_AUTO_SETUP"] == "false",
+                "Sync must leave each instance's certificate and DHCP alone.");
         }
         finally { Directory.Delete(root, recursive: true); }
     }

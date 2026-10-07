@@ -48,6 +48,8 @@ builder.Services.AddSingleton<ManagedNodeEnrollment>();
 builder.Services.AddSingleton<OwnerSshKeys>();
 builder.Services.AddSingleton<PeopleDirectory>();
 builder.AddStacks();
+builder.Services.AddSingleton<Lucia.Homelab.Server.Host.AdGuardFleet>();
+builder.Services.AddHostedService(services => services.GetRequiredService<Lucia.Homelab.Server.Host.AdGuardFleet>());
 builder.Services.AddHostedService<ManagedNodeDns>();
 builder.Services.AddHostedService<Lucia.Homelab.Server.Stacks.AppSsoRegistrations>();
 builder.Services.AddHostedService<Lucia.Homelab.Server.Stacks.AppTelemetry>();

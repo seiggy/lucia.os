@@ -19,15 +19,17 @@ public sealed class ManagedNodeDns : BackgroundService
     private readonly ManagedNodeEnrollment _nodes;
     private readonly Stacks.StackStore _stacks;
     private readonly ILocalDnsProvider _dns;
+    private readonly AdGuardFleet _fleet;
     private readonly ILogger<ManagedNodeDns> _logger;
     private readonly SemaphoreSlim _wake = new(0, 1);
 
     public ManagedNodeDns(DomainOnboardingStore domains, DomainOnboardingOptions options, ManagedNodeEnrollment nodes, Stacks.StackStore stacks,
-        ILocalDnsProvider dns, ILogger<ManagedNodeDns> logger)
+        ILocalDnsProvider dns, AdGuardFleet fleet, ILogger<ManagedNodeDns> logger)
     {
-        (_domains, _options, _nodes, _stacks, _dns, _logger) = (domains, options, nodes, stacks, dns, logger);
+        (_domains, _options, _nodes, _stacks, _dns, _fleet, _logger) = (domains, options, nodes, stacks, dns, fleet, logger);
         nodes.AddressChanged += Wake;
         stacks.RoutesChanged += Wake;
+        fleet.Changed += Wake;
     }
 
     public void Wake()
@@ -54,7 +56,8 @@ public sealed class ManagedNodeDns : BackgroundService
     /// <summary>The records Lucia wants for managed nodes and app routes under the active domain, or null without one.</summary>
     public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct) =>
         await ActiveJob(_domains, ct) is { Plan: var plan } job
-            ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct), job.Public ? plan.Naming.Domain : null) : null;
+            ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct), job.Public ? plan.Naming.Domain : null,
+                await _fleet.RecordsAsync(plan.Naming.Namespace, ct)) : null;
 
     internal static async Task<DomainSetupJob?> ActiveJob(DomainOnboardingStore domains, CancellationToken ct)
     {
@@ -77,13 +80,14 @@ public sealed class ManagedNodeDns : BackgroundService
     /// access, public names point at the gateway too, so the network reaches them directly rather than through Cloudflare.
     /// </summary>
     internal static AdGuardRewrite[] Wanted(DomainNamingPlan naming, IEnumerable<ManagedNodeAddress> nodes, string? ingress = null,
-        IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null) =>
+        IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null, IEnumerable<AdGuardRewrite>? fleet = null) =>
         nodes.Where(node => IPAddress.TryParse(node.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
                 && AdGuardTransport.IsPrivate(ip))
             .Select(node => new AdGuardRewrite($"{node.Hostname}.{naming.Namespace}".ToLowerInvariant(), node.Address))
             .Concat(ingress is null ? [] : (routes ?? []).Select(route => new AdGuardRewrite($"{route.Route.Host}.{naming.Namespace}".ToLowerInvariant(), ingress)))
             .Concat(ingress is null || zone is null ? [] : (routes ?? []).Where(route => route.Route.Public is not null)
                 .Select(route => new AdGuardRewrite($"{route.Route.Public}.{zone}".ToLowerInvariant(), ingress)))
+            .Concat(fleet ?? [])
             .Where(record => !naming.LocalHostnames.Contains(record.Domain, StringComparer.OrdinalIgnoreCase))
             .GroupBy(record => record.Domain, StringComparer.Ordinal).Where(group => group.Count() == 1)
             .Select(group => group.Single()).ToArray();
@@ -94,11 +98,14 @@ public sealed class ManagedNodeDns : BackgroundService
         if (Path.IsPathFullyQualified(_options.GatewayDirectory) && Directory.Exists(_options.GatewayDirectory))
             Stacks.AppGateway.Publish(_options.GatewayDirectory, job is null ? null
                 : Stacks.AppGateway.Build(await _stacks.ActiveRoutes(ct), job.Plan.Naming.Namespace, job.Public ? job.Plan.Naming.Domain : null));
-        foreach (var name in await Apply(_dns, _nodes.DnsStatePath, await Wanted(ct) ?? [], ct))
+        // AdGuard's own names follow the fleet, replacing a record set up by hand before it.
+        var claimed = job is null ? null : (await _fleet.RecordsAsync(job.Plan.Naming.Namespace, ct)).Select(record => record.Domain).ToHashSet(StringComparer.Ordinal);
+        foreach (var name in await Apply(_dns, _nodes.DnsStatePath, await Wanted(ct) ?? [], ct, claimed))
             _logger.LogInformation("Published local DNS for {Name}.", name);
     }
 
-    internal static async Task<string[]> Apply(ILocalDnsProvider dns, string statePath, AdGuardRewrite[] wanted, CancellationToken ct)
+    internal static async Task<string[]> Apply(ILocalDnsProvider dns, string statePath, AdGuardRewrite[] wanted, CancellationToken ct,
+        IReadOnlySet<string>? claimed = null)
     {
         var owned = ReadState(statePath);
         if (wanted.Length == 0 && owned.Count == 0) return [];
@@ -108,8 +115,8 @@ public sealed class ManagedNodeDns : BackgroundService
         {
             var same = Same(existing, record.Domain);
             if (same.Any(entry => entry.Answer == record.Answer)) continue;
-            // Another client's record for this name wins; only replace answers Lucia added itself.
-            if (same.Any(entry => !owned.Contains(Key(entry)))) continue;
+            // Another client's record for this name wins; only replace answers Lucia added itself, or claims.
+            if (claimed?.Contains(record.Domain) != true && same.Any(entry => !owned.Contains(Key(entry)))) continue;
             owned.Add(Key(record));
             await WriteState(statePath, owned, ct);
             foreach (var old in same)
