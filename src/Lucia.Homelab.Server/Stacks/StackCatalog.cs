@@ -477,7 +477,7 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp("observability", 6, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
     "Any server with Docker ready, and room for about 50 GB of telemetry.",
     [],

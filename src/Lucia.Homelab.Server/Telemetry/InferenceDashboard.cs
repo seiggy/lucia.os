@@ -5,8 +5,9 @@ namespace Lucia.Homelab.Server.Telemetry;
 
 /// <summary>
 /// Grafana's Inference dashboard: raw performance of every Local AI engine Lucia runs, side by side. Lucia Inference
-/// (TensorSharp) reports <c>lucia_inference_*</c>; the relays scrape vLLM's and llama.cpp's own metrics. llama.cpp keeps
-/// only running totals, so it has no time to first token, request time or request count.
+/// (TensorSharp) reports <c>lucia_inference_*</c>; the relays scrape vLLM's, llama.cpp's and the Spark's TensorFold
+/// metrics. llama.cpp keeps only running totals, so it has no time to first token, request time or request count, and
+/// TensorFold doesn't count KV cache reuse.
 /// </summary>
 internal static class InferenceDashboard
 {
@@ -18,7 +19,7 @@ internal static class InferenceDashboard
     public const string Uid = "lucia-inference";
 
     private sealed record Engine(string Name, string Model, string? Requests, string? Duration, string? FirstToken,
-        string Input, string Cached, string Output, string PromptSeconds, string? GenerationSeconds, string GenerationTokens);
+        string Input, string? Cached, string Output, string PromptSeconds, string? GenerationSeconds, string GenerationTokens);
 
     // Each engine's per-request sums. Prompt time is the time to first token (Lucia) or prefill (vLLM, llama.cpp), and
     // generation time excludes it, so tokens/second is per request, however many run at once.
@@ -33,14 +34,18 @@ internal static class InferenceDashboard
         new("llama.cpp", "model", null, null, null,
             "llamacpp:prompt_tokens_total", "llamacpp:prompt_tokens_cached_total", "llamacpp:tokens_predicted_total",
             "llamacpp:prompt_seconds_total", "llamacpp:tokens_predicted_seconds_total", "llamacpp:tokens_predicted_total"),
+        new("TensorFold", "model", "tensorfold:request_latency_seconds_count", "tensorfold:request_latency_seconds_sum", "tensorfold:time_to_first_token_seconds_sum",
+            "tensorfold:prompt_tokens_total", null, "tensorfold:generation_tokens_total",
+            "tensorfold:time_to_first_token_seconds_sum", null, "tensorfold:generation_tokens_total"),
     ];
 
     private static string Rate(string metric, string by) => $"sum by (lucia_node, {by}) (rate({metric}{{{Node}}}[$__rate_interval]))";
     private static string Range(string metric) => $"(sum(increase({metric}{{{Node}}}[$__range])) or vector(0))";
 
     // llama.cpp counts cached prompt tokens apart from processed ones; the others count every prompt token.
-    private static string Input(Engine engine, Func<string, string> of) => engine.Name == "llama.cpp" ? $"({of(engine.Input)} + {of(engine.Cached)})" : of(engine.Input);
-    private static string Processed(Engine engine, Func<string, string> of) => engine.Name == "llama.cpp" ? of(engine.Input) : $"({of(engine.Input)} - {of(engine.Cached)})";
+    private static string Input(Engine engine, Func<string, string> of) => engine.Name == "llama.cpp" ? $"({of(engine.Input)} + {of(engine.Cached!)})" : of(engine.Input);
+    private static string Processed(Engine engine, Func<string, string> of) =>
+        engine.Name == "llama.cpp" || engine.Cached is null ? of(engine.Input) : $"({of(engine.Input)} - {of(engine.Cached)})";
     private static string Generating(Engine engine, Func<string, string> of) =>
         engine.GenerationSeconds is { } seconds ? of(seconds) : $"({of(engine.Duration!)} - {of(engine.FirstToken!)})";
 
@@ -81,7 +86,7 @@ internal static class InferenceDashboard
                 Total(engine => engine.Requests is null ? null : Range(engine.Requests)), 0),
             Stat("Input tokens", "Prompt tokens, including those reused from the KV cache.", 1, "short", Total(engine => Input(engine, Range)), 0),
             Stat("Output tokens", "Generated tokens.", 2, "short", Total(engine => Range(engine.Output)), 0),
-            Stat("KV cache reused", "Prompt tokens served from the KV cache instead of being processed again.", 3, "short", Total(engine => Range(engine.Cached)), 0),
+            Stat("KV cache reused", "Prompt tokens served from the KV cache instead of being processed again.", 3, "short", Total(engine => engine.Cached is null ? null : Range(engine.Cached)), 0),
             Stat("Time to first token", "Average wait for the first generated token." + NoLlama, 4, "s",
                 Ratio(engine => engine.FirstToken is null ? null : Range(engine.FirstToken), engine => engine.FirstToken is null ? null : Range(engine.FirstToken.Replace("_sum", "_count"))), 2),
             Stat("Prompt processing", "Prompt tokens processed per second of prompt processing, excluding reused ones.", 5, TokensPerSecond,
@@ -106,7 +111,7 @@ internal static class InferenceDashboard
             Series("Input tokens per minute", "Prompt tokens, including those reused from the KV cache.", 6, 28, 6, "short",
                 (engine, of) => $"60 * {Input(engine, of)}"),
             Series("Output tokens per minute", "Generated tokens.", 12, 28, 6, "short", (engine, of) => $"60 * {of(engine.Output)}"),
-            Series("KV cache reused per minute", "Prompt tokens served from the KV cache.", 18, 28, 6, "short", (engine, of) => $"60 * {of(engine.Cached)}"),
+            Series("KV cache reused per minute", "Prompt tokens served from the KV cache.", 18, 28, 6, "short", (engine, of) => engine.Cached is null ? null : $"60 * {of(engine.Cached)}"),
         ];
         return JsonSerializer.Serialize(new
         {

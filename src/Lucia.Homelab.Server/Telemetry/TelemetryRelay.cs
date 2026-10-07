@@ -9,7 +9,8 @@ using OpenTelemetry;
 namespace Lucia.Homelab.Server.Telemetry;
 
 /// <summary>An app on the server whose Prometheus metrics the relay scrapes. llama.cpp's router serves them per model.</summary>
-internal sealed record RelayScrape(string Job, string Target, string[]? Models = null);
+/// <param name="Target">An address, or with <paramref name="TargetsFile"/> a Prometheus file_sd file the app's owner keeps current.</param>
+internal sealed record RelayScrape(string Job, string Target, string[]? Models = null, bool TargetsFile = false);
 
 /// <summary>
 /// The telemetry relay: an OpenTelemetry collector on each machine Lucia manages. Apps and Lucia's agent send it OTLP on
@@ -34,12 +35,13 @@ internal static class TelemetryRelay
     {
         const string Auth = "  authorization:\n    credentials: ${env:LOCAL_AI_KEY}\n";
         var instance = $"    - target_label: instance\n      replacement: {node}\n";
-        string Job(string name, string targets, string extra = "", string relabel = "") =>
-            $"- job_name: {name}\n{extra}  static_configs:\n{targets}  relabel_configs:\n{relabel}{instance}";
+        string Job(string name, string targets, string extra = "", string relabel = "", string discovery = "static_configs") =>
+            $"- job_name: {name}\n{extra}  {discovery}:\n{targets}  relabel_configs:\n{relabel}{instance}";
         var jobs = Job("node", "    - targets: [127.0.0.1:19100]\n");
         if (gpu) jobs += Job("gpu", "    - targets: [127.0.0.1:19835]\n");
         foreach (var app in apps)
-            jobs += app.Models is null ? Job(app.Job, $"    - targets: [{app.Target}]\n", Auth)
+            jobs += app.TargetsFile ? Job(app.Job, $"    - files: [{app.Target}]\n", discovery: "file_sd_configs")
+                : app.Models is null ? Job(app.Job, $"    - targets: [{app.Target}]\n", Auth)
                 : Job(app.Job, string.Concat(app.Models.Select(model => $"    - targets: [{app.Target}]\n      labels:\n        model: \"{model}\"\n")),
                     Auth + "  params:\n    autoload: [\"false\"]\n", "    - source_labels: [model]\n      target_label: __param_model\n");
         return $"""
@@ -176,7 +178,9 @@ public sealed class ControllerRelay
                 # Once a domain is active the origin has a public certificate instead.
                 include_system_ca_certs_pool: true
             """;
-        Write(Path.Combine(directory, "relay.yaml"), TelemetryRelay.Config("\"${env:LUCIA_NODE}\"", gpu: true, [], exporter));
+        // spark_model_worker.py lists TensorFold's metrics address in spark-model.json while Qwen3.8-Flash-Next runs.
+        Write(Path.Combine(directory, "relay.yaml"), TelemetryRelay.Config("\"${env:LUCIA_NODE}\"", gpu: true,
+            [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true)], exporter));
     }
 
     internal bool Accepts(string? token) =>

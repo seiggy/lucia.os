@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "domains"))
@@ -42,6 +43,8 @@ HOME = pathlib.Path.home() / ".local" / "share" / "lucia"
 SHARED = HOME / "host" / "data" / "spark-model"
 PRIVATE = HOME / "spark-model"
 CHECKOUT = PRIVATE / "recipe"
+# The Spark's telemetry relay scrapes TensorFold's Prometheus /metrics from the targets listed here (file_sd).
+TARGETS = HOME / "host" / "data" / "telemetry" / "spark-model.json"
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -99,6 +102,7 @@ def running():
 
 class Worker:
     def __init__(self):
+        self.targets = None
         self.status = {"schemaVersion": 1, "generation": -1, "state": "stopped", "since": None, "message": None,
                        "url": None, "checkedAt": now().isoformat()}
         try:
@@ -113,6 +117,12 @@ class Worker:
     def report(self, **changes):
         self.status.update(changes, checkedAt=now().isoformat())
         write_file(SHARED / "status.json", json.dumps(self.status) + "\n")
+        url = self.status["url"] if self.status["state"] == "running" else None
+        targets = json.dumps([{"targets": [urllib.parse.urlsplit(url).netloc], "labels": {"model": "Qwen3.8-Flash-Next"}}]
+                             if url else []) + "\n"
+        if targets != self.targets and TARGETS.parent.is_dir():
+            write_file(TARGETS, targets)
+            self.targets = targets
 
     def script(self, name, env, timeout):
         # The first start downloads ~125 GB; its latest line is the progress, and reporting it keeps the heartbeat fresh.

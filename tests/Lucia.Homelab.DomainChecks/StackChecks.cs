@@ -121,6 +121,11 @@ internal static class StackChecks
                 && obs.Compose.Contains($"target: /etc/grafana/dashboards/lucia/{dashboard}.json\n", StringComparison.Ordinal),
                 $"The {dashboard} dashboard must be valid JSON with every Grafana variable escaped for compose.");
         }
+        var inferenceDashboard = Lucia.Homelab.Server.Telemetry.InferenceDashboard.Json();
+        check(inferenceDashboard.Contains("tensorfold:generation_tokens_total", StringComparison.Ordinal)
+            && inferenceDashboard.Contains("(TensorFold)", StringComparison.Ordinal)
+            && !inferenceDashboard.Contains("tensorfold:prompt_tokens_cached", StringComparison.Ordinal),
+            "The inference dashboard must chart the Spark's TensorFold model without a cached-token counter it doesn't report.");
         check(observability.Sso(StackCatalog.Settings(observability, null)) == new AppSso("Grafana", "grafana", "/login/generic_oauth")
             && obs.Env.Contains($"{StackStore.SsoSecret}=", StringComparison.Ordinal)
             && obs.Compose.Contains("GF_AUTH_GENERIC_OAUTH_ENABLED: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
@@ -352,6 +357,15 @@ internal static class StackChecks
             """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
             && relayConfig.Contains("      - job_name: gpu\n", StringComparison.Ordinal),
             "The relay must scrape each llama.cpp model with the Local AI key, without loading it, labelled with the machine.");
+        check(Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"spark\"", true, [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true)],
+                Lucia.Homelab.Server.Telemetry.TelemetryRelay.EnvExporter).Contains("""
+                  - job_name: spark-model
+                    file_sd_configs:
+                      - files: [/etc/lucia-relay/spark-model.json]
+                    relabel_configs:
+                      - target_label: instance
+            """.ReplaceLineEndings("\n"), StringComparison.Ordinal),
+            "The relay must scrape Qwen on TensorFold from the targets its worker writes, without the Local AI key.");
         var relayCompose = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Compose(relayConfig, gpu: false);
         check(relayCompose.Contains("credentials: $${env:LOCAL_AI_KEY}", StringComparison.Ordinal)
             && relayCompose.Contains("LOCAL_AI_KEY: ${LOCAL_AI_KEY}\n", StringComparison.Ordinal)
