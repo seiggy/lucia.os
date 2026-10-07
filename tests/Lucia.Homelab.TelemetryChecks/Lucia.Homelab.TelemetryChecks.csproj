@@ -8,6 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <Compile Include="..\..\src\Lucia.Homelab.Server\Telemetry\*.cs" Link="Telemetry\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Lucia.Homelab.Server\Telemetry\*.cs" Exclude="..\..\src\Lucia.Homelab.Server\Telemetry\TelemetryRelay.cs" Link="Telemetry\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

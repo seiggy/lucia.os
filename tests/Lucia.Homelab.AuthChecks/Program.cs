@@ -6,6 +6,9 @@ using System.Text;
 using System.Text.Json;
 using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.Host;
+using Lucia.Homelab.Server.Nodes;
+using Lucia.Homelab.Server.Onboarding;
+using Lucia.Homelab.Server.Stacks;
 using Lucia.Homelab.Server.Telemetry;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -390,15 +393,20 @@ try
         ["InferenceKeys:Directory"] = Path.Combine(rootDirectory, "inference-keys"),
         ["AdGuardManagement:CredentialsDirectory"] = Path.Combine(rootDirectory, "network-credentials"),
         ["CloudflareDomains:CredentialsDirectory"] = Path.Combine(rootDirectory, "network-credentials"),
-        ["DomainOnboarding:StateDirectory"] = Path.Combine(rootDirectory, "domains")
+        ["DomainOnboarding:StateDirectory"] = Path.Combine(rootDirectory, "domains"),
+        ["HardwareOnboarding:StateDirectory"] = Path.Combine(rootDirectory, "hardware")
     });
     builder.AddHostAuthentication();
     builder.AddHostOutputCache();
     builder.AddSparkTelemetry();
     builder.AddInferenceKeyManagement();
     builder.AddAdGuardManagement();
+    builder.AddUniFiManagement();
     builder.AddCloudflareDomains();
     builder.AddDomainOnboarding();
+    builder.AddHardwareOnboarding();
+    builder.Services.AddSingleton<ManagedNodeEnrollment>();
+    builder.AddStacks();
     var provider = new OpenIdConnectConfiguration
     {
         Issuer = issuer,
@@ -913,6 +921,8 @@ try
         migratedApp.Use(async (context, next) =>
         {
             context.Connection.RemoteIpAddress = IPAddress.Parse("172.31.240.2");
+            // Traefik reaches the controller over Docker's network, never loopback (loopback /v1 is the in-container assistant).
+            context.Connection.LocalIpAddress = IPAddress.Parse("172.31.240.3");
             context.Request.Scheme = "http";
             context.Request.Host = new HostString("internal:8080");
             await next(context);

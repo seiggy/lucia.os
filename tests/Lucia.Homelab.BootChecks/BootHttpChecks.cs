@@ -46,7 +46,9 @@ internal static class BootHttpChecks
             builder.AddHardwareBoot();
             builder.Services.AddSingleton(new HostAuthenticationOptions());
             builder.Services.AddSingleton<ManagedNodeEnrollment>();
-builder.Services.AddSingleton<OwnerSshKeys>();
+            builder.Services.AddSingleton<OwnerSshKeys>();
+            builder.Services.AddSingleton(new Lucia.Homelab.Server.Domains.DomainOnboardingOptions { StateDirectory = Path.Combine(directory, "domains") });
+            builder.Services.AddSingleton<Lucia.Homelab.Server.Domains.DomainOnboardingStore>();
             await using var app = builder.Build();
             app.Use((context, next) =>
             {
