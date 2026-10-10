@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { Icon } from './Icon'
+import { UniFiSnmp } from './UniFiSnmp'
 import { parseDhcpReservations, parseUniFiStatus } from './networkManagement'
 import type { DhcpReservations, DhcpState, UniFiStatus } from './networkManagement'
 import './NetworkSettings.css'
@@ -139,6 +140,7 @@ export function UniFiSettings({ session, refreshSession }: {
         </table>}
         {reserving && reservations?.checkedAt && <p className="section-note">Checked {new Date(reservations.checkedAt).toLocaleString()}.</p>}
       </section>
+      <UniFiSnmp session={session} refreshSession={refreshSession} />
     </>}
     <section className="surface network-section">
       <h2>{status?.configured ? 'Replace connection' : 'Connect your gateway'}</h2>

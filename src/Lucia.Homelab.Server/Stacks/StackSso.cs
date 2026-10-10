@@ -21,6 +21,8 @@ public sealed partial class StackStore
     internal const string SsoSecret = "SSO_CLIENT_SECRET";
     /// <summary>Variables Lucia adds to a telemetry-sending app's environment while an Observability app runs.</summary>
     internal const string OtlpPrefix = "LUCIA_OTLP_";
+    /// <summary>The Observability app's extra collector config and SNMP credentials for the lab map's UniFi devices.</summary>
+    internal const string LabPrefix = "LUCIA_LAB_";
 
     /// <summary>Every installed catalog app that signs in through Lucia, with its client secret.</summary>
     internal async Task<(string Stack, AppSso Sso, string Secret)[]> SsoApps(CancellationToken ct) =>
@@ -58,9 +60,10 @@ public sealed partial class StackStore
         finally { _gate.Release(); }
     }
 
-    /// <summary>The stack's sign-in and telemetry variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
+    /// <summary>The stack's sign-in, telemetry and lab map variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
     internal static string LuciaLines(string env) =>
-        string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal) || line.StartsWith(OtlpPrefix, StringComparison.Ordinal))
+        string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal) || line.StartsWith(OtlpPrefix, StringComparison.Ordinal)
+                || line.StartsWith(LabPrefix, StringComparison.Ordinal))
             .Select(line => line + "\n"));
 }
 

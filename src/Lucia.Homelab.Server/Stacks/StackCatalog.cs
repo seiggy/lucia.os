@@ -477,7 +477,7 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
     "Any server with Docker ready, and room for about 50 GB of telemetry.",
     [],
@@ -532,6 +532,11 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                     endpoint: 0.0.0.0:4318
                     auth:
                       authenticator: basicauth/server
+              # The UniFi gateway exports flows here (NetFlow v5/v9 and IPFIX); they become byte counters below.
+              netflow:
+                scheme: netflow
+                hostname: 0.0.0.0
+                port: 2055
             processors:
               memory_limiter:
                 check_interval: 1s
@@ -541,6 +546,47 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                 timeout: 5s
                 send_batch_size: 1024
                 send_batch_max_size: 2048
+              # Each flow is labelled with both raw addresses (Lucia tells the LAN from the internet), its transport and its server port:
+              # the lower of the two when it is below the ephemeral range, with lucia.server naming the end that owns it.
+              transform/flows:
+                error_mode: ignore
+                log_statements:
+                  - context: log
+                    statements:
+                      - set(attributes["lucia.src"], attributes["source.address"])
+                      - set(attributes["lucia.dst"], attributes["destination.address"])
+                      - set(attributes["lucia.proto"], attributes["network.transport"])
+                      - set(attributes["lucia.port"], "")
+                      - set(attributes["lucia.server"], "")
+                      - set(attributes["lucia.port"], String(attributes["destination.port"])) where attributes["destination.port"] > 0 and attributes["destination.port"] < 49152 and attributes["destination.port"] <= attributes["source.port"]
+                      - set(attributes["lucia.server"], "dst") where attributes["destination.port"] > 0 and attributes["destination.port"] < 49152 and attributes["destination.port"] <= attributes["source.port"]
+                      - set(attributes["lucia.port"], String(attributes["source.port"])) where attributes["source.port"] > 0 and attributes["source.port"] < 49152 and attributes["source.port"] < attributes["destination.port"]
+                      - set(attributes["lucia.server"], "src") where attributes["source.port"] > 0 and attributes["source.port"] < 49152 and attributes["source.port"] < attributes["destination.port"]
+                      - set(attributes["lucia.bytes"], attributes["flow.io.bytes"])
+                      - set(attributes["lucia.bytes"], attributes["flow.io.bytes"] * attributes["flow.sampling_rate"]) where attributes["flow.sampling_rate"] > 1
+            connectors:
+              # Each batch's bytes go to Prometheus as a delta, stored as is: a cumulative counter would lose every short flow's
+              # only sample to rate(), so the map sums the deltas over its window instead.
+              signal_to_metrics/flows:
+                error_mode: ignore
+                logs:
+                  - name: lucia.netflow.bytes
+                    description: Bytes in flow records by addresses, transport and server port.
+                    unit: By
+                    attributes:
+                      - key: lucia.src
+                      - key: lucia.dst
+                      - key: lucia.port
+                        optional: true
+                      - key: lucia.proto
+                        optional: true
+                      - key: lucia.server
+                        optional: true
+                      - key: flow.src_vlan
+                        optional: true
+                    sum:
+                      value: Int(attributes["lucia.bytes"])
+                      monotonic: true
             exporters:
               otlp/tempo:
                 endpoint: tempo:4317
@@ -585,13 +631,21 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                   receivers: [otlp]
                   processors: [memory_limiter, batch]
                   exporters: [otlphttp/loki]
+                logs/netflow:
+                  receivers: [netflow]
+                  processors: [memory_limiter, transform/flows]
+                  exporters: [signal_to_metrics/flows]
+                metrics/netflow:
+                  receivers: [signal_to_metrics/flows]
+                  processors: [memory_limiter, batch]
+                  exporters: [otlphttp/prometheus]
             """;
         var prometheus = """
             global:
               scrape_interval: 30s
               evaluation_interval: 30s
             otlp:
-              promote_resource_attributes: [service.instance.id, service.name, service.namespace, host.name, lucia.node, lucia.app, container.name]
+              promote_resource_attributes: [service.instance.id, service.name, service.namespace, host.name, lucia.node, lucia.app, container.name, lucia.device]
             storage:
               tsdb:
                 out_of_order_time_window: 30m
@@ -746,10 +800,16 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                 image: {{Collector}}
                 restart: unless-stopped
                 mem_limit: 512m
-                command: ["--config=/etc/otelcol-contrib/config.yaml"]
+                # Lucia sets LUCIA_LAB_* to scrape your UniFi devices over SNMP once you give it SNMP credentials; the
+                # second config adds those receivers and is empty until then.
+                command: ["--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR"]
                 environment:
                   OTLP_USERNAME: ${OTLP_USERNAME}
                   OTLP_PASSWORD: ${OTLP_PASSWORD}
+                  LUCIA_LAB_COLLECTOR: ${LUCIA_LAB_COLLECTOR:-}
+                  LUCIA_LAB_SNMP_USER: ${LUCIA_LAB_SNMP_USER:-}
+                  LUCIA_LAB_SNMP_AUTH: ${LUCIA_LAB_SNMP_AUTH:-}
+                  LUCIA_LAB_SNMP_PRIV: ${LUCIA_LAB_SNMP_PRIV:-}
                 labels:
                   lucia.configs: "{{Hash(collector)}}"
                 configs:
@@ -760,11 +820,12 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                 ports:
                   - "{{grpcPort}}:4317"
                   - "{{httpPort}}:4318"
+                  - "2055:2055/udp"
                 depends_on:
                   init:
                     condition: service_completed_successfully
                 healthcheck:
-                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR"]
                   interval: 30s
                   timeout: 10s
                   retries: 3
@@ -777,6 +838,7 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 7, "Obser
                   - --storage.tsdb.retention.time=30d
                   - --storage.tsdb.retention.size=40GB
                   - --web.enable-otlp-receiver
+                  - --enable-feature=otlp-native-delta-ingestion
                 labels:
                   lucia.configs: "{{Hash(prometheus)}}"
                 configs:

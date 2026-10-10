@@ -55,6 +55,18 @@ export function openAssistantChat(id: string) {
   try { localStorage.setItem(chatKey, id) } catch { /* The event still opens it. */ }
   window.dispatchEvent(new CustomEvent(openChatEvent, { detail: id }))
 }
+// Another page asks a question: the dock opens, starts a new chat, and sends it once the chat can answer.
+export const askEvent = 'lucia:ask'
+let pendingAsk: string | null = null
+export function askAssistant(text: string) {
+  pendingAsk = text.trim().slice(0, maxMessageLength) || null
+  if (pendingAsk) window.dispatchEvent(new CustomEvent(askEvent))
+}
+export function takeAsk(): string | null {
+  const text = pendingAsk
+  pendingAsk = null
+  return text
+}
 export const isModelId = (value: unknown): value is string => typeof value === 'string' && modelPattern.test(value)
 // Picking this asks for a GitHub sign-in; it is never sent.
 export const signInModel = 'github:'

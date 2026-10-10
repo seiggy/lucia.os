@@ -1,0 +1,204 @@
+.portal-workspace > main:has(> .labmap) { max-width: none; margin: 0; padding: 0; min-height: 0; }
+.app-shell:has(.labmap) > .app-footer { display: none; }
+
+.labmap {
+  color-scheme: dark;
+  --page: #0b0e16; --surface: #141a26; --surface-subtle: #1e2636; --text: #eef2fa; --muted: #a9b4c8; --line: #2c3547;
+  --accent-ink: color-mix(in srgb, var(--accent) 45%, #ffffff);
+  --accent-soft: color-mix(in srgb, var(--accent) 24%, var(--surface));
+  --void: #04050a; --cyan: #00f0ff; --acid: #a6ff00; --amber: #ffb000; --red: #ff4d6d; --magenta: #ff2bd6; --dim: #7b8798; --hud: #d6f7fb;
+  --hud-font: 'Chakra Petch', ui-sans-serif, system-ui, sans-serif;
+  position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr);
+  height: calc(100dvh - var(--labmap-top, 150px) - var(--labmap-bottom, 0px)); min-height: 460px;
+  background: var(--void); color: var(--text);
+}
+.app-shell:has(> .assistant-bar) .labmap { --labmap-bottom: calc(61px + max(12px, env(safe-area-inset-bottom))); }
+.labmap[data-wallboard] { position: fixed; inset: 0; z-index: 60; height: auto; grid-template-rows: minmax(0, 1fr); }
+.labmap ::selection { background: color-mix(in srgb, var(--magenta) 38%, transparent); color: #fff; }
+.labmap :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.labmap [data-health=ok] { --tone: var(--acid); }
+.labmap [data-health=warn] { --tone: var(--amber); }
+.labmap [data-health=failed] { --tone: var(--red); }
+.labmap [data-health=stale], .labmap [data-health=unknown] { --tone: var(--dim); }
+
+.labmap-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 24px; background: var(--page); border-bottom: 1px solid var(--line); position: relative; z-index: 20; }
+.labmap-toolbar h1 { font-size: 20px; line-height: 1.2; letter-spacing: -.02em; margin-right: 12px; }
+.labmap-tool, .labmap-layers summary { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out; }
+.labmap-tool:hover, .labmap-layers summary:hover { background: var(--surface-subtle); }
+.labmap-tool[aria-expanded=true], .labmap-layers[open] summary { border-color: var(--accent-ink); background: var(--accent-soft); }
+.labmap-tool svg, .labmap-layers summary svg { width: 18px; height: 18px; }
+.labmap-layers { position: relative; margin: 0; padding: 0; border: 0; }
+.labmap-layers summary { list-style: none; padding-block: 8px; }
+.labmap-layers summary::-webkit-details-marker { display: none; }
+.labmap-layers fieldset { position: absolute; right: 0; top: calc(100% + 8px); display: grid; gap: 2px; min-width: 220px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 12px 28px #00000066; }
+.labmap-layers legend { float: left; width: 100%; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
+.labmap-layers label { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 6px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.labmap-layers label:hover { background: var(--surface-subtle); }
+.labmap-layers input { width: 18px; height: 18px; accent-color: var(--accent); }
+.labmap-span { display: inline-flex; align-items: center; min-height: 44px; padding: 3px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.labmap-span > span { padding: 0 10px 0 9px; color: var(--muted); font-size: 13px; }
+.labmap-span label { display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease-out; }
+.labmap-span label:hover { background: var(--surface-subtle); }
+.labmap-span label:has(:checked) { background: var(--accent-soft); color: var(--accent-ink); }
+.labmap-span label:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.labmap-span input { position: absolute; opacity: 0; pointer-events: none; }
+
+.labmap-search { position: relative; flex: 1; max-width: 460px; }
+.labmap-search > svg { position: absolute; left: 13px; top: 50%; width: 18px; height: 18px; translate: 0 -50%; color: var(--muted); pointer-events: none; }
+.labmap-search input { width: 100%; min-height: 44px; padding: 8px 14px 8px 40px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); font-size: 15px; }
+.labmap-search input::placeholder { color: var(--muted); }
+.labmap-search ul { position: absolute; left: 0; right: 0; top: calc(100% + 6px); max-height: 380px; overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 12px 28px #00000066; list-style: none; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.labmap-search li { display: grid; gap: 1px; padding: 9px 12px; border-radius: 8px; cursor: pointer; }
+.labmap-search li strong { font-size: 14px; font-weight: 620; }
+.labmap-search li span { color: var(--muted); font-size: 13px; }
+.labmap-search li[aria-selected=true] { background: var(--surface-subtle); }
+.labmap-search .labmap-search-empty { cursor: default; color: var(--muted); font-size: 14px; }
+
+.labmap-stage { position: relative; overflow: hidden; background: var(--void); touch-action: none; }
+.labmap-stage > canvas { display: block; width: 100%; height: 100%; }
+.labmap-plates { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.labmap-plate {
+  position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; width: max-content; max-width: 220px;
+  translate: -50% calc(-100% - 14px); padding: 3px 7px 4px; border: 1px solid color-mix(in srgb, var(--tone, var(--cyan)) 45%, transparent);
+  background: #04050ac7; color: var(--hud); font: 500 11px/1.25 var(--hud-font); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; will-change: transform;
+}
+.labmap-plate::after { content: ''; position: absolute; left: 50%; top: 100%; width: 1px; height: 14px; background: color-mix(in srgb, var(--tone, var(--cyan)) 55%, transparent); }
+.labmap-plate b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.labmap-plate span { color: color-mix(in srgb, var(--cyan) 75%, var(--hud)); font-size: 10px; letter-spacing: .06em; }
+.labmap-plate[data-kind=network] { --tone: var(--cyan); font-size: 13px; padding: 4px 9px 5px; translate: -50% 0; }
+.labmap-plate[data-kind=network]::after { top: auto; bottom: 100%; }
+.labmap-plate[data-kind=gateway] { font-size: 13px; }
+.labmap-plate[data-kind=app] { translate: 10px -50%; padding: 2px 6px; font-size: 10px; }
+.labmap-plate[data-kind=app]::after { left: auto; right: 100%; top: 50%; width: 10px; height: 1px; }
+.labmap-plate[hidden] { display: none; }
+.labmap-plate.is-hovered { border-color: var(--hud); }
+.labmap-plate.is-route { --tone: var(--magenta); }
+.labmap-plate.is-selected { --tone: var(--magenta); color: #ffe3fa; border-color: var(--magenta); z-index: 2; }
+
+.labmap-status { position: absolute; left: 16px; bottom: 16px; display: grid; gap: 4px; max-width: min(620px, calc(100% - 32px)); padding: 10px 14px; border: 1px solid #00f0ff38; background: #04050ad9; color: var(--hud); z-index: 5; }
+.labmap-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font: 500 12px/1.4 var(--hud-font); letter-spacing: .07em; text-transform: uppercase; }
+.labmap-counts b { color: #fff; font-weight: 500; font-size: 15px; font-variant-numeric: tabular-nums; margin-right: 3px; }
+.labmap-counts button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; margin-left: -8px; border: 0; background: none; color: var(--amber); font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.labmap-counts button b { color: var(--amber); }
+.labmap-counts button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.labmap-counts svg { width: 15px; height: 15px; }
+.labmap-fresh { display: flex; align-items: center; gap: 7px; color: #b9d9de; font: 500 11px/1.4 var(--hud-font); letter-spacing: .07em; text-transform: uppercase; }
+.labmap-fresh svg { width: 14px; height: 14px; color: var(--amber); }
+.labmap-status[data-stale] .labmap-fresh { color: var(--amber); }
+.labmap-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--acid); box-shadow: 0 0 6px 1px #a6ff0099; }
+.labmap-note { color: #b9d9de; font-size: 13px; line-height: 1.45; }
+.labmap-note a { color: var(--hud); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #00f0ff80; }
+
+.labmap-state { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 24px; text-align: center; color: var(--hud); z-index: 4; }
+.labmap-state h2 { font: 500 18px/1.3 var(--hud-font); letter-spacing: .08em; text-transform: uppercase; }
+.labmap-state p { max-width: 46ch; color: #b9d9de; font-size: 15px; }
+.labmap-state > svg { width: 30px; height: 30px; color: var(--amber); }
+.labmap-state .button { margin-top: 8px; }
+.labmap-state-pulse { width: 46px; height: 46px; border: 1px solid var(--cyan); border-radius: 50%; animation: labmap-pulse 1.6s cubic-bezier(.16, 1, .3, 1) infinite; }
+@keyframes labmap-pulse { from { scale: .4; opacity: 1; } to { scale: 1.4; opacity: 0; } }
+
+.labmap-exit { position: absolute; top: 16px; right: 16px; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 14px; border: 1px solid #00f0ff55; background: #04050ad9; color: var(--hud); font: 500 12px/1 var(--hud-font); letter-spacing: .08em; text-transform: uppercase; z-index: 6; cursor: pointer; }
+.labmap-exit svg { width: 16px; height: 16px; }
+.labmap-callout { position: absolute; left: 50%; top: 28px; translate: -50% 0; display: grid; justify-items: center; gap: 2px; padding: 12px 22px; border: 1px solid var(--tone); background: #04050ae0; color: var(--hud); text-align: center; z-index: 5; }
+.labmap-callout strong { font: 500 30px/1.15 var(--hud-font); letter-spacing: .06em; text-transform: uppercase; color: #fff; }
+.labmap-callout span { font: 500 13px/1.3 var(--hud-font); letter-spacing: .1em; text-transform: uppercase; color: var(--tone); }
+
+.labmap-list, .labmap-panel { position: absolute; top: 80px; bottom: 16px; z-index: 15; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 16px 40px #00000073; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.labmap-list { left: 16px; width: min(340px, calc(100% - 32px)); padding: 16px 12px; }
+.labmap-list[hidden] { display: none; }
+.labmap-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px 10px; }
+.labmap-list-head h2, .labmap-panel h2 { font-size: 19px; }
+.labmap .icon-button { width: 40px; height: 40px; background: var(--surface-subtle); border-color: transparent; color: var(--text); }
+.labmap .icon-button svg { width: 18px; height: 18px; }
+.labmap-tree, .labmap-tree ul { list-style: none; }
+.labmap-tree ul { margin-left: 13px; padding-left: 8px; border-left: 1px solid var(--line); }
+.labmap-tree button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 6px 8px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
+.labmap-tree button > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.labmap-tree button small { color: var(--muted); font-size: 12px; }
+.labmap-tree button:hover { background: var(--surface-subtle); }
+.labmap-tree button[aria-current] { background: var(--accent-soft); }
+.labmap-dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--tone, var(--dim)); }
+
+.labmap-panel { right: 16px; width: min(400px, calc(100% - 32px)); padding: 20px; display: grid; align-content: start; gap: 20px; }
+.labmap-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.labmap-panel h2 { overflow-wrap: anywhere; }
+.labmap-panel h2:focus { outline: none; }
+.labmap-panel h3 { font-size: 14px; font-weight: 650; letter-spacing: 0; margin-bottom: 10px; }
+.labmap-health { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--muted); font-size: 14px; }
+.labmap-route { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; }
+.labmap-route button { min-height: 32px; padding: 4px 11px; border: 1px solid color-mix(in srgb, var(--magenta) 45%, var(--line)); border-radius: 999px; background: none; color: var(--text); font-size: 13px; cursor: pointer; }
+.labmap-route button:hover { background: var(--surface-subtle); }
+.labmap-route button[aria-current] { border-color: var(--magenta); background: color-mix(in srgb, var(--magenta) 16%, var(--surface)); }
+.labmap-facts > div { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.labmap-facts > div:last-child { border-bottom: 1px solid var(--line); }
+.labmap-facts dt { color: var(--muted); font-size: 13px; }
+.labmap-facts dd { font-size: 14px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.labmap-containers, .labmap-members { list-style: none; }
+.labmap-containers li { display: grid; gap: 3px; padding: 10px 0; border-top: 1px solid var(--line); }
+.labmap-containers p { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.labmap-containers p span { color: var(--tone, var(--muted)); font-size: 13px; }
+.labmap-containers code { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.labmap-sub { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.labmap-members li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.labmap-members li > div { display: grid; min-width: 0; }
+.labmap-members strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.labmap-members span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.labmap-members select, .labmap-regroup select { flex-shrink: 0; max-width: 170px; min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-subtle); color: var(--text); font-size: 13px; }
+.labmap-regroup { margin-top: 10px; }
+.labmap-regroup:has(> .labmap-dot) { display: flex; align-items: center; gap: 10px; }
+.labmap-regroup > .labmap-dot { width: 12px; height: 12px; }
+.labmap-regroup:has(> .labmap-dot) select { flex: 1; width: auto; min-width: 0; }
+.labmap-regroup select { width: 100%; max-width: none; font-size: 14px; }
+.labmap-district-new { display: grid; gap: 6px; margin-top: 10px; }
+.labmap-district-new label { color: var(--muted); font-size: 13px; }
+.labmap-district-new div { display: flex; gap: 8px; }
+.labmap-district-new input { flex: 1; min-width: 0; min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-subtle); color: var(--text); font-size: 14px; }
+.labmap-error { color: #ffb4c2; font-size: 14px; }
+.labmap-mix { display: flex; gap: 2px; height: 10px; border-radius: 3px; overflow: hidden; }
+.labmap-mix span { min-width: 3px; }
+.labmap-mix-key, .labmap-ports { list-style: none; }
+.labmap-mix-key { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 13px; }
+.labmap-mix-key li, .labmap-ports li { display: flex; align-items: center; gap: 8px; }
+.labmap-mix-key b { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.labmap-ports li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.labmap-ports li:last-child { border-bottom: 1px solid var(--line); }
+.labmap-ports code { min-width: 5.5rem; font-size: 13px; font-variant-numeric: tabular-nums; }
+.labmap-ports small { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.labmap-legend { position: absolute; right: 16px; bottom: 16px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 14px; max-width: min(520px, calc(100% - 32px)); padding: 9px 14px; border: 1px solid #00f0ff38; background: #04050ad9; color: #b9d9de; font: 500 11px/1.4 var(--hud-font); letter-spacing: .07em; text-transform: uppercase; list-style: none; z-index: 5; }
+.labmap-legend li { display: flex; align-items: center; gap: 7px; }
+.labmap-car { width: 12px; height: 4px; border-radius: 2px; box-shadow: 0 0 6px currentColor; }
+.labmap-car[data-air] { width: 7px; height: 7px; border-radius: 50%; }
+.labmap-actions { display: grid; gap: 10px; }
+.labmap-actions .button { width: 100%; }
+.labmap-actions .secondary { background: var(--surface-subtle); border-color: var(--line); color: var(--text); }
+
+.labmap-flat { display: block; width: 100%; height: 100%; cursor: default; }
+.labmap-flat-hit { cursor: pointer; }
+.labmap-flat-label { fill: var(--hud); font: 500 1.5px var(--hud-font); letter-spacing: .12px; text-transform: uppercase; text-anchor: middle; pointer-events: none; }
+.labmap-flat-label[data-kind=network] { fill: var(--cyan); font-size: 2px; }
+.labmap-flat-label[data-kind=gateway] { font-size: 1.9px; }
+
+@media (min-width: 1800px) {
+  .labmap-plate { font-size: 13px; }
+  .labmap-plate span { font-size: 12px; }
+  .labmap-plate[data-kind=network], .labmap-plate[data-kind=gateway] { font-size: 16px; padding: 5px 11px 6px; }
+  .labmap-plate[data-kind=app] { font-size: 12px; }
+}
+@media (max-width: 700px) {
+  .labmap-toolbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+  .labmap-toolbar h1 { font-size: 18px; margin-right: auto; }
+  .labmap-search { order: 5; flex-basis: 100%; max-width: none; }
+  .labmap-tool, .labmap-layers summary { padding-inline: 11px; }
+  .labmap-layers fieldset { right: auto; left: 0; }
+  .labmap-list, .labmap-panel { left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 64%; border-radius: 18px 18px 0 0; border-bottom: 0; }
+  .labmap-panel { padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); }
+  .labmap[data-panel] .labmap-status { display: none; }
+  .labmap-status { left: 10px; bottom: 10px; max-width: calc(100% - 20px); padding: 8px 10px; }
+  .labmap-legend { top: 10px; bottom: auto; right: 10px; max-width: calc(100% - 20px); padding: 7px 10px; }
+  .labmap-callout strong { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .labmap-state-pulse { animation: none; opacity: .7; }
+  .labmap-tool, .labmap-layers summary { transition: none; }
+}

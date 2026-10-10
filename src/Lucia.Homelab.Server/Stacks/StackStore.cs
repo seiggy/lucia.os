@@ -46,7 +46,11 @@ public sealed record StackServiceStatus(string Service, string State, string? He
 public sealed record NodeStackStatus(string Name, string State, long? AppliedRevision, string? Message, StackServiceStatus[] Services,
     Guid? Received = null, NodeBackupStatus? Backup = null, Guid? Restored = null);
 public sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
-    string? Service, string? Ports);
+    string? Service, string? Ports, NodeContainerNetwork[]? Networks = null, NodeContainerMount[]? Mounts = null);
+/// <summary>A Docker network a container is attached to, and its IPv4 address there.</summary>
+public sealed record NodeContainerNetwork(string Name, string? Address);
+/// <summary>A container mount: its type (bind, volume, tmpfs…), host path or volume name, and path inside the container.</summary>
+public sealed record NodeContainerMount(string Type, string? Source, string Destination);
 public sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 /// <summary>What a node reports on each stack sync: its Lucia stacks, every container, every listening socket and its NAS mounts.</summary>
 /// <param name="Snapshots">Every Lucia snapshot in the backup repository, as this node last listed it.</param>
@@ -725,6 +729,19 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             Text(container.Project, 128);
             Text(container.Service, 128);
             Text(container.Ports, 1024);
+            HardwareInventoryValidation.Require(container is { Networks: null or { Length: <= 16 }, Mounts: null or { Length: <= 32 } },
+                "The container report is invalid.");
+            foreach (var network in container.Networks ?? [])
+            {
+                Text(network.Name, 128, true);
+                HardwareInventoryValidation.Require(network.Address is null || IPAddress.TryParse(network.Address, out _), "The container report is invalid.");
+            }
+            foreach (var mount in container.Mounts ?? [])
+            {
+                Text(mount.Type, 16, true);
+                Text(mount.Source, 512);
+                Text(mount.Destination, 512, true);
+            }
         }
         foreach (var listener in report.Listeners)
         {

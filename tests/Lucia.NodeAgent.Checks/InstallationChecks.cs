@@ -556,6 +556,24 @@ internal static class InstallationChecks
             "One-shot dependencies must come from the compose depends_on label.");
         Check(StackRunner.Health(containers[0].Status) == "healthy" && StackRunner.ExitCode(containers[1].Status) == 137
             && StackRunner.ExitCode(containers[0].Status) is null, "Container health or exit code parsing is wrong.");
+        var inspect = StackRunner.ParseInspect("""
+            {"id":"%ID%","networks":{"lucia-media_default":{"IPAddress":"172.18.0.4"},"lan":{"IPAddress":"192.168.0.50"},"none":{"IPAddress":""}},"mounts":[{"Type":"bind","Source":"/mnt/lucia/nas/nas1/media","Destination":"/media"},{"Type":"volume","Name":"lucia-media_config","Source":"/var/lib/docker/volumes/x/_data","Destination":"/config"},{"Type":"tmpfs","Destination":"/tmp"}]}
+            {"id":"../etc","networks":{},"mounts":[]}
+            not json
+            {"id":"%ID2%","networks":null,"mounts":"weird"}
+            """.Replace("%ID%", new string('a', 64)).Replace("%ID2%", new string('b', 64)));
+        Check(inspect.Count == 2 && inspect[new string('a', 64)] is var (nets, mounts)
+            && nets.SequenceEqual([new NodeContainerNetwork("lucia-media_default", "172.18.0.4"), new NodeContainerNetwork("lan", "192.168.0.50"),
+                new NodeContainerNetwork("none", null)])
+            && mounts.SequenceEqual([new NodeContainerMount("bind", "/mnt/lucia/nas/nas1/media", "/media"),
+                new NodeContainerMount("volume", "lucia-media_config", "/config"), new NodeContainerMount("tmpfs", null, "/tmp")])
+            && inspect[new string('b', 64)] is { Networks: [], Mounts: [] },
+            "docker inspect parsing lost container networks or mounts, or kept a bad line.");
+        var reported = System.Text.Json.JsonSerializer.Serialize(containers[1], AgentJson.Options);
+        Check(!reported.Contains("networks", StringComparison.Ordinal) && !reported.Contains("mounts", StringComparison.Ordinal)
+            && System.Text.Json.JsonSerializer.Serialize(containers[1] with { Networks = [new("lan", "192.168.0.50")], Mounts = [] }, AgentJson.Options)
+                .Contains("\"networks\":[{\"name\":\"lan\",\"address\":\"192.168.0.50\"}],\"mounts\":[]", StringComparison.Ordinal),
+            "Container networks and mounts must be left out of the report when inspect gave none, so older servers accept it.");
 
         var composeConfig = """
             {"name":"lucia-media","services":{},"volumes":{"config":{"name":"lucia-media_config"},"shared":{"name":"shared","external":true},

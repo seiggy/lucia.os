@@ -50,7 +50,8 @@ internal sealed record ManagedNodeRecord(Guid NodeId, Guid TaskId, string Hostna
     string CertificatePem, DateTimeOffset CertificateExpiresAt, DateTimeOffset? LastSeenAt, NodeHeartbeat? Status,
     string? Address = null, NodeGpuSettings? Gpu = null);
 public sealed record ManagedNodeAddress(string Hostname, string Address, Guid NodeId = default);
-public sealed record ManagedNodeFacts(Guid NodeId, string Hostname, bool Online, NodeHeartbeat? Status, NodeGpuSettings? Gpu = null);
+public sealed record ManagedNodeFacts(Guid NodeId, string Hostname, bool Online, NodeHeartbeat? Status, NodeGpuSettings? Gpu = null,
+    DateTimeOffset? LastSeenAt = null, string? Address = null);
 
 public sealed class ManagedNodeEnrollment(
     HardwareOnboardingStore onboarding, IOptions<HardwareOnboardingOptions> options, HostAuthenticationOptions authentication)
@@ -111,7 +112,7 @@ public sealed class ManagedNodeEnrollment(
     /// <summary>What placement needs to know about each node: its last report and whether it's checking in.</summary>
     public async Task<ManagedNodeFacts[]> Facts(CancellationToken ct) =>
         (await Records(ct)).Select(node => new ManagedNodeFacts(node.NodeId, node.Hostname,
-            node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2), node.Status, node.Gpu)).ToArray();
+            node.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-2), node.Status, node.Gpu, node.LastSeenAt, node.Address)).ToArray();
 
     public async Task<NodeGpuSettings> SaveGpu(Guid id, SaveNodeGpuRequest request, CancellationToken ct)
     {

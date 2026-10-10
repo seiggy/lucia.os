@@ -82,8 +82,8 @@ public sealed partial class StackStore
                 && await LlamaModels(nodeId, node, port, key, ct) is { Length: > 0 } models)
                 scrapes.Add(new("llama-cpp", target, models));
         }
-        var config = TelemetryRelay.Config(JsonSerializer.Serialize(hostname), gpu, scrapes, TelemetryRelay.EnvExporter);
-        var compose = TelemetryRelay.Compose(config, gpu);
+        var config = TelemetryRelay.Config(JsonSerializer.Serialize(hostname), gpu, scrapes, TelemetryRelay.EnvExporter, dockerStats: true);
+        var compose = TelemetryRelay.Compose(config, gpu, dockerStats: true);
         var env = $"OTLP_ENDPOINT={destination.Endpoint.AbsoluteUri.TrimEnd('/')}\nOTLP_AUTHORIZATION={destination.Authorization}\nLOCAL_AI_KEY={key}\n";
         var revision = BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(compose + "\0" + env))) & long.MaxValue;
         return new(RelayName, revision, "Running", 0, 0, compose, env);

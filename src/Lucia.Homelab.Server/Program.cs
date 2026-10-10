@@ -4,6 +4,7 @@ using Lucia.Homelab.Server.Boot;
 using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Telemetry;
 using Lucia.Homelab.Server.Domains;
+using Lucia.Homelab.Server.LabMap;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Packages;
 using Lucia.Homelab.Server.Stacks;
@@ -59,6 +60,7 @@ builder.AddSparkTelemetry();
 builder.AddControllerRelay();
 builder.AddPackageUpdates();
 builder.AddAssistant();
+builder.AddLabMap();
 
 var app = builder.Build();
 TelemetryForwarder.Destination = app.Services.GetRequiredService<StackStore>().TelemetryEndpoint;
@@ -88,6 +90,7 @@ app.MapSparkTelemetry();
 app.MapControllerRelay();
 app.MapPackageUpdates();
 app.MapAssistant();
+app.MapLabMap();
 
 app.MapDevelopmentApiDocumentation();
 

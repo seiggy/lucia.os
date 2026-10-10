@@ -372,6 +372,23 @@ internal static class StackChecks
             && !relayCompose.Contains("gpu-exporter", StringComparison.Ordinal)
             && Lucia.Homelab.Server.Telemetry.TelemetryRelay.Compose(relayConfig, gpu: true).Contains("  gpu-exporter:\n", StringComparison.Ordinal),
             "The relay's compose must escape its config and run the GPU exporter only with a GPU.");
+        var dockerRelay = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Config("\"lucialab01\"", false, [],
+            Lucia.Homelab.Server.Telemetry.TelemetryRelay.EnvExporter, dockerStats: true);
+        var dockerCompose = Lucia.Homelab.Server.Telemetry.TelemetryRelay.Compose(dockerRelay, gpu: false, dockerStats: true);
+        check(dockerRelay.Contains("\n  docker_stats:\n    endpoint: unix:///var/run/docker.sock\n    collection_interval: 30s\n", StringComparison.Ordinal)
+            && dockerRelay.Contains("receivers: [otlp, prometheus, docker_stats]", StringComparison.Ordinal)
+            && dockerRelay.Contains("container.network.io.usage.rx_bytes:\n        enabled: true", StringComparison.Ordinal)
+            && dockerCompose.Contains("    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n", StringComparison.Ordinal)
+            && dockerCompose.Contains("    cap_drop: [ALL]\n", StringComparison.Ordinal)
+            && !relayConfig.Contains("docker_stats", StringComparison.Ordinal) && !relayCompose.Contains("docker.sock", StringComparison.Ordinal),
+            "A node's relay must read container stats through a read-only Docker socket with no capabilities, and only when asked.");
+        StackStore.ValidateReport(report with { Containers = [new(new string('a', 64), "n", "i", "running", null, null, null, null,
+            [new("lan", "192.168.0.50"), new("bridge", null)], [new("bind", "/mnt/lucia/nas/n/s", "/media")])] });
+        check(true, "A container report with networks and mounts was rejected.");
+        Rejects(() => StackStore.ValidateReport(report with { Containers = [new(new string('a', 64), "n", "i", "running", null, null, null, null,
+            [new("lan", "not-an-ip")])] }), "A container network with a malformed address was accepted.");
+        Rejects(() => StackStore.ValidateReport(report with { Containers = [new(new string('a', 64), "n", "i", "running", null, null, null, null,
+            null, [.. Enumerable.Range(0, 33).Select(i => new NodeContainerMount("bind", "/x", "/y" + i))])] }), "Too many container mounts were accepted.");
         var adguard = StackCatalog.Find("adguard");
         var adguardCompose = adguard.Render(StackCatalog.Settings(adguard, null), null!, new Dictionary<string, string>()).Compose;
         check(adguard.UsesAddress && !adguard.ServerBound && adguardCompose.Contains("      - \"${LUCIA_ADDRESS}:53:53/udp\"\n", StringComparison.Ordinal)

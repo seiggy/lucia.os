@@ -31,8 +31,25 @@ internal static class TelemetryRelay
         """;
 
     /// <param name="node">The machine's name as a YAML scalar, quoted.</param>
-    internal static string Config(string node, bool gpu, IEnumerable<RelayScrape> apps, string exporter)
+    /// <param name="dockerStats">Read each container's CPU, memory and network counters from the Docker socket, which
+    /// <see cref="Compose"/> then mounts. Each series carries the container's name as <c>container.name</c>.</param>
+    internal static string Config(string node, bool gpu, IEnumerable<RelayScrape> apps, string exporter, bool dockerStats = false)
     {
+        var docker = dockerStats ? """
+              docker_stats:
+                endpoint: unix:///var/run/docker.sock
+                collection_interval: 30s
+                metrics:
+                  container.cpu.utilization:
+                    enabled: true
+                  container.memory.percent:
+                    enabled: true
+                  container.network.io.usage.rx_bytes:
+                    enabled: true
+                  container.network.io.usage.tx_bytes:
+                    enabled: true
+
+            """ : "";
         const string Auth = "  authorization:\n    credentials: ${env:LOCAL_AI_KEY}\n";
         var instance = $"    - target_label: instance\n      replacement: {node}\n";
         string Job(string name, string targets, string extra = "", string relabel = "", string discovery = "static_configs") =>
@@ -58,7 +75,7 @@ internal static class TelemetryRelay
                     scrape_interval: 30s
                   scrape_configs:
             {Indent(jobs.TrimEnd(), 6)}
-            processors:
+            {docker}processors:
               memory_limiter:
                 check_interval: 1s
                 limit_mib: 200
@@ -86,7 +103,7 @@ internal static class TelemetryRelay
                   processors: [memory_limiter, resource, batch]
                   exporters: [otlp_http]
                 metrics:
-                  receivers: [otlp, prometheus]
+                  receivers: [otlp, prometheus{(dockerStats ? ", docker_stats" : "")}]
                   processors: [memory_limiter, resource, batch]
                   exporters: [otlp_http]
                 logs:
@@ -98,7 +115,8 @@ internal static class TelemetryRelay
     }
 
     /// <summary>The relay as a compose project for a managed server. Everything shares the host's network and binds to loopback.</summary>
-    internal static string Compose(string config, bool gpu) => $$"""
+    /// <param name="dockerStats">Mount the Docker socket for <see cref="Config"/>'s <c>docker_stats</c> receiver.</param>
+    internal static string Compose(string config, bool gpu, bool dockerStats = false) => $$"""
         # Lucia's telemetry relay. Lucia runs it on every server while an Observability app is installed, and rewrites it
         # when the app, the server's GPUs or Local AI change.
         services:
@@ -115,7 +133,17 @@ internal static class TelemetryRelay
             configs:
               - source: collector
                 target: /etc/otelcol-contrib/config.yaml
-          node-exporter:
+        {{(dockerStats ? """
+                # docker_stats reads the Docker socket (root:docker, 0660). The docker group's id differs per machine and the
+                # image has no such group to add by name, so the collector runs as root with every capability dropped instead;
+                # anything that can read this socket controls Docker anyway.
+                user: "0:0"
+                cap_drop: [ALL]
+                security_opt: [no-new-privileges:true]
+                volumes:
+                  - /var/run/docker.sock:/var/run/docker.sock:ro
+
+            """ : "")}}  node-exporter:
             image: {{NodeExporter}}
             restart: unless-stopped
             network_mode: host

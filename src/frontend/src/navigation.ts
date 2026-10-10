@@ -19,6 +19,7 @@ export const areas: { id: AreaId; label: string; description: string }[] = [
 export const destinations: Destination[] = [
   { page: 'home', area: 'overview', label: 'Home', description: 'Spark health and available tools', href: '#/', keywords: 'dashboard metrics health gpu cpu memory' },
   { page: 'devices', area: 'lab', label: 'Devices', description: 'Discover and review hardware', href: '#/devices', ownerOnly: true, keywords: 'pxe servers onboarding hardware' },
+  { page: 'map', area: 'lab', label: 'Map', description: 'Your network, servers, and apps as one live world', href: '#/map', ownerOnly: true, keywords: 'topology network vlan unifi switch access point wallboard traffic diagram clients' },
   { page: 'tasks', area: 'lab', label: 'Installation tasks', description: 'Hardware approvals and observations', href: '#/tasks', ownerOnly: true, keywords: 'progress approvals jobs installation' },
   { page: 'apps', area: 'lab', label: 'Apps', description: 'Run container apps on your servers', href: '#/apps', ownerOnly: true, keywords: 'stacks docker compose containers services self-hosted logs ports listening' },
   { page: 'updates', area: 'lab', label: 'Spark updates', description: 'OS and platform package updates', href: '#/updates', ownerOnly: true, keywords: 'apt packages security kernel nvidia cuda driver reboot restart schedule maintenance upgrade' },

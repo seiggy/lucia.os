@@ -13,7 +13,13 @@ internal sealed record StackServiceStatus(string Service, string State, string? 
 internal sealed record NodeStackStatus(string Name, string State, long? AppliedRevision, string? Message, StackServiceStatus[] Services,
     Guid? Received = null, NodeBackupStatus? Backup = null, Guid? Restored = null);
 internal sealed record NodeContainer(string Id, string Name, string Image, string State, string? Status, string? Project,
-    string? Service, string? Ports, [property: System.Text.Json.Serialization.JsonIgnore] string[]? Awaits = null);
+    string? Service, string? Ports, [property: System.Text.Json.Serialization.JsonIgnore] string[]? Awaits = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    NodeContainerNetwork[]? Networks = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    NodeContainerMount[]? Mounts = null);
+internal sealed record NodeContainerNetwork(string Name, string? Address);
+internal sealed record NodeContainerMount(string Type, string? Source, string Destination);
 internal sealed record NodeListener(string Protocol, string Address, int Port, string? Process = null, string? ContainerId = null);
 internal sealed record SocketOwner(string Process, string? ContainerId);
 internal sealed record NodeStackReport(NodeStackStatus[] Stacks, NodeContainer[] Containers, NodeListener[] Listeners,
@@ -419,9 +425,58 @@ internal static partial class StackRunner
         return result.Count == 0 ? null : (new JsonObject { ["volumes"] = result }.ToJsonString(), paths.ToArray());
     }
 
-    internal static async Task<NodeContainer[]> ContainersAsync(CancellationToken token) =>
-        ParseContainers(await Commands.RunAsync("/usr/bin/docker", ["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+    internal static async Task<NodeContainer[]> ContainersAsync(CancellationToken token)
+    {
+        var containers = ParseContainers(await Commands.RunAsync("/usr/bin/docker", ["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
             TimeSpan.FromSeconds(30), token, keep: 2 * 1024 * 1024));
+        if (containers.Length == 0) return containers;
+        // One inspect for every container's networks and mounts, which the lab map draws. A container that went away since
+        // ps makes inspect fail but still prints the rest; without any output the report goes without them.
+        try
+        {
+            var details = ParseInspect((await Commands.CaptureAsync("/usr/bin/docker",
+                ["inspect", "--type", "container", "--format", InspectFormat, .. containers.Select(container => container.Id)],
+                TimeSpan.FromSeconds(30), token, 4 * 1024 * 1024, failOnError: false)).Stdout);
+            return [.. containers.Select(container => details.TryGetValue(container.Id, out var detail)
+                ? container with { Networks = detail.Networks, Mounts = detail.Mounts } : container)];
+        }
+        catch (Exception ex) when (ex is NodeAgentException or IOException or System.ComponentModel.Win32Exception) { return containers; }
+    }
+
+    internal const string InspectFormat = """{"id":{{json .Id}},"networks":{{json .NetworkSettings.Networks}},"mounts":{{json .Mounts}}}""";
+
+    /// <summary>Parses <c>docker inspect --format <see cref="InspectFormat"/></c>, one container per line; bad lines are skipped.</summary>
+    internal static Dictionary<string, (NodeContainerNetwork[] Networks, NodeContainerMount[] Mounts)> ParseInspect(string output)
+    {
+        var result = new Dictionary<string, (NodeContainerNetwork[], NodeContainerMount[])>(StringComparer.Ordinal);
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (result.Count == 256) break;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var item = document.RootElement;
+                if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("id", out var idValue) || idValue.ValueKind != JsonValueKind.String
+                    || idValue.GetString() is not { } id || !ContainerIdPattern().IsMatch(id))
+                    continue;
+                static string? Text(JsonElement element, string name) =>
+                    element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                        ? value.GetString() : null;
+                var networks = item.TryGetProperty("networks", out var nets) && nets.ValueKind == JsonValueKind.Object
+                    ? nets.EnumerateObject().Take(16).Select(net => Bounded(net.Name, 128) is { } name
+                        ? new NodeContainerNetwork(name, IPAddress.TryParse(Text(net.Value, "IPAddress") ?? "", out var address) ? address.ToString() : null)
+                        : null).OfType<NodeContainerNetwork>().ToArray() : [];
+                var mounts = item.TryGetProperty("mounts", out var list) && list.ValueKind == JsonValueKind.Array
+                    ? list.EnumerateArray().Take(32).Select(mount => Bounded(Text(mount, "Destination"), 512) is { } destination
+                        ? new NodeContainerMount(Bounded(Text(mount, "Type"), 16) ?? "unknown",
+                            Bounded(Text(mount, "Type") == "volume" ? Text(mount, "Name") ?? Text(mount, "Source") : Text(mount, "Source"), 512), destination)
+                        : null).OfType<NodeContainerMount>().ToArray() : [];
+                result[id] = (networks, mounts);
+            }
+            catch (JsonException) { }
+        }
+        return result;
+    }
 
     /// <summary>Parses <c>docker ps -a --no-trunc --format '{{json .}}'</c>.</summary>
     internal static NodeContainer[] ParseContainers(string output)

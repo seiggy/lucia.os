@@ -17,7 +17,7 @@ import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationTitl
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool'
 import { SelectGroup, SelectLabel } from './components/ui/select'
 import {
-  approvalNote, chatKey, chatTitle, chooseModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute,
+  approvalNote, askEvent, chatKey, chatTitle, chooseModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, takeAsk,
   parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
   waitingPart, waitingParts,
 } from './assistant'
@@ -433,9 +433,10 @@ type ChatViewProps = {
   onReload: () => void
   onFailed: () => void
   onWaiting: (count: number, message?: string) => void
+  prompt?: string
 }
 
-function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed, onWaiting }: ChatViewProps) {
+function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed, onWaiting, prompt }: ChatViewProps) {
   const draft = usePromptInputController()
   const input = useRef<HTMLTextAreaElement>(null)
   const composer = useRef<HTMLDivElement>(null)
@@ -540,6 +541,12 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     setSent(true)
     void sendMessage({ text }, request())
   }
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!prompt || asked.current || !canAsk || messages.length) return
+    asked.current = true
+    send(prompt)
+  })
   function submit({ text }: PromptInputMessage) {
     // Throwing keeps the draft in the composer.
     if (!canAsk || !text.trim()) throw new Error('This message cannot be sent yet.')
@@ -769,7 +776,10 @@ function savedChat() {
 export default function AssistantPanel({ session, refreshSession, page, side, layout, onMove, onClose, focusToken, onWaiting }: PanelProps) {
   const auth = useRef<Auth>({ session, refreshSession })
   useLayoutEffect(() => { auth.current = { session, refreshSession } }, [session, refreshSession])
-  const [chat, setChat] = useState(savedChat)
+  const [chat, setChat] = useState<{ id: string; fresh: boolean; nonce: number; prompt?: string }>(() => {
+    const text = takeAsk()
+    return text ? { id: newChatId(), fresh: true, nonce: 0, prompt: text } : savedChat()
+  })
   const [view, setView] = useState<'chat' | 'history'>('chat')
   const [title, setTitle] = useState(() => chat.fresh ? 'New chat' : 'Chat')
   const [models, setModels] = useState<AssistantModels | null>(null)
@@ -835,7 +845,19 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
       if (isChatId(id)) openRef.current({ id, title: 'Chat', updated: '', running: false })
     }
     window.addEventListener(openChatEvent, open)
-    return () => window.removeEventListener(openChatEvent, open)
+    const ask = () => {
+      const text = takeAsk()
+      if (!text) return
+      setChat(current => ({ id: newChatId(), fresh: true, nonce: current.nonce + 1, prompt: text }))
+      setTitle('New chat')
+      setView('chat')
+      setFocusCount(count => count + 1)
+    }
+    window.addEventListener(askEvent, ask)
+    return () => {
+      window.removeEventListener(openChatEvent, open)
+      window.removeEventListener(askEvent, ask)
+    }
   }, [])
   function toggleHistory() {
     if (view === 'chat') return setView('history')
@@ -867,7 +889,7 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
       </header>
       <ChatView key={`${chat.id}:${chat.nonce}`} id={chat.id} fresh={chat.fresh} hidden={view === 'history'} auth={auth} page={page}
         github={github} models={models} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
-        focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} onWaiting={onWaiting} />
+        focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} onWaiting={onWaiting} prompt={chat.prompt} />
       {view === 'history' && <ChatHistory auth={auth} current={chat.id} focusKey={focusToken} onOpen={openChat}
         onForget={id => { if (id === chat.id) startChat() }} />}
       {view === 'history' && <GitHubAccount github={github} />}

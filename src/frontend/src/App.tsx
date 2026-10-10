@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { LocalAI } from './LocalAI'
 import { HardwareOnboarding } from './HardwareOnboarding'
@@ -8,7 +8,7 @@ import { ModelManager } from './ModelManager'
 import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
 import { AssistantDock } from './AssistantDock'
-import { openAssistantChat, openChatEvent, parseDock } from './assistant'
+import { askEvent, openAssistantChat, openChatEvent, parseDock } from './assistant'
 import type { DockState } from './assistant'
 import { AdGuardSettings } from './AdGuardSettings'
 import { UniFiSettings } from './UniFiSettings'
@@ -31,6 +31,8 @@ import type { HostedModel } from './playground'
 import { defaultPreferences, parseRoute, themeColors, themes, validatePreferences } from './dashboard'
 import type { Appearance, Preferences } from './dashboard'
 import './App.css'
+
+const LabMap = lazy(() => import('./LabMap'))
 
 // Retain existing appearance choices while removing the old preview experience.
 const preferenceKey = 'lucia.preview.appearance.v1'
@@ -173,11 +175,13 @@ function App() {
     }
     const open = () => setDock(current => current.open ? current : { ...current, open: true })
     window.addEventListener(openChatEvent, open)
+    window.addEventListener(askEvent, open)
     linkedChat()
     window.addEventListener('hashchange', navigate)
     return () => {
       window.removeEventListener('hashchange', navigate)
       window.removeEventListener(openChatEvent, open)
+      window.removeEventListener(askEvent, open)
     }
   }, [])
   useEffect(() => {
@@ -225,6 +229,7 @@ function App() {
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
       : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
+      : route.page === 'map' ? <Suspense fallback={<div className="page-intro"><h1>Map</h1><p>Loading the lab map…</p></div>}><LabMap session={session} refreshSession={authentication.refresh} /></Suspense>
       : route.page === 'apps' ? <Stacks key={`${route.view}-${route.name ?? ''}`} session={session} refreshSession={authentication.refresh} view={route.view} name={route.name} node={route.node} />
       : route.page === 'settings' ? settings()
         : route.page === 'unifi-settings' ? <UniFiSettings session={session} refreshSession={authentication.refresh} />

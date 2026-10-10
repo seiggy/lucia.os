@@ -241,6 +241,28 @@ public sealed class AdGuardConnectionService : ILocalDnsProvider
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Reads the query log newest first, a page at a time: <paramref name="page"/> takes each page and returns the time to read
+    /// older entries from, or null to stop. False when AdGuard isn't connected.
+    /// </summary>
+    internal async Task<bool> ReadQueryLogAsync(int limit, int pages, Func<byte[], string?> page, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await _store.ReadAsync(cancellationToken);
+            if (record?.State != "configured") return false;
+            return await _transport.RunAsync(record, async (session, ct) =>
+            {
+                string? olderThan = null;
+                for (var i = 0; i < pages && (i == 0 || olderThan is not null); i++)
+                    olderThan = page(await session.QueryLogAsync(limit, olderThan, ct));
+                return true;
+            }, cancellationToken, _primary);
+        }
+        finally { _gate.Release(); }
+    }
+
     /// <summary>Whether the instance at this address answers as the connection's account with DNS running.</summary>
     internal async Task<bool> ProbeAsync(IPAddress address, CancellationToken cancellationToken)
     {

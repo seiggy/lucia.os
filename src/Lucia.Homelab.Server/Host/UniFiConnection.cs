@@ -29,6 +29,12 @@ public sealed record UniFiConnectionStatus(bool Configured, string? BaseUrl, str
 
 /// <summary>A UniFi client as seen in the known-client table (<c>rest/user</c>) or the live table (<c>stat/sta</c>).</summary>
 public sealed record UniFiClient(string Id, string Mac, string? Address, string? NetworkId, bool UseFixedIp, string? FixedIp);
+/// <summary>
+/// Raw rows of UniFi's device, network, zone and client tables; every field is optional and versions differ.
+/// <paramref name="Active"/> is the v2 client lists (online, then the last 30 days), read only for UniFi's fingerprint product name (<c>model_name</c>).
+/// </summary>
+public sealed record UniFiTopology(string Site, JsonElement[] Devices, JsonElement[] Networks, JsonElement[] Zones, JsonElement[] Online, JsonElement[] Known,
+    JsonElement[]? Active = null);
 
 public sealed class UniFiException(int statusCode, string code, string message, string? certificateSha256 = null) : Exception(message)
 {
@@ -156,6 +162,37 @@ public sealed class UniFiConnectionService : IDhcpReservations
             var record = Require();
             return await _transport.RunAsync(record.BaseUrl, record.ApiKey, record.CertificateSha256, async (session, token) =>
                 (await session.ClientsAsync(record.Site, "rest/user", token), await session.ClientsAsync(record.Site, "stat/sta", token)), ct);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Everything the lab map draws from UniFi, read-only and as UniFi sent it: adopted devices, networks, firewall zones
+    /// (empty on versions without them), online clients and known clients. Null when UniFi isn't connected.
+    /// </summary>
+    public async Task<UniFiTopology?> ReadTopologyAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (Read() is not { } record) return null;
+            var site = record.Site;
+            return await _transport.RunAsync(record.BaseUrl, record.ApiKey, record.CertificateSha256, async (session, token) =>
+            {
+                JsonElement[] zones, active;
+                try { zones = await session.RowsAsync($"/proxy/network/v2/api/site/{site}/firewall/zone", token); }
+                catch (UniFiException error) when (error.Code is "unifi_api_unavailable" or "unifi_unavailable" or "invalid_unifi_response") { zones = []; }
+                try
+                {
+                    active = [.. await session.RowsAsync($"/proxy/network/v2/api/site/{site}/clients/active", token),
+                        .. await session.RowsAsync($"/proxy/network/v2/api/site/{site}/clients/history?withinHours=720", token)];
+                }
+                catch (UniFiException error) when (error.Code is "unifi_api_unavailable" or "unifi_unavailable" or "invalid_unifi_response") { active = []; }
+                return new UniFiTopology(site, await session.RowsAsync($"/proxy/network/api/s/{site}/stat/device", token),
+                    await session.RowsAsync($"/proxy/network/api/s/{site}/rest/networkconf", token), zones,
+                    await session.RowsAsync($"/proxy/network/api/s/{site}/stat/sta", token),
+                    await session.RowsAsync($"/proxy/network/api/s/{site}/rest/user", token), active);
+            }, ct);
         }
         finally { _gate.Release(); }
     }
@@ -394,6 +431,15 @@ internal sealed class UniFiSession(HttpClient http, string baseUrl, string apiKe
     {
         using var document = await SendAsync(HttpMethod.Get, $"/proxy/network/api/s/{site}/rest/portforward", null, ct);
         return [.. Data(document).Select(item => UniFiValidation.Id(Text(item, "_id")) ? item.Clone() : throw InvalidResponse())];
+    }
+
+    /// <summary>A read-only table's rows as UniFi sent them, from <c>{"data":[...]}</c> or a bare array; rows that aren't objects are dropped.</summary>
+    internal async Task<JsonElement[]> RowsAsync(string path, CancellationToken ct)
+    {
+        using var document = await SendAsync(HttpMethod.Get, path, null, ct);
+        var root = document.RootElement;
+        var rows = root.ValueKind == JsonValueKind.Array && root.GetArrayLength() <= 20000 ? root.EnumerateArray() : Data(document);
+        return [.. rows.Where(row => row.ValueKind == JsonValueKind.Object).Select(row => row.Clone())];
     }
 
     internal async Task SavePortForwardAsync(string site, string? id, Dictionary<string, object> body, CancellationToken ct)

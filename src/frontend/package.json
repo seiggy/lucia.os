@@ -10,11 +10,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "tsc src/dashboard.ts src/navigation.ts src/playground.ts src/authentication.ts src/onboarding.ts src/sparkTelemetry.ts src/modelManagement.ts src/networkManagement.ts src/packageUpdates.ts src/stackManagement.ts src/directory.ts src/assistant.ts src/assistantJobs.ts --outDir .checks --module nodenext --target es2022 --skipLibCheck && node tests/dashboard.test.mjs && node tests/navigation.test.mjs && node tests/playground.test.mjs && node tests/authentication.test.mjs && node tests/onboarding.test.mjs && node tests/sparkTelemetry.test.mjs && node tests/modelManagement.test.mjs && node tests/networkManagement.test.mjs && node tests/packageUpdates.test.mjs && node tests/stackManagement.test.mjs && node tests/directory.test.mjs && node tests/assistant.test.mjs && node tests/assistantJobs.test.mjs",
+    "test": "tsc src/dashboard.ts src/navigation.ts src/playground.ts src/authentication.ts src/onboarding.ts src/sparkTelemetry.ts src/modelManagement.ts src/networkManagement.ts src/packageUpdates.ts src/stackManagement.ts src/directory.ts src/assistant.ts src/assistantJobs.ts src/labMapModel.ts --outDir .checks --module nodenext --target es2022 --skipLibCheck && node tests/dashboard.test.mjs && node tests/navigation.test.mjs && node tests/playground.test.mjs && node tests/authentication.test.mjs && node tests/onboarding.test.mjs && node tests/sparkTelemetry.test.mjs && node tests/modelManagement.test.mjs && node tests/networkManagement.test.mjs && node tests/packageUpdates.test.mjs && node tests/stackManagement.test.mjs && node tests/directory.test.mjs && node tests/assistant.test.mjs && node tests/assistantJobs.test.mjs && node tests/labMapModel.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.126",
+    "@fontsource/chakra-petch": "^5.3.0",
     "@radix-ui/react-use-controllable-state": "^1.2.6",
     "@streamdown/code": "^2.0.0",
     "ai": "^7.0.123",
@@ -28,6 +29,7 @@
     "react-dom": "^19.2.1",
     "streamdown": "^2.7.0",
     "tailwind-merge": "^3.7.0",
+    "three": "^0.186.1",
     "use-stick-to-bottom": "^1.1.6"
   },
   "devDependencies": {
@@ -36,6 +38,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.0.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^5.2.0",

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Avalonia;
@@ -54,6 +55,8 @@ internal static class Program
         AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
         var window = new MainWindow();
         window.Show();
+        if (screenshots is not null)
+            window.SetRenderScaling(2);
         Dispatcher.UIThread.RunJobs();
         Check(window.CurrentStep == 0 && Get<StackPanel>(window, "ConnectPage").IsVisible, "The app starts at connection, with no remote activity.");
         Check(Get<TextBox>(window, "SshPasswordInput").PasswordChar != default, "SSH password is masked.");
@@ -64,6 +67,8 @@ internal static class Program
         Check(placeholder.Opacity == 1, "Placeholders do not halve the accessible foreground contrast.");
         CheckPlaceholderContrast(window);
         Capture(window, screenshots, "connect-light");
+        if (screenshots is not null)
+            CaptureHostKey(window, screenshots);
 
         window.ShowInspection(fresh);
         Check(window.CurrentStep == 1 && !Get<Button>(window, "ContinueButton").IsEnabled, "Inspection requires review approval.");
@@ -77,6 +82,8 @@ internal static class Program
         Get<Button>(window, "ContinueButton").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
         Check(window.CurrentStep == 2, "Review leads to creating the owner as part of setup.");
         Capture(window, screenshots, "owner-light");
+        if (screenshots is not null)
+            CaptureSetup(window, screenshots);
         window.ShowInspection(fresh with { CanInstall = false, Checks = [new("Docker", "blocked", "Resolve Docker access before proceeding.")] });
         Get<CheckBox>(window, "ReviewConsent").IsChecked = true;
         Check(!Get<Button>(window, "ContinueButton").IsEnabled, "Approval cannot bypass a prerequisite blocker.");
@@ -110,6 +117,8 @@ internal static class Program
         Check(Get<TextBox>(window, "AuthentikAddress").Text == result.AuthentikUrl, "Finish shows the actual endpoint.");
         Check(Get<TextBox>(window, "HostAddress").Text == result.HostUrl && Equals(Get<Button>(window, "ContinueButton").Content, "Open Lucia"),
             "Finish opens the managed Lucia host, not the Authentik administration page.");
+        if (screenshots is not null)
+            window.ShowInstallation(result with { OwnerUsername = "alex" });
         Capture(window, screenshots, "finish-light");
         Application.Current!.RequestedThemeVariant = ThemeVariant.Dark;
         window.Width = 780;
@@ -151,10 +160,89 @@ internal static class Program
             return;
         Get<TextBlock>(window, "ScopeCaption").Text = "Synthetic UI fixture - no network or certificate-trust changes";
         Dispatcher.UIThread.RunJobs();
+        for (var tick = 0; tick < 30; tick++)
+        {
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(15);
+        }
         using var bitmap = window.CaptureRenderedFrame() ?? throw new InvalidOperationException("UI check frame did not render.");
         bitmap.Save(Path.Combine(directory, name + ".png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
         var text = Get<TextBlock>(window, "FinishDescription");
         Console.WriteLine($"{name}: body font {new Avalonia.Media.Typeface(text.FontFamily, text.FontStyle, text.FontWeight).GlyphTypeface.FamilyName}");
+    }
+
+    // Sample screenshots of states the real flow reaches only over SSH: an unverified host key, a filled-in owner, and setup progress.
+    private static void CaptureHostKey(MainWindow window, string directory)
+    {
+        var pending = typeof(MainWindow).GetField("_pendingKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var fingerprint = "SHA256:" + Convert.ToBase64String(SHA256.HashData("Lucia sample host key"u8)).TrimEnd('=');
+        Get<TextBox>(window, "HostInput").Text = "spark.local";
+        Get<TextBox>(window, "SshUsernameInput").Text = "alex";
+        Get<TextBox>(window, "SshPasswordInput").Text = "sample-password";
+        pending.SetValue(window, new HostKeyInfo("spark.local", 22, "ssh-ed25519", fingerprint));
+        Get<TextBlock>(window, "HostKeyTarget").Text = "spark.local:22 · ssh-ed25519";
+        Get<TextBox>(window, "HostKeyFingerprint").Text = fingerprint;
+        Get<Border>(window, "HostKeyPanel").IsVisible = true;
+        Get<CheckBox>(window, "HostKeyConsent").IsChecked = true;
+        Dispatcher.UIThread.RunJobs();
+        Get<Border>(window, "HostKeyPanel").BringIntoView();
+        Capture(window, directory, "hostkey-light");
+        pending.SetValue(window, null);
+        Get<Border>(window, "HostKeyPanel").IsVisible = false;
+        Get<CheckBox>(window, "HostKeyConsent").IsChecked = false;
+        foreach (var name in new[] { "HostInput", "SshUsernameInput", "SshPasswordInput" })
+            Get<TextBox>(window, name).Text = "";
+        Dispatcher.UIThread.RunJobs();
+    }
+
+    private static void CaptureSetup(MainWindow window, string directory)
+    {
+        Get<TextBox>(window, "OwnerUsernameInput").Text = "alex";
+        Get<TextBox>(window, "OwnerPasswordInput").Text = "a-long-sample-passphrase";
+        Get<TextBox>(window, "ConfirmPasswordInput").Text = "a-long-sample-passphrase";
+        Get<TextBox>(window, "PublicHostInput").Text = "spark.local";
+        Capture(window, directory, "owner-filled-light");
+
+        // The real client and bootstrap job messages, in the order a fresh setup reports them.
+        string[] steps =
+        [
+            "Packaging the reviewed bootstrap source.",
+            "Verifying the host runtime package before upload.",
+            "Monitoring the durable Spark job. Cancelling stops monitoring, not remote work.",
+            "Reviewed setup accepted; remote work continues if you disconnect.",
+            "Rechecking reviewed host state before making changes.",
+            "Preparing identity inputs while preserving existing credentials and trust.",
+            "Publishing the Identity AppHost from its stable user-local path.",
+            "Deploying CA, LDAP and Authentik containers with their persistent storage.",
+            "Verifying the private CA and service certificate; client trust is unchanged.",
+            "Verifying directory service access over trusted LDAPS.",
+            "Reconciling the verified LDAP source and waiting for actual synchronization.",
+            "Enrolling the directory owner without resetting any existing password.",
+            "Verifying real LDAP-backed owner sign-in and revoking the verification session.",
+            "Preparing stable local OIDC credentials; existing client secrets and identity passwords are preserved.",
+            "Publishing the managed host and gateway on the existing identity network.",
+            "Deploying the managed host with NVIDIA CDI and HTTPS port 443; identity storage stays in place.",
+        ];
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(MainWindow).GetMethod("ShowStep", flags)!.Invoke(window, [3]);
+        typeof(MainWindow).GetMethod("StartOperation", flags)!.Invoke(window, []);
+        var log = Get<TextBox>(window, "EventLog");
+        log.Text = string.Join(Environment.NewLine, steps.Select((step, index) => $"{new TimeSpan(14, 2, 10 + index * 23):hh\\:mm\\:ss}  {step}"));
+        Get<TextBlock>(window, "CurrentOperation").Text = steps[^1];
+        Get<TextBlock>(window, "ElapsedText").Text = "Elapsed 6:12";
+        Get<ProgressBar>(window, "InstallProgress").IsVisible = true;
+        Capture(window, directory, "progress-light");
+        var details = window.GetVisualDescendants().OfType<Expander>().Single(expander => Equals(expander.Header, "Setup details"));
+        details.IsExpanded = true;
+        Dispatcher.UIThread.RunJobs();
+        log.CaretIndex = log.Text.Length;
+        log.BringIntoView();
+        Capture(window, directory, "progress-details-light");
+        details.IsExpanded = false;
+        Get<ProgressBar>(window, "InstallProgress").IsVisible = false;
+        typeof(MainWindow).GetMethod("StopOperation", flags)!.Invoke(window, []);
+        Dispatcher.UIThread.RunJobs();
     }
 
     private static void CheckPlaceholderContrast(MainWindow window)

@@ -21,6 +21,7 @@ export type Route =
   | { page: 'devices' }
   | { page: 'tasks' }
   | { page: 'updates' }
+  | { page: 'map' }
   | { page: 'settings' }
   | { page: 'adguard-settings' }
   | { page: 'unifi-settings' }
@@ -65,6 +66,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 1 && parts[0] === 'devices') return { page: 'devices' }
   if (parts.length === 1 && parts[0] === 'tasks') return { page: 'tasks' }
   if (parts.length === 1 && parts[0] === 'updates') return { page: 'updates' }
+  if (parts.length === 1 && parts[0] === 'map') return { page: 'map' }
   if (parts[0] === 'apps' && parts.length === 1) return { page: 'apps', view: 'list' }
   if (parts[0] === 'apps' && parts.length === 2) {
     if (parts[1] === 'containers') return { page: 'apps', view: 'containers' }

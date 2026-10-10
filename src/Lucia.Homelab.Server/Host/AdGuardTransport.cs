@@ -14,8 +14,9 @@ namespace Lucia.Homelab.Server.Host;
 /// <summary>
 /// API contract verified against AdguardTeam/AdGuardHome openapi/openapi.yaml at
 /// v0.107.79, 05ba17b282da1c4393d6a4ba4db0cf519194a362: /control, HTTP Basic authentication;
-/// GET /profile, /status, /rewrite/list, /rewrite/settings; POST /rewrite/add, /rewrite/delete.
-/// No login/session, query logs, protection toggles, list replacement or rewrite update calls.
+/// GET /profile, /status, /rewrite/list, /rewrite/settings, /querylog (read-only, for the lab map's internet names);
+/// POST /rewrite/add, /rewrite/delete.
+/// No login/session, protection toggles, list replacement or rewrite update calls.
 /// </summary>
 internal sealed class AdGuardTransport
 {
@@ -256,6 +257,10 @@ internal sealed class AdGuardSession(HttpClient http, AdGuardStoredConnection re
     /// <summary>AdGuard answers, then restarts its HTTPS and encrypted-DNS listeners.</summary>
     internal Task ConfigureTlsAsync(System.Text.Json.Nodes.JsonObject settings, CancellationToken ct) =>
         SendAsync("/control/tls/configure", JsonSerializer.SerializeToUtf8Bytes(settings), ct);
+
+    /// <summary>The newest query log entries, or those older than an entry's time; read only for the lab map's internet names.</summary>
+    internal Task<byte[]> QueryLogAsync(int limit, string? olderThan, CancellationToken ct) =>
+        SendAsync($"/control/querylog?limit={limit}" + (olderThan is null ? "" : "&older_than=" + Uri.EscapeDataString(olderThan)), null, ct);
 
     private async Task<JsonDocument> GetAsync(string path, CancellationToken ct)
     {

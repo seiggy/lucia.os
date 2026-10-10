@@ -35,6 +35,10 @@ const paths = {
   'dock-right': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></>,
   send: <path d="M12 19V5m-7 7 7-7 7 7" />,
   trash: <path d="M4 7h16M10 11v6m4-6v6M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M9 7V4h6v3" />,
+  layers: <path d="m12 3 9 5-9 5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5" />,
+  expand: <path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5" />,
+  shrink: <path d="M9 4v5H4m16 0h-5V4m0 16v-5h5M4 15h5v5" />,
+  map: <path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3Zm6-3v15m6-12v15" />,
 } as const
 
 export type IconName = keyof typeof paths
