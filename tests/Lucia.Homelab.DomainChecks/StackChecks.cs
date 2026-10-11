@@ -292,6 +292,13 @@ internal static class StackChecks
                 """.ReplaceLineEndings("\n"), StringComparison.Ordinal)
             && !dl.Compose.Contains("pw-1", StringComparison.Ordinal),
             "The download client must route through gluetun, keep the VPN account in its environment and mount Soulseek's folders in its home.");
+        var jkSettings = StackCatalog.Settings(downloads, new() { ["client"] = "jackett", ["web-host"] = "jackett", ["port"] = "9117", ["vpn-user"] = "u", ["vpn-password"] = "p" });
+        var jk = downloads.Render(jkSettings, new(Guid.NewGuid(), "lucialab01", true, null), StackCatalog.KeepSecrets(downloads, jkSettings, []));
+        check(jk.Routes is [{ Host: "jackett", Port: 9117 }] && jk.Compose.Contains("  init:\n", StringComparison.Ordinal)
+            && jk.Compose.Contains("    network_mode: service:vpn\n    user: \"1000:1000\"\n    environment:\n", StringComparison.Ordinal)
+            && jk.Compose.Contains("      init:\n        condition: service_completed_successfully\nvolumes:\n", StringComparison.Ordinal)
+            && !dl.Compose.Contains("init:", StringComparison.Ordinal),
+            "Jackett must run through gluetun as its owner, with its config folder given to it first.");
         Rejects(() => downloads.Render(StackCatalog.Settings(downloads, []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()),
             "The download client must need a VPN account.");
         Rejects(() => downloads.Render(StackCatalog.Settings(downloads, new() { ["vpn-provider"] = "pia\" x" }), new(Guid.NewGuid(), "lucialab01", true, null),

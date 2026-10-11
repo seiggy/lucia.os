@@ -1903,6 +1903,7 @@ internal sealed partial class DownloadClientApp() : CatalogApp("download-client"
             new("transmission", "Transmission", "Torrents, in a lighter client."),
             new("nzbget", "NZBGet", "Usenet downloads."),
             new("soulseek", "Soulseek", "Peer-to-peer music sharing, its desktop app shown in the browser."),
+            new("jackett", "Jackett", "Torrent indexer search for the *arr apps, with its searches through the VPN. Set the web port to 9117."),
         ]),
         new("web-host", "Web name", "text", "downloads", "The client's web address is this name under your domain."),
         new("port", "Web port", "port", "8080", "The client also answers on http://<server>:<port>, which the *arr apps can use."),
@@ -1937,6 +1938,9 @@ internal sealed partial class DownloadClientApp() : CatalogApp("download-client"
         // Soulseek keeps its settings and chat logs in its home folder.
         ["soulseek"] = ("realies/soulseek:latest@sha256:751df4d7aff42cbedc49becb4828109c079944bc51acb4d21dfa49d4ef6f4175",
             6080, "/data", "/data/Soulseek Downloads", "/data/Soulseek Shared Folder", ""),
+        // Jackett's image takes its owner by user, not PUID, so it gets the owner init like the plain app.
+        ["jackett"] = ("ghcr.io/home-operations/jackett:0.24.2668@sha256:ce6c935f05e3052ac006f54479aa7236e00e24a0a48daf59e371df85c76af2e2",
+            9117, "/config", "/downloads", "/data", ""),
     };
 
     // Resume data and settings are only consistent while the client is stopped.
@@ -1957,11 +1961,12 @@ internal sealed partial class DownloadClientApp() : CatalogApp("download-client"
             throw new HardwareOnboardingException(400, "invalid_setting", "Enter your VPN username and password.");
         var (lines, require) = MediaApp.Mounts([(settings["downloads"], client.Downloads), (settings["media"], client.Media)]);
         var forwarding = settings["port-forwarding"] == "on";
+        var owned = settings["client"] == "jackett";
         var compose = $$"""
             # Installed from Lucia's catalog (download-client, version {{Version}}). Lucia rewrites this file when you change the
             # app's settings. Convert the app to a custom app to edit it by hand.
             services:
-              # Holds the VPN tunnel. The client shares its network, so its traffic has no other way out.
+            {{(owned ? MediaApp.OwnerInit("config", client.Config, MediaApp.Owner) : "")}}  # Holds the VPN tunnel. The client shares its network, so its traffic has no other way out.
               vpn:
                 image: {{Gluetun}}
                 restart: unless-stopped
@@ -1983,7 +1988,7 @@ internal sealed partial class DownloadClientApp() : CatalogApp("download-client"
                 image: {{client.Image}}
                 restart: unless-stopped
                 network_mode: service:vpn
-                environment:
+            {{(owned ? "    user: \"1000:1000\"\n" : "")}}    environment:
                   PUID: "1000"
                   PGID: "1000"
             {{client.Environment}}    volumes:
@@ -1993,7 +1998,7 @@ internal sealed partial class DownloadClientApp() : CatalogApp("download-client"
                   vpn:
                     condition: service_healthy
                     restart: true
-            volumes:
+            {{(owned ? "      init:\n        condition: service_completed_successfully\n" : "")}}volumes:
               vpn:
               config:
 
