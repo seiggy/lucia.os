@@ -1803,7 +1803,7 @@ internal sealed partial class MediaApp(string id, string name, string summary, s
             "lscr.io/linuxserver/nzbhydra2:v8.9.0-ls104@sha256:3cdcea6fc97861bb30ef2551884f1c371e08a884c2f75230c7a3a2e14c5f0516", 5076, true),
         new("flaresolverr", "FlareSolverr", "Gets indexers past Cloudflare's browser checks, for Jackett and Prowlarr.",
             "flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767", 8191, false,
-            null, folders: false, web: false),
+            null, folders: false),
     ];
 
     // Their databases are SQLite, only consistent while they're stopped.

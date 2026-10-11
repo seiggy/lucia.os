@@ -252,10 +252,10 @@ internal static class StackChecks
         var flare = StackCatalog.Find("flaresolverr");
         var fs = flare.Render(StackCatalog.Settings(flare, []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
         check(!lidarr.Compose.Contains("init:", StringComparison.Ordinal) && lidarr.Compose.Contains("      PUID: \"1000\"\n", StringComparison.Ordinal) && lidarr.Require.Length == 0
-            && flare.Fields.All(field => field.Id == "port") && fs.Routes is [] && flare.BackupMode == "live" && !fs.Compose.Contains("volumes:\n  config:", StringComparison.Ordinal)
+            && flare.Fields.All(field => field.Id is "port" or "web-host") && fs.Routes is [{ Host: "flaresolverr" }] && flare.BackupMode == "live" && !fs.Compose.Contains("volumes:\n  config:", StringComparison.Ordinal)
             && StackCatalog.Find("seerr").Render(StackCatalog.Settings(StackCatalog.Find("seerr"), []), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>())
                 .Compose.Contains("      - config:/app/config\n", StringComparison.Ordinal),
-            "PUID images must take the owner by environment, and FlareSolverr must keep nothing and have no web address.");
+            "PUID images must take the owner by environment, and FlareSolverr must keep nothing and get a web address.");
         foreach (var bad in new[] { "/config", "/data/x", "relative", "/etc/passwd" })
             Rejects(() => sonarr.Render(StackCatalog.Settings(sonarr, new() { ["media"] = "/mnt/lucia/nas/unas/Media", ["also-at"] = bad }),
                 new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>()), $"Sonarr must refuse the media path {bad}.");
