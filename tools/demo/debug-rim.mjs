@@ -1,0 +1,16 @@
+import { chromium } from 'playwright'
+const browser = await chromium.launch({ executablePath: 'C:/Users/zackw/AppData/Local/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-win64/chrome-headless-shell.exe', args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] })
+const page = await browser.newPage({ viewport: { width: 1500, height: 900 } })
+await page.goto('http://127.0.0.1:5199/universe.html')
+await page.waitForFunction(() => !!window.scene?.cosmos, null, { timeout: 150000 })
+await page.waitForFunction(() => window.scene.portals.every(p => p.group.userData.rings), null, { timeout: 60000 })
+await page.evaluate(`(() => { const s = window.scene; s.fly = null; s.follow = null; s.userMoved = true; const P = s.portals.find(p => s.cosmos.byId.get(p.body).kind === 'portal'); const b = s.cosmos.byId.get(P.body), at = s.worldAt.get(P.body), sys = s.systems.get(s.systemOf.get(P.body)); const V = s.camera.position.constructor; const d = new V(...b.face).normalize().add(new V(0.5, 0.35, 0)).normalize(); s.flyGalactic(s.toGalaxy(at, sys.center), d, b.radius * 7, null, false); window.P = P })()`)
+await page.waitForTimeout(2000)
+const out = process.argv[2]
+await page.evaluate(`(() => { const g = window.P.group; window.list = []; g.traverse(o => { if (o.isMesh) window.list.push(o.name + ':' + o.visible + ':' + o.material.type) }); })()`)
+console.log(await page.evaluate('window.list'))
+await page.evaluate(`(() => { window.P.group.children.forEach(c => { if (c.isMesh && c.material.type === 'ShaderMaterial' && c.geometry.type === 'CircleGeometry') c.visible = false }) })()`)
+await page.waitForTimeout(800); await page.screenshot({ path: out + '-nofield.png' })
+await page.evaluate(`(() => { window.P.group.children.forEach(c => { if (c.geometry?.type === 'CircleGeometry') c.visible = true }); window.P.group.userData.rings[1].visible = false })()`)
+await page.waitForTimeout(800); await page.screenshot({ path: out + '-noinner.png' })
+await browser.close()

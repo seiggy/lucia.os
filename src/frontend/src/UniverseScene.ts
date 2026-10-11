@@ -156,7 +156,7 @@ function loadKits() {
     const loader = new GLTFLoader(), result: Record<string, THREE.BufferGeometry> = {}
     await Promise.all([...models, ...parts].map(async name => {
       try {
-        const gltf = await loader.loadAsync(`${import.meta.env.BASE_URL}universe/models/${name}.glb`)
+        const gltf = await loader.loadAsync(`${import.meta.env.BASE_URL}universe/meshes/${name}.glb`)
         result[name] = bake(gltf.scene, models.some(item => item === name) ? 0.5 : 0.25)
       } catch { /* the ship falls back to a plain hull */ }
     }))
@@ -184,7 +184,7 @@ let gatePromise: Promise<Gate | null> | null = null
 function loadGate() {
   gatePromise ??= (async () => {
     try {
-      const base = `${import.meta.env.BASE_URL}universe/models/jumpgate/`, model = (await new GLTFLoader().loadAsync(`${base}gate.glb`)).scene
+      const base = `${import.meta.env.BASE_URL}universe/meshes/jumpgate/`, model = (await new GLTFLoader().loadAsync(`${base}gate.glb`)).scene
       let material: THREE.MeshStandardMaterial | null = null
       model.traverse(object => { if ((object as THREE.Mesh).isMesh) material = (object as THREE.Mesh).material as THREE.MeshStandardMaterial })
       const loader = new THREE.TextureLoader()

@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.StaticFiles;
+
 namespace Lucia.Homelab.Server.Host;
 
 public static class HostWebHosting
@@ -13,7 +15,9 @@ public static class HostWebHosting
     public static void MapHostWeb(this WebApplication app)
     {
         app.MapGet("/health/live", () => Results.Json(new { status = "ok" })).AllowAnonymous();
-        app.UseWhen(context => !IsReservedPath(context.Request.Path), branch => branch.UseFileServer());
+        var types = new FileExtensionContentTypeProvider();
+        types.Mappings[".glb"] = "model/gltf-binary";
+        app.UseWhen(context => !IsReservedPath(context.Request.Path), branch => branch.UseFileServer(new FileServerOptions { StaticFileOptions = { ContentTypeProvider = types } }));
         app.MapFallback(async context =>
         {
             if (IsReservedPath(context.Request.Path))

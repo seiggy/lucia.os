@@ -45,4 +45,4 @@ secrets/
 .impeccable/screenshots/
 
 # Licensed jumpgate model (CGTrader, no redistribution); rebuild with tools/assets/build-jumpgate.mjs
-src/frontend/public/universe/models/jumpgate/
+src/frontend/public/universe/meshes/jumpgate/

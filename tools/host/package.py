@@ -48,7 +48,7 @@ EXCLUDED_PARTS = frozenset((
 ))
 WEB_EXTENSIONS = frozenset((
     ".html", ".js", ".mjs", ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif",
-    ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".webmanifest",
+    ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".webmanifest", ".glb",
 ))
 
 

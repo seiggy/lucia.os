@@ -1,0 +1,15 @@
+{
+  "name": "lucia-demo",
+  "private": true,
+  "type": "module",
+  "description": "Records narrated Lucia demo videos: local TTS, Playwright screencast, ffmpeg mux.",
+  "scripts": {
+    "record": "node record.mjs",
+    "postinstall": "playwright install ffmpeg"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "kokoro-js": "^1.2.1",
+    "playwright": "^1.64.0"
+  }
+}

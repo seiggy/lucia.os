@@ -1,7 +1,7 @@
 // Builds the universe jumpgate from the purchased Commercial Jumpgate AX13 pack (CGTrader). The pack's licence forbids redistributing it,
 // and this repo is public, so the output is gitignored: run this locally before building the frontend.
 //   node build-jumpgate.mjs "D:\3d-models\CommercialJumpgateAX13FBX+OBJ"
-// Writes src/frontend/public/universe/models/jumpgate/: gate.glb (outer and inner ring, sized so the opening has radius 1, with shared
+// Writes src/frontend/public/universe/meshes/jumpgate/: gate.glb (outer and inner ring, sized so the opening has radius 1, with shared
 // normal, occlusion/roughness/metalness and glow maps) plus one albedo per colour scheme, which the scene picks between per gate.
 import { readFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -14,7 +14,7 @@ const pack = process.argv[2]
 if (!pack) { console.error('usage: node build-jumpgate.mjs <pack folder>'); process.exit(1) }
 const name = 'CommercialJumpgateAX13', size = 1024
 const meshes = join(pack, 'MeshesOBJ', name), maps = join(pack, 'Textures', name)
-const out = join(dirname(fileURLToPath(import.meta.url)), '../../src/frontend/public/universe/models/jumpgate')
+const out = join(dirname(fileURLToPath(import.meta.url)), '../../src/frontend/public/universe/meshes/jumpgate')
 
 // The pack's Static mesh is just both rings merged, for engines that won't animate them, so only the two rings are used.
 // A plain OBJ reader: the pack's files are triangles and quads with positions, uvs and normals.

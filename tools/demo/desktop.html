@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lucia desktop app (sample data)</title>
+<!-- Stage for the desktop app captures that episodes drive: show(name), zoom(x, y, w, h), mark(x, y, w, h).
+     Coordinates are in the app's 1040x840 window; the PNGs are 2x renders from tests/Lucia.Desktop.UiChecks. -->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden }
+  body { background: radial-gradient(circle at 30% 20%, #e3ebff, #aebfe8 55%, #7d92c6) }
+  #stage { position: fixed; inset: 0; transform-origin: 0 0; transition: transform .9s cubic-bezier(.45, 0, .2, 1) }
+  #window { position: absolute; top: 28px; left: 50%; translate: -50% 0; width: 782px; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 24px 64px rgba(15, 23, 42, .4), 0 0 0 1px rgba(15, 23, 42, .15); transition: width .6s ease }
+  #bar { height: 32px; display: flex; align-items: center; gap: 9px; padding-left: 12px; background: #fff; color: #1f2937;
+    font: 12px 'Segoe UI', system-ui, sans-serif; transition: background .4s, color .4s }
+  #bar b { width: 16px; height: 16px; border-radius: 4px; background: #285bdd; color: #fff; font: 700 11px/16px 'Segoe UI'; text-align: center }
+  #bar span { flex: 1 }
+  #bar i { width: 46px; text-align: center; font: normal 10px 'Segoe Fluent Icons', 'Segoe MDL2 Assets' }
+  .dark #bar { background: #1f1f1f; color: #f3f4f6 }
+  #screen { position: relative; height: 632px; overflow: hidden; background: #f3f4f8; transition: background .4s }
+  .dark #screen { background: #111827 }
+  #screen img { position: absolute; left: 0; top: 0; height: 100%; opacity: 0; transition: opacity .45s ease }
+  #screen img.on { opacity: 1 }
+  #mark { position: absolute; z-index: 1 }
+</style>
+<div id="stage">
+  <div id="window">
+    <div id="bar"><b>L</b><span>Lucia - Set up your Spark</span><i>&#xE921;</i><i>&#xE922;</i><i>&#xE8BB;</i></div>
+    <div id="screen"><img alt=""><img alt=""><div id="mark"></div></div>
+  </div>
+</div>
+<script>
+  const s = 632 / 840, stage = document.getElementById('stage'), win = document.getElementById('window');
+  const images = [...document.querySelectorAll('#screen img')], spot = document.getElementById('mark');
+  const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let width = 1040;
+
+  async function show(name) {
+    const next = images.find(i => !i.classList.contains('on')), previous = images.find(i => i !== next);
+    next.src = `../../artifacts/demo/desktop/${name}.png`;
+    await next.decode();
+    width = next.naturalWidth / 2;
+    next.style.width = win.style.width = `${width * s}px`;
+    document.body.classList.toggle('dark', name.includes('dark'));
+    next.classList.add('on');
+    previous.classList.remove('on');
+    await settle(650);
+  }
+
+  // Zooms until the region fills most of the frame, at most 1.75x; zoom() resets.
+  function zoom(x, y, w, h) {
+    if (x === undefined) stage.style.transform = '';
+    else {
+      const z = Math.max(1, Math.min(1.75, 1024 / (w * s), 576 / (h * s)));
+      const cx = (1280 - width * s) / 2 + (x + w / 2) * s, cy = 60 + (y + h / 2) * s;
+      stage.style.transform = `translate(${640 - z * cx}px, ${360 - z * cy}px) scale(${z})`;
+    }
+    return settle(950);
+  }
+
+  // Moves the #mark hotspot over a region so the recorder can spotlight or click it.
+  function mark(x, y, w, h) {
+    Object.assign(spot.style, { left: `${x * s}px`, top: `${y * s}px`, width: `${w * s}px`, height: `${h * s}px` });
+  }
+
+  show('connect-light');
+</script>
