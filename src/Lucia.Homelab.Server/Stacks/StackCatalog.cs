@@ -1773,8 +1773,8 @@ internal sealed class PlexApp() : CatalogApp("plex", 1, "Plex",
 /// <param name="config">Where the image keeps its settings, or null when it keeps none.</param>
 /// <param name="environment">Extra environment lines, each indented for the service's <c>environment:</c>.</param>
 internal sealed partial class MediaApp(string id, string name, string summary, string image, int port, bool puid,
-    string? config = "/config", string environment = "", string? command = null, bool folders = true, bool web = true)
-    : CatalogApp(id, 1, name, summary, "Any server with Docker ready and 1 GB of memory.", [], FieldsFor(id, port, folders, web))
+    string? config = "/config", string environment = "", string? command = null, bool folders = true, bool web = true, int version = 1)
+    : CatalogApp(id, version, name, summary, "Any server with Docker ready and 1 GB of memory.", [], FieldsFor(id, port, folders, web))
 {
     public const string Owner = "1000:1000";
 
@@ -1803,7 +1803,7 @@ internal sealed partial class MediaApp(string id, string name, string summary, s
             "lscr.io/linuxserver/nzbhydra2:v8.9.0-ls104@sha256:3cdcea6fc97861bb30ef2551884f1c371e08a884c2f75230c7a3a2e14c5f0516", 5076, true),
         new("flaresolverr", "FlareSolverr", "Gets indexers past Cloudflare's browser checks, for Jackett and Prowlarr.",
             "flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767", 8191, false,
-            null, folders: false),
+            null, folders: false, version: 2),
     ];
 
     // Their databases are SQLite, only consistent while they're stopped.
