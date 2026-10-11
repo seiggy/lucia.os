@@ -59,6 +59,11 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     /// <c>Authorization</c> header in the app's environment as <c>LUCIA_OTLP_ENDPOINT</c> and <c>LUCIA_OTLP_AUTHORIZATION</c>.
     /// </summary>
     public virtual bool Telemetry => false;
+    /// <summary>
+    /// True when the app keeps a bucket: while an Object storage app runs, Lucia gives it a bucket named after the stack and
+    /// keeps its address and key in the app's environment as <c>LUCIA_S3_*</c>, with <c>LUCIA_S3_OBJSTORE</c> in Thanos' form.
+    /// </summary>
+    internal virtual bool Bucket => false;
     /// <summary>True when the owner can also run the app on the Spark, started by hand and stopped when idle.</summary>
     public virtual bool RunsOnSpark => false;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
@@ -67,7 +72,7 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp(),
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new ObjectStorageApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp(),
         .. MediaApp.All, new DownloadClientApp(), new HomeAssistantApp(), new MosquittoApp(), new VoiceApp(), .. HomeCompanionApp.All, new GitHubRunnerApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
@@ -477,9 +482,9 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
-    "Any server with Docker ready, and room for about 50 GB of telemetry.",
+    "Any server with Docker ready, and room for about 20 GB of telemetry. Install Object storage to keep metric history in a bucket.",
     [],
     [
         new("grafana-host", "Grafana name", "text", "grafana", "Grafana's web address is this name under your domain."),
@@ -496,7 +501,11 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
     private const string Tempo = "grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd";
     private const string Grafana = "grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
     internal const string Alpine = "alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1";
+    private const string Thanos = "quay.io/thanos/thanos:v0.42.4@sha256:b567818fe608067eb0f1d7c2c4fe361e7ad83c8a256234c97685f1d0bf670cc8";
     public const string User = "lucia";
+
+    /// <summary>Metric history goes to the bucket Object storage grants this stack.</summary>
+    internal override bool Bucket => true;
 
     public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
         new("Grafana", settings["grafana-host"].ToLowerInvariant(), "/login/generic_oauth");
@@ -546,6 +555,13 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                 timeout: 5s
                 send_batch_size: 1024
                 send_batch_max_size: 2048
+              # LiteLLM's own health checks make most of its series; nobody charts them.
+              filter/health:
+                error_mode: ignore
+                metrics:
+                  datapoint:
+                    - attributes["metadata_user_api_key_team_id"] == "litellm-internal-health-check"
+                    - attributes["metadata.user_api_key_team_id"] == "litellm-internal-health-check"
               # Each flow is labelled with both raw addresses (Lucia tells the LAN from the internet), its transport and its server port:
               # the lower of the two when it is below the ephemeral range, with lucia.server naming the end that owns it.
               transform/flows:
@@ -625,7 +641,7 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                   exporters: [otlp/tempo]
                 metrics:
                   receivers: [otlp]
-                  processors: [memory_limiter, batch]
+                  processors: [memory_limiter, filter/health, batch]
                   exporters: [otlphttp/prometheus]
                 logs:
                   receivers: [otlp]
@@ -644,6 +660,9 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
             global:
               scrape_interval: 30s
               evaluation_interval: 30s
+              # Thanos tells raw samples from its averaged tiers by this label.
+              external_labels:
+                tier: raw
             otlp:
               promote_resource_attributes: [service.instance.id, service.name, service.namespace, host.name, lucia.node, lucia.app, container.name, lucia.device]
             storage:
@@ -716,10 +735,11 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                 type: prometheus
                 uid: prometheus
                 access: proxy
-                url: http://prometheus:9090
+                url: http://query:10902
                 isDefault: true
                 jsonData:
                   timeInterval: 30s
+                  prometheusType: Thanos
               - name: Loki
                 type: loki
                 uid: loki
@@ -772,11 +792,54 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
             Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\0', texts))))[..16];
         var hardware = HardwareDashboard.Json().Replace("$", "$$");
         var inference = InferenceDashboard.Json().Replace("$", "$$");
+        var containers = ContainersDashboard.Json().Replace("$", "$$");
         // Grafana links to itself at its web address once the domain is active, and at the server's port until then.
         var rootUrl = "${" + StackStore.RouteVariable(grafanaHost) + $":-http://{node.Hostname}:{grafanaPort}}}";
+        var tiers = MetricTiers.Tiers.Select(tier => tier.Name).ToArray();
+        // One ruler per tier records its averages from the tier before; its blocks go to the bucket and stay 3 hours locally.
+        var rulers = tiers.Select((tier, index) => (tier, $$"""
+              rule-{{tier}}:
+                <<: *objstore
+                command:
+                  - rule
+                  - --label=tier="{{tier}}"
+                  - --query=query:10902
+                  - --rule-file=/etc/thanos/rules.yaml
+                  - --data-dir=/data
+                  - --tsdb.retention=3h
+                  - --grpc-address=0.0.0.0:10901
+                  - --http-address=0.0.0.0:10902
+                labels:
+                  lucia.configs: "{{Hash(MetricTiers.Rules(index))}}"
+                configs:
+                  - source: rules-{{tier}}
+                    target: /etc/thanos/rules.yaml
+                volumes:
+                  - bucket:/bucket
+                  - rule-{{tier}}:/data
+
+            """)).ToDictionary(item => item.tier, item => item.Item2);
         var compose = $$"""
             # Installed from Lucia's catalog (observability, version {{Version}}). Lucia rewrites this file when the catalog
             # updates the app. Convert the app to a custom app to edit it by hand.
+            # Lucia sets LUCIA_S3_OBJSTORE to Object storage's bucket once it's installed; until then the tiers go to a local volume.
+            x-objstore: &objstore
+              image: {{Thanos}}
+              restart: unless-stopped
+              environment:
+                OBJSTORE: ${LUCIA_S3_OBJSTORE:-}
+              entrypoint:
+                - sh
+                - -c
+                - |
+                  c="$$OBJSTORE"; [ -n "$$c" ] || c="{type: FILESYSTEM, config: {directory: /bucket} }"
+                  exec thanos "$$@" --objstore.config="$$c"
+                - thanos
+              volumes:
+                - bucket:/bucket
+              depends_on:
+                init:
+                  condition: service_completed_successfully
             services:
               # Each image runs as its own user; give each its data directory once.
               init:
@@ -789,13 +852,16 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                   - |
                     own() { [ "$$(stat -c %u:%g "$$2")" = "$$1" ] || chown -R "$$1" "$$2"; }
                     own 10001:10001 /data/collector && own 10001:10001 /data/loki && own 10001:10001 /data/tempo \
-                      && own 65534:65534 /data/prometheus && own 472:0 /data/grafana
+                      && own 65534:65534 /data/prometheus && own 472:0 /data/grafana && own 1001:1001 /data/bucket \
+                      {{string.Concat(tiers.Select(tier => $" && own 1001:1001 /data/rule-{tier}"))}}
                 volumes:
                   - collector:/data/collector
                   - loki:/data/loki
                   - tempo:/data/tempo
                   - prometheus:/data/prometheus
                   - grafana:/data/grafana
+                  - bucket:/data/bucket
+            {{string.Concat(tiers.Select(tier => $"      - rule-{tier}:/data/rule-{tier}\n"))}}
               collector:
                 image: {{Collector}}
                 restart: unless-stopped
@@ -835,8 +901,8 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                 command:
                   - --config.file=/etc/prometheus/prometheus.yaml
                   - --storage.tsdb.path=/prometheus
-                  - --storage.tsdb.retention.time=30d
-                  - --storage.tsdb.retention.size=40GB
+                  # Raw samples stay an hour; Thanos keeps the averaged tiers.
+                  - --storage.tsdb.retention.time=1h
                   - --web.enable-otlp-receiver
                   - --enable-feature=otlp-native-delta-ingestion
                 labels:
@@ -880,6 +946,8 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
               grafana:
                 image: {{Grafana}}
                 restart: unless-stopped
+                # The drilldown apps live in the data volume and stop working when they fall behind Grafana, so each start updates them.
+                entrypoint: ["sh", "-c", "grafana cli plugins update-all >/dev/null 2>&1 || true; exec /run.sh"]
                 environment:
                   GF_SECURITY_ADMIN_USER: admin
                   GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -904,7 +972,7 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                   GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'lucia-owners') && 'Admin' || 'Viewer'"
                   GF_AUTH_SIGNOUT_REDIRECT_URL: ${LUCIA_SSO_SIGNOUT:-}
                 labels:
-                  lucia.configs: "{{Hash(datasources, dashboards, hardware, inference)}}"
+                  lucia.configs: "{{Hash(datasources, dashboards, hardware, inference, containers)}}"
                 configs:
                   - source: datasources
                     target: /etc/grafana/provisioning/datasources/lucia.yaml
@@ -914,14 +982,52 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
                     target: /etc/grafana/dashboards/lucia/hardware.json
                   - source: inference
                     target: /etc/grafana/dashboards/lucia/inference.json
+                  - source: containers
+                    target: /etc/grafana/dashboards/lucia/containers.json
                 volumes:
                   - grafana:/var/lib/grafana
                 ports:
                   - "{{grafanaPort}}:3000"
                 depends_on:
-                  - prometheus
+                  - query
                   - loki
                   - tempo
+              # Thanos Query answers Grafana and the lab map from raw samples (through the sidecar) and every tier.
+              sidecar:
+                image: {{Thanos}}
+                restart: unless-stopped
+                command: [sidecar, --prometheus.url=http://prometheus:9090, --grpc-address=0.0.0.0:10901, --http-address=0.0.0.0:10902]
+                depends_on:
+                  - prometheus
+              query:
+                image: {{Thanos}}
+                restart: unless-stopped
+                command:
+                  - query
+                  - --http-address=0.0.0.0:10902
+                  - --grpc-address=0.0.0.0:10901
+                  - --endpoint=sidecar:10901
+                  - --endpoint=store:10901
+            {{string.Concat(tiers.Select(tier => $"      - --endpoint=rule-{tier}:10901\n"))}}
+              store:
+                <<: *objstore
+                command: [store, --data-dir=/tmp/store, --grpc-address=0.0.0.0:10901, --http-address=0.0.0.0:10902]
+            {{string.Concat(tiers.Select(tier => rulers[tier]))}}
+              # Each tier keeps its own retention; downsampling is off because the rulers already averaged.
+              compactor:
+                <<: *objstore
+                entrypoint:
+                  - sh
+                  - -c
+                  - |
+                    c="$$OBJSTORE"; [ -n "$$c" ] || c="{type: FILESYSTEM, config: {directory: /bucket} }"
+                    while :; do
+                      for t in {{string.Join(" ", MetricTiers.Tiers.Select(tier => $"{tier.Name}:{tier.Keep}"))}}; do
+                        thanos compact --data-dir=/tmp/compact --objstore.config="$$c" --downsampling.disable --delete-delay=30m \
+                          --retention.resolution-raw=$${t#*:} --selector.relabel-config="[{action: keep, source_labels: [tier], regex: $${t%%:*} }]" || true
+                      done
+                      sleep 300
+                    done
             configs:
               collector:
                 content: |
@@ -947,13 +1053,18 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
               inference:
                 content: |
             {{Content(inference)}}
+              containers:
+                content: |
+            {{Content(containers)}}
+            {{string.Concat(tiers.Select((tier, index) => $"  rules-{tier}:\n    content: |\n{Content(MetricTiers.Rules(index))}\n"))}}
             volumes:
               collector:
               prometheus:
               loki:
               tempo:
               grafana:
-
+              bucket:
+            {{string.Concat(tiers.Select(tier => $"  rule-{tier}:\n"))}}
             """;
         var envText = $"OTLP_USERNAME={User}\n"
             + $"OTLP_PASSWORD={StackCatalog.Secret(env, "OTLP_PASSWORD")}\n"
@@ -962,6 +1073,151 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 10, "Obse
         return new(compose.ReplaceLineEndings("\n"), envText, [],
             [new(grafanaHost, int.Parse(grafanaPort, CultureInfo.InvariantCulture)),
              new(otlpHost, int.Parse(httpPort, CultureInfo.InvariantCulture), int.Parse(grpcPort, CultureInfo.InvariantCulture))]);
+    }
+}
+
+/// <summary>
+/// A single-server S3 store (Garage) with a web console (garage-ui) that owners sign in to through Lucia. Every installed app
+/// that keeps a bucket gets its own bucket and key here, which Lucia passes it as <c>LUCIA_S3_*</c>.
+/// </summary>
+internal sealed class ObjectStorageApp() : CatalogApp(AppId, 1, "Object storage",
+    "An S3-compatible bucket store for your apps, such as Observability's metric history, with a web console.",
+    "Any server with Docker ready and room for what your apps keep.",
+    [],
+    [
+        new("s3-host", "S3 name", "text", "s3", "Apps reach the S3 API at this name under your domain."),
+        new("console-host", "Console name", "text", "storage", "The console's web address is this name under your domain."),
+        new("s3-port", "S3 port", "port", "3900", "The S3 API also answers on http://<server>:<port>."),
+        new("console-port", "Console port", "port", "3909", "The console also answers on http://<server>:<port>."),
+    ])
+{
+    internal const string AppId = "object-storage", GrantSecret = "STORAGE_GRANT_SECRET";
+    private const string Garage = "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020";
+    private const string Console = "noooste/garage-ui:v0.13.0@sha256:a1444fa10585a0efc8ce3c33ebda873e5714d51dbc8f7f49d00143ff3b72fcc2";
+
+    public override string BackupMode => "stop";
+
+    public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
+        new("Storage", settings["console-host"].ToLowerInvariant(), "/auth/oidc/callback");
+
+    /// <summary>The app's S3 access key id, in Garage's form.</summary>
+    internal static string Key(string grant, string app) => "GK" + Hex(grant, "key:" + app)[..24];
+    internal static string KeySecret(string grant, string app) => Hex(grant, "secret:" + app);
+    private static string Hex(string grant, string text) =>
+        Convert.ToHexStringLower(HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(grant), System.Text.Encoding.UTF8.GetBytes(text)));
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (s3Host, consoleHost) = (settings["s3-host"].ToLowerInvariant(), settings["console-host"].ToLowerInvariant());
+        var (s3Port, consolePort) = (settings["s3-port"], settings["console-port"]);
+        var rootUrl = "${" + StackStore.RouteVariable(consoleHost) + $":-http://{node.Hostname}:{consolePort}}}";
+        // Lucia sets LUCIA_STORAGE_GRANTS to one bucket:key:secret per app; the provisioner makes each idempotently.
+        var compose = $$"""
+            # Installed from Lucia's catalog ({{AppId}}, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            services:
+              garage:
+                image: {{Garage}}
+                restart: unless-stopped
+                command: ["/garage", "server", "--single-node"]
+                environment:
+                  GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+                  GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+                configs:
+                  - source: garage
+                    target: /etc/garage.toml
+                volumes:
+                  - meta:/var/lib/garage/meta
+                  - data:/var/lib/garage/data
+                ports:
+                  - "{{s3Port}}:3900"
+              provision:
+                image: {{ObservabilityApp.Alpine}}
+                restart: on-failure
+                environment:
+                  GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+                  GRANTS: ${LUCIA_STORAGE_GRANTS:-}
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -e
+                    api() { wget -qO- --header "Authorization: Bearer $$GARAGE_ADMIN_TOKEN" $${2:+--header "Content-Type: application/json" --post-data "$$2"} "http://garage:3903/v2/$$1"; }
+                    until api GetClusterHealth >/dev/null 2>&1; do sleep 2; done
+                    for g in $$GRANTS; do
+                      b=$${g%%:*}; r=$${g#*:}; k=$${r%%:*}; s=$${r#*:}
+                      api "GetKeyInfo?id=$$k" >/dev/null 2>&1 || api ImportKey "{\"accessKeyId\":\"$$k\",\"secretAccessKey\":\"$$s\",\"name\":\"$$b\"}" >/dev/null
+                      api "GetBucketInfo?globalAlias=$$b" >/dev/null 2>&1 || api CreateBucket "{\"globalAlias\":\"$$b\"}" >/dev/null
+                      id=$$(api "GetBucketInfo?globalAlias=$$b" | tr -d '\n ' | sed -n 's/.*"id":"\([0-9a-f]\{64\}\)".*/\1/p')
+                      api AllowBucketKey "{\"bucketId\":\"$$id\",\"accessKeyId\":\"$$k\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true} }" >/dev/null
+                      echo "Bucket $$b is ready."
+                    done
+                depends_on:
+                  - garage
+              console:
+                image: {{Console}}
+                restart: unless-stopped
+                environment:
+                  GARAGE_UI_SERVER_ROOT_URL: {{rootUrl}}
+                  GARAGE_UI_GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+                  GARAGE_UI_AUTH_ADMIN_PASSWORD: ${CONSOLE_ADMIN_PASSWORD}
+                  # Lucia sets LUCIA_SSO_* once the console's Authentik client exists; only Lucia's owners get in.
+                  GARAGE_UI_AUTH_OIDC_ENABLED: ${LUCIA_SSO_ENABLED:-false}
+                  GARAGE_UI_AUTH_OIDC_CLIENT_ID: ${LUCIA_SSO_CLIENT_ID:-}
+                  GARAGE_UI_AUTH_OIDC_CLIENT_SECRET: ${SSO_CLIENT_SECRET}
+                  GARAGE_UI_AUTH_OIDC_ISSUER_URL: ${LUCIA_SSO_ORIGIN:-https://invalid}/application/o/${LUCIA_SSO_CLIENT_ID:-x}/
+                configs:
+                  - source: console
+                    target: /app/config.yaml
+                ports:
+                  - "{{consolePort}}:8080"
+                depends_on:
+                  provision: {condition: service_completed_successfully}
+            configs:
+              garage:
+                content: |
+                  metadata_dir = "/var/lib/garage/meta"
+                  data_dir = "/var/lib/garage/data"
+                  db_engine = "lmdb"
+                  replication_factor = 1
+                  rpc_bind_addr = "[::]:3901"
+                  rpc_public_addr = "127.0.0.1:3901"
+                  [s3_api]
+                  s3_region = "garage"
+                  api_bind_addr = "[::]:3900"
+                  [admin]
+                  api_bind_addr = "[::]:3903"
+              # The environment overrides the blank values; garage-ui reads only keys its file has. No teams means only admins get in.
+              console:
+                content: |
+                  server: {host: 0.0.0.0, port: 8080, environment: production, root_url: ""}
+                  garage: {endpoint: "http://garage:3900", admin_endpoint: "http://garage:3903", admin_token: "", region: garage}
+                  auth:
+                    admin: {enabled: true, username: admin, password: ""}
+                    oidc:
+                      enabled: false
+                      provider_name: Lucia
+                      client_id: ""
+                      client_secret: ""
+                      issuer_url: ""
+                      scopes: [openid, profile, email]
+                      role_attribute_path: groups
+                      admin_role: lucia-owners
+                      cookie_secure: true
+                  access_control: {teams: []}
+            volumes:
+              meta:
+              data:
+
+            """;
+        var rpc = env.GetValueOrDefault("GARAGE_RPC_SECRET") is { Length: 64 } kept ? kept : Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+        var envText = $"GARAGE_RPC_SECRET={rpc}\n"
+            + $"GARAGE_ADMIN_TOKEN={StackCatalog.Secret(env, "GARAGE_ADMIN_TOKEN")}\n"
+            + $"CONSOLE_ADMIN_PASSWORD={StackCatalog.Secret(env, "CONSOLE_ADMIN_PASSWORD")}\n"
+            + $"{GrantSecret}={StackCatalog.Secret(env, GrantSecret)}\n"
+            + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
+        return new(compose.ReplaceLineEndings("\n"), envText, [],
+            [new(s3Host, int.Parse(s3Port, CultureInfo.InvariantCulture)), new(consoleHost, int.Parse(consolePort, CultureInfo.InvariantCulture))]);
     }
 }
 

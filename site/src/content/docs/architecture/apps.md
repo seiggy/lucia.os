@@ -15,7 +15,7 @@ An **app** in Lucia is a Docker Compose stack that runs on one managed server. Y
 
 | Area | Apps |
 |---|---|
-| Lab infrastructure | AdGuard Home, Observability (Prometheus, Loki, Tempo, Grafana), GitHub Actions runner |
+| Lab infrastructure | AdGuard Home, Object storage (Garage), Observability (Prometheus, Thanos, Loki, Tempo, Grafana), GitHub Actions runner |
 | AI | Local AI (engines: Lucia, vLLM, llama.cpp), LiteLLM |
 | Photos and media | Immich, Plex, MusicBrainz |
 | Media automation | Sonarr, Radarr, Lidarr, Seerr, Jackett, NZBHydra 2, FlareSolverr, a download client behind a gluetun VPN |
@@ -25,7 +25,8 @@ Some catalog apps come with extra wiring:
 
 - **AdGuard Home** turns on the [AdGuard HA](/docs/architecture/adguard-ha/) fleet.
 - **Observability** turns on telemetry relays on every server. See [Observability](/docs/architecture/observability/).
-- **Grafana, Immich and LiteLLM** sign in with Lucia. Each gets its own Authentik OIDC application, bound to `lucia-owners`.
+- **Object storage** gives apps that need a bucket (Observability today) their own bucket and S3 key, set in their environment as `LUCIA_S3_*`. Lucia rechecks this every 15 seconds. Its console only lets in `lucia-owners`.
+- **Grafana, Immich, LiteLLM and the Object storage console** sign in with Lucia. Each gets its own Authentik OIDC application, bound to `lucia-owners`.
 - **The GitHub Actions runner** can run on the Spark on demand to get native ARM64 jobs. It runs Docker-in-Docker privileged, and the catalog warns you about that.
 
 ### Your own apps

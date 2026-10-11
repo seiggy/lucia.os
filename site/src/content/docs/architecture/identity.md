@@ -53,7 +53,7 @@ Some rules are enforced on purpose:
 
 ### Apps that sign in with Lucia
 
-Some catalog apps support single sign-on: Grafana, Immich and LiteLLM. For each one, Lucia registers an Authentik OIDC application named `lucia-app-<stack>` and binds it to `lucia-owners`. In Grafana, owners become admins.
+Some catalog apps support single sign-on: Grafana, Immich, LiteLLM and the Object storage console. For each one, Lucia registers an Authentik OIDC application named `lucia-app-<stack>` and binds it to `lucia-owners`. In Grafana, owners become admins.
 
 ## Certificates
 

@@ -146,7 +146,7 @@ internal static partial class ResticBackups
             if (listed.Exit != 0) throw Failure("snapshots", listed);
             var found = ParseSnapshots(listed.Stdout).FirstOrDefault(item => item.Id == snapshot);
             if (found?.Stack != name) throw new NodeAgentException($"Snapshot {snapshot[..8]} isn't a backup of {name}.");
-            var restored = await RunAsync(repo, ["restore", $"{snapshot}:{StackRunner.Root}/{name}", "--target", target], TimeSpan.FromHours(10), token);
+            var restored = await RunAsync(repo, ["restore", $"{snapshot}:{StackRunner.Root}/{name}", "--target", target, "--retry-lock", "30m"], TimeSpan.FromHours(10), token);
             if (restored.Exit != 0) throw Failure("restore", restored);
         }
         finally { gate.Release(); }
@@ -184,7 +184,8 @@ internal static partial class ResticBackups
         // Writing into an unmounted mount point would fill this server's disk with a repository nobody else sees.
         if (!NasMounts.IsMounted(repo.Nas, repo.Share)) throw new NodeAgentException(NotMounted(repo));
         await InstallAsync(token);
-        var config = await RunAsync(repo, ["cat", "config"], TimeSpan.FromMinutes(2), token);
+        // Reading the config needs no lock; taking one would fail at once while another node prunes the shared repository.
+        var config = await RunAsync(repo, ["cat", "config", "--no-lock"], TimeSpan.FromMinutes(2), token);
         if (config.Exit == 0) return;
         if (config.Exit != 10) throw Failure("cat config", config);
         var created = await RunAsync(repo, ["init"], TimeSpan.FromMinutes(5), token);
@@ -288,9 +289,16 @@ internal static partial class ResticBackups
     private static string Keep(int count) => count.ToString(CultureInfo.InvariantCulture);
     private static string LastLine(string text) =>
         StackRunner.Bounded(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault(), 600) ?? "";
+    // 11: another backup held the shared repository for longer than --retry-lock; restic's advice to unlock it would be wrong.
     private static NodeAgentException Failure(string command, (int Exit, string Stdout, string Stderr) result) =>
-        new($"'restic {command}' exited with code {result.Exit}. {LastLine(result.Stderr)}".Trim());
+        new(result.Exit == 11 ? $"Another backup kept the repository locked, so 'restic {command}' gave up. {Holder(result.Stderr)}".Trim()
+            : $"'restic {command}' exited with code {result.Exit}. {LastLine(result.Stderr)}".Trim());
 
+    internal static string Holder(string stderr) =>
+        LockHolderPattern().Match(stderr) is { Success: true } found ? $"It was held by {found.Groups[1].Value}." : "";
+
+    [GeneratedRegex(@"locked (?:exclusively )?by (PID \d+ on [A-Za-z0-9._-]{1,253})")]
+    private static partial Regex LockHolderPattern();
     [GeneratedRegex(@"\A[0-9a-f]{64}\z")]
     private static partial Regex SnapshotPattern();
     [GeneratedRegex(@"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z")]

@@ -316,8 +316,10 @@ internal static class LabMapChecks
             && LabTraffic.QueriesFor("1h", 4000)[5].StartsWith("topk(4000,", StringComparison.Ordinal)
             && LabTraffic.QueriesFor("24h")[5].EndsWith("[24h])) / 86400)", StringComparison.Ordinal)
             && LabTraffic.Queries[5].Contains("sum_over_time(", StringComparison.Ordinal)
+            && day.Take(6).All(query => query.Contains("tier=\"30m\"", StringComparison.Ordinal) && !query.Contains("rate(", StringComparison.Ordinal))
+            && day[5].Contains("lucia_netflow_bytes:sum{tier=\"30m\"}[24h]", StringComparison.Ordinal)
             && LabFlows.Sites(null) == 40 && LabFlows.Sites(1000) == 1000 && LabFlows.Sites(0) == PrometheusQuery.MaxSeries && LabFlows.Sites(7) == 40,
-            "The map's traffic window must average every rate over the window chosen, for as many internet sites as asked.");
+            "The map's traffic window must average every rate over the window chosen, from the 30-minute tier for a day, for as many internet sites as asked.");
         check(LabMapService.ContainerHealth(plexContainer with { State = "running", Status = "Up 2 hours (unhealthy)" }, "Running") == "warn"
             && LabMapService.ContainerHealth(plexContainer with { State = "exited", Status = "Exited (0) 1 hour ago" }, "Stopped") == "ok"
             && LabMapService.ContainerHealth(plexContainer with { State = "exited", Status = "Exited (0) 1 hour ago" }, "Running") == "warn"

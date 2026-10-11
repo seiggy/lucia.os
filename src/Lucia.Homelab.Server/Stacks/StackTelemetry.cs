@@ -119,14 +119,14 @@ public sealed partial class StackStore
     private static partial Regex ModelName();
 }
 
-/// <summary>Keeps catalog apps that send telemetry pointed at the Observability app while one runs.</summary>
+/// <summary>Keeps catalog apps pointed at the Observability app while one runs, and at their buckets in the Object storage app.</summary>
 public sealed class AppTelemetry(StackStore stacks, ILogger<AppTelemetry> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         while (!stop.IsCancellationRequested)
         {
-            try { await stacks.SyncTelemetry(stop); }
+            try { await stacks.SyncTelemetry(stop); await stacks.SyncStorage(stop); }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
             catch (Exception error)
             {

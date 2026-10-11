@@ -39,8 +39,17 @@ internal static class InferenceDashboard
             "tensorfold:time_to_first_token_seconds_sum", null, "tensorfold:generation_tokens_total"),
     ];
 
-    private static string Rate(string metric, string by) => $"sum by (lucia_node, {by}) (rate({metric}{{{Node}}}[$__rate_interval]))";
-    private static string Range(string metric) => $"(sum(increase({metric}{{{Node}}}[$__range])) or vector(0))";
+    /// <summary>Every counter the dashboard charts, which Observability keeps in its tiers.</summary>
+    internal static IEnumerable<string> Counters => Engines
+        .SelectMany(engine => new[] { engine.Requests, engine.Duration, engine.FirstToken, engine.FirstToken?.Replace("_sum", "_count"),
+            engine.Duration?.Replace("_sum", "_count"), engine.Input, engine.Cached, engine.Output, engine.PromptSeconds, engine.GenerationSeconds,
+            engine.GenerationTokens })
+        .OfType<string>().Distinct(StringComparer.Ordinal);
+
+    private static string Rate(string metric, string by) => $"sum by (lucia_node, {by}) ({MetricTiers.Rate(metric, Node)})";
+    // Raw counters last only an hour, so a range's total adds up its rates instead.
+    private static string Range(string metric) =>
+        $"(sum(sum_over_time({MetricTiers.Rate(metric, Node)}[$__range:$__interval])) * $__interval_ms / 1000 or vector(0))";
 
     // llama.cpp counts cached prompt tokens apart from processed ones; the others count every prompt token.
     private static string Input(Engine engine, Func<string, string> of) => engine.Name == "llama.cpp" ? $"({of(engine.Input)} + {of(engine.Cached!)})" : of(engine.Input);

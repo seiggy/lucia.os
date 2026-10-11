@@ -338,7 +338,7 @@ for the relay to scrape. vLLM's and llama.cpp's own metrics fill the same panels
 llama.cpp keeps only running token and time totals, so it has no time to first token,
 request time or request count.
 
-**App sign-in.** Catalog apps that support SSO (Grafana, Immich and LiteLLM today) get an Authentik
+**App sign-in.** Catalog apps that support SSO (Grafana, Immich, LiteLLM and the Object storage console today) get an Authentik
 client once a domain is active. The controller writes a request per app to
 `data/domains/app-sso-requests/`; the Spark's `lucia-domain-activation` worker,
 which alone holds Authentik admin credentials, reconciles an owner-only OIDC client

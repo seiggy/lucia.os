@@ -48,6 +48,25 @@ internal static class TelemetryRelay
                     enabled: true
                   container.network.io.usage.tx_bytes:
                     enabled: true
+              filelog/docker:
+                include: [/var/lib/docker/containers/*/*-json.log]
+                include_file_path: true
+                start_at: end
+                operators:
+                  - type: container
+
+            """ : "";
+        // The agent gives every container json-file logs that carry its compose service; containers started before that are named by their id.
+        var dockerProcessors = dockerStats ? """
+              transform/docker:
+                log_statements:
+                  - context: log
+                    statements:
+                      - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil
+                      - set(attributes["compose.project"], attributes["attrs"]["com.docker.compose.project"]) where attributes["attrs"] != nil
+                      - set(attributes["service.name"], Substring(attributes["container.id"], 0, 12)) where attributes["service.name"] == nil and attributes["container.id"] != nil
+              groupbyattrs/docker:
+                keys: [service.name, compose.project, container.id]
 
             """ : "";
         const string Auth = "  authorization:\n    credentials: ${env:LOCAL_AI_KEY}\n";
@@ -78,8 +97,8 @@ internal static class TelemetryRelay
             {docker}processors:
               memory_limiter:
                 check_interval: 1s
-                limit_mib: 200
-                spike_limit_mib: 50
+                limit_mib: 400
+                spike_limit_mib: 100
               resource:
                 attributes:
                   - key: host.name
@@ -90,7 +109,7 @@ internal static class TelemetryRelay
                     action: upsert
               batch:
                 timeout: 5s
-            exporters:
+            {dockerProcessors}exporters:
             {Indent(exporter, 2)}
             service:
               # The relay shares the machine's network, so it keeps its own metrics off port 8888.
@@ -107,8 +126,8 @@ internal static class TelemetryRelay
                   processors: [memory_limiter, resource, batch]
                   exporters: [otlp_http]
                 logs:
-                  receivers: [otlp]
-                  processors: [memory_limiter, resource, batch]
+                  receivers: [otlp{(dockerStats ? ", filelog/docker" : "")}]
+                  processors: [memory_limiter{(dockerStats ? ", transform/docker, groupbyattrs/docker" : "")}, resource, batch]
                   exporters: [otlp_http]
 
             """.ReplaceLineEndings("\n");
@@ -124,7 +143,7 @@ internal static class TelemetryRelay
             image: {{ObservabilityApp.Collector}}
             restart: unless-stopped
             network_mode: host
-            mem_limit: 256m
+            mem_limit: 512m
             command: ["--config=/etc/otelcol-contrib/config.yaml"]
             environment:
               OTLP_ENDPOINT: ${OTLP_ENDPOINT}
@@ -142,6 +161,7 @@ internal static class TelemetryRelay
                 security_opt: [no-new-privileges:true]
                 volumes:
                   - /var/run/docker.sock:/var/run/docker.sock:ro
+                  - /var/lib/docker/containers:/var/lib/docker/containers:ro
 
             """ : "")}}  node-exporter:
             image: {{NodeExporter}}

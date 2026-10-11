@@ -241,10 +241,13 @@ internal static partial class StackRunner
         File.Delete(overridePath);
         var config = await ComposeAsync(stack.Name, ["config", "--format", "json"], TimeSpan.FromMinutes(1), token);
         var redirect = VolumeOverride(config, directory);
-        if (redirect is not null)
+        var logging = LoggingOverride(config);
+        if (redirect is not null || logging is not null)
         {
-            foreach (var path in redirect.Value.Paths) Directory.CreateDirectory(path);
-            WritePrivate(overridePath, redirect.Value.Json);
+            foreach (var path in redirect?.Paths ?? []) Directory.CreateDirectory(path);
+            var merged = redirect is null ? new JsonObject() : JsonNode.Parse(redirect.Value.Json)!.AsObject();
+            if (logging is not null) merged["services"] = logging;
+            WritePrivate(overridePath, merged.ToJsonString());
         }
         var files = AppliedStack.Hash(stack);
         if (stack.Desired == "Stopped")
@@ -423,6 +426,31 @@ internal static partial class StackRunner
             };
         }
         return result.Count == 0 ? null : (new JsonObject { ["volumes"] = result }.ToJsonString(), paths.ToArray());
+    }
+
+    /// <summary>
+    /// Docker defaults to the <c>local</c> driver, whose files the telemetry relay can't read, and its json-file driver never
+    /// rotates. Every service without its own logging choice gets rotating json-file logs that carry the compose project and
+    /// service names, which is how the relay tells containers apart.
+    /// </summary>
+    internal static JsonObject? LoggingOverride(string configJson)
+    {
+        if (JsonNode.Parse(configJson)?["services"] is not JsonObject services) return null;
+        var result = new JsonObject();
+        foreach (var (name, value) in services)
+            if (value is JsonObject service && service["logging"] is null)
+                result[name] = new JsonObject
+                {
+                    ["logging"] = new JsonObject
+                    {
+                        ["driver"] = "json-file",
+                        ["options"] = new JsonObject
+                        {
+                            ["labels"] = "com.docker.compose.project,com.docker.compose.service", ["max-size"] = "20m", ["max-file"] = "3",
+                        },
+                    },
+                };
+        return result.Count == 0 ? null : result;
     }
 
     internal static async Task<NodeContainer[]> ContainersAsync(CancellationToken token)

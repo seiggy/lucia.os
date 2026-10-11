@@ -1,0 +1,3 @@
+Ship, station, base and satellite models: Ultimate Space Kit by Quaternius (https://quaternius.com), released under CC0 1.0. No attribution is required; credit is given with thanks.
+Planets, suns, the wormhole and the galaxy glow are generated in shaders and need no assets.
+The jumpgate (Commercial Jumpgate AX13, CGTrader) is licensed and not redistributed: build it locally with tools/assets/build-jumpgate.mjs; without it gates fall back to shader wormholes.

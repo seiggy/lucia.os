@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Stacks;
+using Lucia.Homelab.Server.Telemetry;
 
 namespace Lucia.Homelab.Server.LabMap;
 
@@ -86,7 +87,7 @@ internal sealed record LabTrafficReading(LabSources Sources, Dictionary<string, 
     internal sealed record LabFlowSample(string Source, string Destination, int? Port, string Protocol, string? Server, double Bps);
 
 /// <summary>The lab map's batch of PromQL queries, averaged over a chosen window and reused briefly.</summary>
-public sealed class LabTraffic(PrometheusQuery prometheus)
+public sealed partial class LabTraffic(PrometheusQuery prometheus)
 {
     // Physical interfaces only: Docker's bridges and veths would count each container's traffic again.
     private const string Physical = "device!~\"lo|veth.*|br-.*|docker.*|virbr.*|cni.*|flannel.*|cali.*|tap.*|macvlan.*|lucia.*\"";
@@ -107,9 +108,15 @@ public sealed class LabTraffic(PrometheusQuery prometheus)
     {
         ["1m"] = TimeSpan.FromSeconds(5), ["15m"] = TimeSpan.FromSeconds(30), ["1h"] = TimeSpan.FromMinutes(1), ["24h"] = TimeSpan.FromMinutes(5),
     };
-    internal static string[] QueriesFor(string window, int series = 600) => [.. Queries.Select(query => query
+    internal static string[] QueriesFor(string window, int series = 600) => [.. Queries.Select(query => (window == "24h" ? Daily(query) : query)
         .Replace("[1m]", $"[{window}]", StringComparison.Ordinal).Replace("topk(600,", $"topk({series},", StringComparison.Ordinal)
         .Replace(") / 60)", $") / {window switch { "15m" => 900, "1h" => 3600, "24h" => 86400, _ => 60 }})", StringComparison.Ordinal))];
+    // Raw samples last about an hour, so the last day comes from Observability's 30-minute tier.
+    private static string Daily(string query) => DailyRate().Replace(query,
+            match => $"avg_over_time({match.Groups["metric"].Value}:rate{{{(match.Groups["selector"].Success ? match.Groups["selector"].Value + "," : "")}tier=\"30m\"}}[1m])")
+        .Replace($"{{__name__=~\"{MetricTiers.Flows}(_total)?\"}}", $"{MetricTiers.Flows}:sum{{tier=\"30m\"}}", StringComparison.Ordinal);
+    [System.Text.RegularExpressions.GeneratedRegex(@"rate\((?<metric>[a-z_]+)(?:\{(?<selector>[^}]*)\})?\[1m\]\)")]
+    private static partial System.Text.RegularExpressions.Regex DailyRate();
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, (DateTimeOffset At, LabTrafficReading? Reading)> _last = new(StringComparer.Ordinal);
 

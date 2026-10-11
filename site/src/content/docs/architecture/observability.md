@@ -37,12 +37,13 @@ Managed servers report their status to Lucia through their 30-second heartbeat. 
 
 ## The Observability app
 
-Install **Observability** from **Apps** on any server with Docker ready and room for about 50 GB of telemetry.
+Install **Object storage** first, then **Observability** from **Apps** on any server with Docker ready and room for about 20 GB of telemetry.
 
 | Component | Version | Role |
 |---|---|---|
 | OpenTelemetry Collector (contrib) | 0.161.0 | Receives OTLP with a password; routes traces, metrics and logs |
-| Prometheus | v3.15.0 | Metrics. Keeps 30 days, capped at 40 GB |
+| Prometheus | v3.15.0 | Metrics at full fidelity. Keeps 1 hour |
+| Thanos | v0.42.4 | Sidecar, query, store, four rulers and a compactor. Keeps averaged metrics for 30 days in Object storage |
 | Loki | 3.7.8 | Logs. Keeps 168 hours (7 days) |
 | Tempo | 3.1.0 | Traces. Keeps its default 336 hours (14 days) |
 | Grafana | 13.2.2 | Dashboards and exploration |
@@ -58,6 +59,20 @@ All images are pinned by digest. Default ports:
 | OTLP name | `otlp` under your domain |
 
 **Grafana sign-in** goes through Lucia's Authentik. Members of `lucia-owners` become Grafana admins. Until a domain is active, Grafana also answers on `http://<server>:3030`.
+
+### Metric tiers
+
+Prometheus keeps raw samples for one hour. Four Thanos rulers record averages of every dashboard metric into Object storage, each from the tier before it. The compactor deletes each tier when it ages out:
+
+| Tier | Slice | Kept until |
+|---|---|---|
+| raw | every scrape | 1 hour |
+| `1m` | 1 minute | 6 hours |
+| `30m` | 30 minutes | 24 hours |
+| `1h` | 1 hour | 7 days |
+| `4h` | 4 hours | 30 days |
+
+Gauges are averaged (`avg_over_time`). Counters are recorded as rates (`<metric>:rate`), and NetFlow bytes as sums. Grafana reads through Thanos query. The dashboards and the lab map's 24-hour view pick the finest tier still holding the time they show. Without Object storage, Thanos falls back to a local folder on the Observability server.
 
 ## Telemetry relays
 

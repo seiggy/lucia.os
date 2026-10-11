@@ -63,7 +63,8 @@ public sealed partial class StackStore
     /// <summary>The stack's sign-in, telemetry and lab map variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
     internal static string LuciaLines(string env) =>
         string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal) || line.StartsWith(OtlpPrefix, StringComparison.Ordinal)
-                || line.StartsWith(LabPrefix, StringComparison.Ordinal))
+                || line.StartsWith(LabPrefix, StringComparison.Ordinal) || line.StartsWith(S3Prefix, StringComparison.Ordinal)
+                || line.StartsWith(StoragePrefix, StringComparison.Ordinal))
             .Select(line => line + "\n"));
 }
 

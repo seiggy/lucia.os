@@ -10,6 +10,8 @@ import { ago, assistantPrompt, buildingCategories, buildingCategoriesOf, buildin
 import type { CitySite, ClientGroup, LabMap as LabMapData, LabMapLive, Layout, MapNode, Service } from './labMapModel'
 import { LabScene, palette, toneOf, webglAvailable } from './LabMapScene'
 import type { Layers } from './LabMapScene'
+import { UniverseScene } from './UniverseScene'
+import type { MapScene } from './UniverseScene'
 import './LabMap.css'
 
 type Session = { session: AuthenticationSession; refreshSession: () => Promise<void> }
@@ -30,6 +32,11 @@ const savedSpan = (): Span => spans.find(item => item.key === localStorage.getIt
 const caps = [{ key: '40', label: '40' }, { key: '100', label: '100' }, { key: '1000', label: '1k' }, { key: '0', label: 'All' }] as const
 type Cap = typeof caps[number]['key']
 const savedCap = (): Cap => caps.find(item => item.key === localStorage.getItem('labmap-sites'))?.key ?? '40'
+
+// The same map as a city or as a universe.
+const themes = [{ key: 'city', label: 'City' }, { key: 'universe', label: 'Universe' }] as const
+type Theme = typeof themes[number]['key']
+const savedTheme = (): Theme => themes.find(item => item.key === localStorage.getItem('labmap-theme'))?.key ?? 'city'
 
 function Segmented<T extends string>({ name, label, options, value, onChange }: { name: string; label: string; options: readonly { key: T; label: string }[]; value: T; onChange: (value: T) => void }) {
   return <div className="labmap-span" role="radiogroup" aria-label={label}><span aria-hidden="true">{label}</span>
@@ -77,6 +84,7 @@ function LabMapView({ session, refreshSession }: Session) {
   const [liveTick, setLiveTick] = useState(0)
   const [span, setSpan] = useState<Span>(savedSpan)
   const [cap, setCap] = useState<Cap>(savedCap)
+  const [theme, setTheme] = useState<Theme>(savedTheme)
   const [live, setLive] = useState<LabMapLive | null>(null)
   const [liveAt, setLiveAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -88,7 +96,7 @@ function LabMapView({ session, refreshSession }: Session) {
   const root = useRef<HTMLDivElement>(null)
   const stage = useRef<HTMLDivElement>(null)
   const plates = useRef<HTMLDivElement>(null)
-  const scene = useRef<LabScene | null>(null)
+  const scene = useRef<MapScene | null>(null)
   const sightings = useRef(new Map<string, CitySite & { at: number }>())
   const cityAt = useRef(0)
   const [city, setCity] = useState<CitySite[]>([])
@@ -124,6 +132,7 @@ function LabMapView({ session, refreshSession }: Session) {
     sightings.current.clear()
     cityAt.current = 0
   }, [span, cap])
+  useEffect(() => { localStorage.setItem('labmap-theme', theme) }, [theme])
 
   useEffect(() => {
     if (!visible) return
@@ -162,15 +171,16 @@ function LabMapView({ session, refreshSession }: Session) {
 
   useEffect(() => {
     if (flat || !stage.current || !plates.current) return
-    const instance = new LabScene(stage.current, plates.current, { select: id => setSelected(id) }, compact)
+    const events = { select: (id: string | null) => setSelected(id) }
+    const instance: MapScene = theme === 'universe' ? new UniverseScene(stage.current, plates.current, events) : new LabScene(stage.current, plates.current, events, compact)
     scene.current = instance
     return () => { instance.dispose(); scene.current = null }
-  }, [flat, compact])
-  useEffect(() => { if (layout) scene.current?.setLayout(layout) }, [layout, flat, compact])
-  useEffect(() => { scene.current?.setLive(live) }, [live, layout, flat, compact])
-  useEffect(() => { scene.current?.setLayers(layers) }, [layers, layout, flat, compact])
-  useEffect(() => { scene.current?.select(selected, route) }, [selected, route, flat, compact])
-  useEffect(() => { scene.current?.setWallboard(wallboard) }, [wallboard, flat, compact])
+  }, [flat, compact, theme])
+  useEffect(() => { if (layout) scene.current?.setLayout(layout) }, [layout, flat, compact, theme])
+  useEffect(() => { scene.current?.setLive(live) }, [live, layout, flat, compact, theme])
+  useEffect(() => { scene.current?.setLayers(layers) }, [layers, layout, flat, compact, theme])
+  useEffect(() => { scene.current?.select(selected, route) }, [selected, route, flat, compact, theme])
+  useEffect(() => { scene.current?.setWallboard(wallboard) }, [wallboard, flat, compact, theme])
   useEffect(() => { if (selected && layout && !layout.nodes.has(selected)) setSelected(null) }, [layout, selected])
 
   useEffect(() => {
@@ -237,7 +247,7 @@ function LabMapView({ session, refreshSession }: Session) {
   const select = useCallback((id: string | null) => { setSelected(id); setListOpen(false) }, [])
   const tourNode = tour && layout ? layout.nodes.get(tour) : undefined
 
-  return <div ref={root} className="labmap" data-wallboard={wallboard || undefined} data-panel={selected ? 'open' : undefined}>
+  return <div ref={root} className="labmap" data-theme={theme} data-wallboard={wallboard || undefined} data-panel={selected ? 'open' : undefined}>
     {!wallboard && <header className="labmap-toolbar">
       <h1>Map</h1>
       {map && layout && <MapSearch map={map} layout={layout} onSelect={select} />}
@@ -249,6 +259,7 @@ function LabMapView({ session, refreshSession }: Session) {
       </details>
       <Segmented name="labmap-span" label="Traffic" options={spans} value={span} onChange={setSpan} />
       <Segmented name="labmap-sites" label="Internet sites" options={caps} value={cap} onChange={setCap} />
+      {!flat && <Segmented name="labmap-theme" label="Theme" options={themes} value={theme} onChange={setTheme} />}
       <button type="button" className="labmap-tool" aria-expanded={listOpen} aria-controls="labmap-list" onClick={() => setListOpen(!listOpen)}><Icon name="tasks" />List</button>
       <button type="button" className="labmap-tool" onClick={() => void toggleWallboard()}><Icon name="expand" />Wallboard</button>
     </header>}

@@ -1,0 +1,1 @@
+{"name":"lucia-assets","private":true,"type":"module","description":"Converts purchased 3D models into the compressed assets the frontend loads.","dependencies":{"@gltf-transform/core":"^4.5.1","@gltf-transform/functions":"^4.5.1","sharp":"^0.35.5"}}

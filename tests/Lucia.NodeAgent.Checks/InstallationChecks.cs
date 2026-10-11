@@ -586,6 +586,11 @@ internal static class InstallationChecks
             && value.Json.Contains("\"device\":\"/srv/lucia/stacks/media/volumes/config\"", StringComparison.Ordinal),
             "Only plain named volumes may be redirected to the stack directory.");
         Check(StackRunner.VolumeOverride("""{"services":{}}""", "/srv/lucia/stacks/x") is null, "A stack without volumes needs no override.");
+        var logging = StackRunner.LoggingOverride("""{"services":{"web":{"image":"a"},"db":{"image":"b","logging":{"driver":"syslog"}}}}""")?.ToJsonString() ?? "";
+        Check(logging.Contains("\"web\":{\"logging\":{\"driver\":\"json-file\"", StringComparison.Ordinal) && logging.Contains("com.docker.compose.service", StringComparison.Ordinal)
+            && logging.Contains("\"max-size\":\"20m\"", StringComparison.Ordinal) && !logging.Contains("\"db\"", StringComparison.Ordinal)
+            && StackRunner.LoggingOverride("""{"services":{}}""") is null,
+            "Services without a logging choice must get rotating json-file logs that name their compose service; the owner's choice stays.");
 
         var snapshotId = new string('d', 64);
         var backupOutput = """
@@ -607,6 +612,11 @@ internal static class InstallationChecks
             && !excludes.Any(path => path.Contains("..", StringComparison.Ordinal) || path.Contains('*') || path.EndsWith("//abs", StringComparison.Ordinal))
             && !excludes.Contains("/srv/lucia/stacks/ai/.env"),
             "Backups must skip Lucia's bookkeeping and the app's declared caches, and nothing outside the app.");
+        Check(ResticBackups.Holder("unable to create lock in backend: repository is already locked exclusively by PID 812 on lucialab01 by root (UID 0, GID 0)\nthe `unlock` command can be used to remove stale locks")
+                == "It was held by PID 812 on lucialab01."
+            && ResticBackups.Holder("repository is already locked by PID 45652 on SEIGGY-DESKTOP by SEIGGY-DESKTOP\\zackw") == "It was held by PID 45652 on SEIGGY-DESKTOP."
+            && ResticBackups.Holder("Fatal: wrong password") == "",
+            "A lock conflict must name the backup that held the repository, not suggest unlocking it.");
 
         var links = StackAddresses.ParseLinks("""
             [{"ifname":"lo","addr_info":[{"local":"127.0.0.1","prefixlen":8}]},

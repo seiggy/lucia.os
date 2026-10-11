@@ -109,10 +109,32 @@ internal static class StackChecks
             && obs.Compose.Contains("$${env:OTLP_USERNAME}:$${env:OTLP_PASSWORD}", StringComparison.Ordinal)
             && obs.Compose.Contains("url: '$$$${__value.raw}'", StringComparison.Ordinal)
             && obs.Compose.Contains("GF_SERVER_ROOT_URL: ${LUCIA_URL_GRAFANA:-http://lucialab01:3030}\n", StringComparison.Ordinal)
-            && obs.Compose.Split('\n').Count(line => System.Text.RegularExpressions.Regex.IsMatch(line, "^      lucia\\.configs: \"[0-9a-f]{16}\"$")) == 5
+            && obs.Compose.Split('\n').Count(line => System.Text.RegularExpressions.Regex.IsMatch(line, "^      lucia\\.configs: \"[0-9a-f]{16}\"$")) == 9
             && obs.Routes is [{ Host: "grafana", Port: 3030, GrpcPort: null }, { Host: "otlp", Port: 4318, GrpcPort: 4317 }],
             "Observability must keep its secrets, escape its configs for compose, recreate services whose configs change and route Grafana and OTLP.");
-        foreach (var dashboard in new[] { "hardware", "inference" })
+        check(observability.Bucket && obs.Compose.Contains("      - --storage.tsdb.retention.time=1h\n", StringComparison.Ordinal)
+            && obs.Compose.Contains("    url: http://query:10902\n", StringComparison.Ordinal)
+            && obs.Compose.Contains("    OBJSTORE: ${LUCIA_S3_OBJSTORE:-}\n", StringComparison.Ordinal)
+            && obs.Compose.Contains("for t in 1m:6h 30m:24h 1h:7d 4h:30d; do", StringComparison.Ordinal)
+            && new[] { "1m", "30m", "1h", "4h" }.All(tier => obs.Compose.Contains($"      - --label=tier=\"{tier}\"\n", StringComparison.Ordinal)
+                && obs.Compose.Contains($"      - --endpoint=rule-{tier}:10901\n", StringComparison.Ordinal))
+            && obs.Compose.Contains("record: node_cpu_seconds_total:rate", StringComparison.Ordinal)
+            && obs.Compose.Contains("avg_over_time(node_load1:avg{tier=\"1h\"}[4h])", StringComparison.Ordinal)
+            && obs.Compose.Contains("processors: [memory_limiter, filter/health, batch]", StringComparison.Ordinal),
+            "Observability must keep an hour of raw metrics, average them into Thanos tiers with their own retention and read every tier through Thanos Query.");
+        var storageApp = StackCatalog.Find("object-storage");
+        var storage = storageApp.Render(StackCatalog.Settings(storageApp, null), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        var storageEnv = StackCatalog.ReadEnv(storage.Env);
+        check(storageEnv["GARAGE_RPC_SECRET"].Length == 64 && storageEnv["GARAGE_RPC_SECRET"].All(char.IsAsciiHexDigitLower)
+            && storageApp.Render(StackCatalog.Settings(storageApp, null), new(Guid.NewGuid(), "lucialab01", true, null), storageEnv).Env == storage.Env
+            && storageApp.Sso(StackCatalog.Settings(storageApp, null)) == new AppSso("Storage", "storage", "/auth/oidc/callback")
+            && storage.Compose.Contains("      GRANTS: ${LUCIA_STORAGE_GRANTS:-}\n", StringComparison.Ordinal)
+            && storage.Compose.Contains("      access_control: {teams: []}\n", StringComparison.Ordinal)
+            && storage.Routes is [{ Host: "s3", Port: 3900 }, { Host: "storage", Port: 3909 }] && storageApp.BackupMode == "stop"
+            && ObjectStorageApp.Key("g", "observability") is { Length: 26 } storageKey && storageKey.StartsWith("GK", StringComparison.Ordinal)
+            && ObjectStorageApp.KeySecret("g", "observability").Length == 64 && ObjectStorageApp.Key("g", "other") != storageKey,
+            "Object storage must keep its secrets, sign owners in through Lucia, provision each app's grant and derive a distinct key per app.");
+        foreach (var dashboard in new[] { "hardware", "inference", "containers" })
         {
             var dashboardLine = obs.Compose.Split('\n').Single(line => line.TrimStart().StartsWith($"{{\"uid\":\"lucia-{dashboard}\"", StringComparison.Ordinal));
             System.Text.Json.JsonDocument.Parse(dashboardLine.Replace("$$", "$", StringComparison.Ordinal)).Dispose();
@@ -173,9 +195,10 @@ internal static class StackChecks
         foreach (var path in new[] { "/srv/photos", "/mnt/lucia/nas/unas", "/mnt/lucia/nas/unas/Media/../etc", "/mnt/lucia/nas/unas/Media/a b" })
             Rejects(() => immich.Render(StackCatalog.Settings(immich, new() { ["library"] = path }), new(Guid.NewGuid(), "lucialab01", true, null),
                 new Dictionary<string, string>()), $"Immich accepted {path} as its photo library.");
-        check(StackStore.LuciaLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\n")
-                == "LUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\n" && StackStore.LuciaLines("A=1\n") == "",
-            "A catalog app's sign-in and telemetry variables must survive re-rendering.");
+        check(StackStore.LuciaLines("A=1\nLUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\nB=2\nLUCIA_S3_BUCKET=b\nLUCIA_STORAGE_GRANTS=g\n")
+                == "LUCIA_SSO_ENABLED=true\nLUCIA_OTLP_ENDPOINT=https://otlp.example\nLUCIA_SSO_ORIGIN=https://auth.example\nLUCIA_S3_BUCKET=b\nLUCIA_STORAGE_GRANTS=g\n"
+                && StackStore.LuciaLines("A=1\n") == "",
+            "A catalog app's sign-in, telemetry and storage variables must survive re-rendering.");
         var liteLlm = StackCatalog.Find("litellm");
         var ll = liteLlm.Render(StackCatalog.Settings(liteLlm, null), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
         var llEnv = StackCatalog.ReadEnv(ll.Env);
@@ -379,6 +402,10 @@ internal static class StackChecks
             && dockerRelay.Contains("receivers: [otlp, prometheus, docker_stats]", StringComparison.Ordinal)
             && dockerRelay.Contains("container.network.io.usage.rx_bytes:\n        enabled: true", StringComparison.Ordinal)
             && dockerCompose.Contains("    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n", StringComparison.Ordinal)
+            && dockerRelay.Contains("filelog/docker:", StringComparison.Ordinal) && dockerRelay.Contains("receivers: [otlp, filelog/docker]", StringComparison.Ordinal)
+            && dockerRelay.Contains("processors: [memory_limiter, transform/docker, groupbyattrs/docker, resource, batch]", StringComparison.Ordinal)
+            && dockerCompose.Contains("      - /var/lib/docker/containers:/var/lib/docker/containers:ro\n", StringComparison.Ordinal)
+            && !relayConfig.Contains("filelog", StringComparison.Ordinal)
             && dockerCompose.Contains("    cap_drop: [ALL]\n", StringComparison.Ordinal)
             && !relayConfig.Contains("docker_stats", StringComparison.Ordinal) && !relayCompose.Contains("docker.sock", StringComparison.Ordinal),
             "A node's relay must read container stats through a read-only Docker socket with no capabilities, and only when asked.");

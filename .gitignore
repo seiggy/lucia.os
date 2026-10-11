@@ -43,3 +43,6 @@ secrets/
 .impeccable/live/
 .impeccable/critique/
 .impeccable/screenshots/
+
+# Licensed jumpgate model (CGTrader, no redistribution); rebuild with tools/assets/build-jumpgate.mjs
+src/frontend/public/universe/models/jumpgate/
