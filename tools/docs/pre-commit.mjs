@@ -50,13 +50,20 @@ function runAgent() {
     'If nothing a person would notice changed, change nothing and say so.',
   ].join('\n'));
   say(`${changed.length} product file${changed.length === 1 ? '' : 's'} changed. Asking docs-keeper (${model}) what the docs need…`);
-  const run = spawnSync('copilot', ['--agent', 'docs-keeper', '--model', model, '--allow-all-tools', '--allow-all-paths', '--add-dir', root, '-s', '-p',
-    `Read ${task} and do what it says.`], {
+  // With a shell (Windows, where copilot is a .cmd shim) arguments are only concatenated, so paths and the prompt need their own quotes.
+  const quote = text => process.platform === 'win32' ? `"${text}"` : text;
+  const run = spawnSync('copilot', ['--agent', 'docs-keeper', '--model', model, '--allow-all-tools', '--allow-all-paths', '--add-dir', quote(root), '-s', '-p',
+    quote(`Read ${task} and do what it says.`)], {
     cwd: root, encoding: 'utf8', shell: process.platform === 'win32', timeout: minutes * 60_000, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, LUCIA_DOCS_RUNNING: '1' },
   });
   for (const file of [patch, task]) fs.rmSync(file, { force: true });
-  if (run.error || run.status !== 0) { say(`docs-keeper didn't finish (${run.error?.code ?? `exit ${run.status}`}). Commit goes ahead; run it by hand later.`); return; }
+  if (run.error || run.status !== 0) {
+    say(`docs-keeper didn't finish (${run.error?.code ?? `exit ${run.status}`}). Commit goes ahead; run it by hand later.`);
+    const why = (run.stderr || run.stdout || '').trim().split('\n').slice(-6);
+    if (why.length && why[0]) console.log(why.map(line => `[docs]   ${line}`).join('\n'));
+    return;
+  }
   const report = (run.stdout || '').trim();
   if (report) console.log(report.split('\n').slice(-12).map(line => `[docs]   ${line}`).join('\n'));
 
