@@ -161,8 +161,10 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         {
             var job = info.JobId is { } jobId && Jobs is { } jobs
                 ? await jobs.GrantsAsync(turn.Owner, jobId, Path.GetFileName(folder), run.Stop.Token) : null;
+            var settings = await broker.SettingsAsync(turn.Owner, run.Stop.Token);
+            turn = turn with { ModelEfforts = settings.ModelEfforts };
             var kit = tools is null ? null
-                : broker.Kit(turn, await broker.SettingsAsync(turn.Owner, run.Stop.Token), tools.Create(turn.Actor, turn.User), stream, run, job);
+                : broker.Kit(turn, settings, tools.Create(turn.Actor, turn.User), stream, run, job);
             await foreach (var update in runtime.RunAsync(turn, kit, run.Stop.Token))
                 lock (stream) run.Publish(stream.Map(update));
             lock (stream) run.Publish(stream.Finish());

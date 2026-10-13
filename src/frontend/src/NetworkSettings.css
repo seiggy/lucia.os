@@ -17,6 +17,11 @@
 .network-checkbox { display: flex !important; align-items: flex-start; gap: 12px; font-size: 14px; font-weight: 400 !important; margin: 24px 0; max-width: 75ch; }
 .network-checkbox input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
 .assistant-settings-tools .network-checkbox { margin: 14px 0; }
+.assistant-settings-models { display: grid; gap: 8px; margin-top: 12px; }
+.assistant-settings-model { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 20px; min-width: 0; padding: 4px 0 10px; border-bottom: 1px solid var(--line); }
+.assistant-settings-model legend { float: left; width: 100%; padding: 8px 0 2px; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.assistant-settings-model legend + * { clear: both; }
+.assistant-settings-model .network-checkbox { margin: 6px 0; }
 .assistant-settings-sites { display: block; font-size: 14px; font-weight: 650; }
 .network-steps { display: flex; gap: 12px 24px; flex-wrap: wrap; padding: 0; margin: 0 0 28px; list-style-position: inside; color: var(--muted); font-size: 14px; }
 .network-steps [aria-current="step"] { color: var(--accent-ink); font-weight: 650; }

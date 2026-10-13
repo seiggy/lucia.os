@@ -126,10 +126,37 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
         if (app is null) return new("litellm", "LiteLLM", [], problem);
         try
         {
-            var models = (await LiteLlmModelsAsync(owner, app, ct)).Models.Select(item => new AssistantModel("litellm:" + item.Id, item.Id, item.Context)).ToArray();
+            var served = (await LiteLlmModelsAsync(owner, app, ct)).Models;
+            var info = await LiteLlmInfoAsync(app, ct);
+            var models = served.Select(item =>
+            {
+                var known = info.GetValueOrDefault(item.Id);
+                return new AssistantModel("litellm:" + item.Id, item.Id, item.Context ?? known.Context, known.Reasoning ? ["low", "medium", "high"] : null);
+            }).ToArray();
             return new("litellm", "LiteLLM", models, models.Length == 0 ? "LiteLLM has no models yet. Add one on its admin page." : null);
         }
         catch (Exception e) when (Unreachable(e, ct)) { return new("litellm", "LiteLLM", [], Failure(app, "LiteLLM", e)); }
+    }
+
+    /// <summary>What LiteLLM knows of each model: whether it reasons and its input limit. It lists no efforts, so those come from the owner's settings. Best effort.</summary>
+    private async Task<Dictionary<string, (bool Reasoning, int? Context)>> LiteLlmInfoAsync(AppEndpoint app, CancellationToken ct)
+    {
+        var found = new Dictionary<string, (bool Reasoning, int? Context)>(StringComparer.Ordinal);
+        try
+        {
+            var reply = await SendAsync(HttpMethod.Get, app.BaseUri!, "model/info", app.Key, null, ct);
+            if (reply.ValueKind != JsonValueKind.Object || !reply.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return found;
+            foreach (var item in data.EnumerateArray().Take(500))
+            {
+                if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("model_name", out var name) || name.ValueKind != JsonValueKind.String
+                    || !item.TryGetProperty("model_info", out var card) || card.ValueKind != JsonValueKind.Object) continue;
+                var reasoning = card.TryGetProperty("supports_reasoning", out var flag) && flag.ValueKind == JsonValueKind.True;
+                var before = found.GetValueOrDefault(name.GetString()!);
+                found[name.GetString()!] = (before.Reasoning || reasoning, before.Context ?? Number(card, "max_input_tokens"));
+            }
+        }
+        catch (Exception e) when (Unreachable(e, ct)) { logger.LogDebug("LiteLLM's model info was unavailable ({ErrorType}).", e.GetType().Name); }
+        return found;
     }
 
     private async Task<(string Key, ServedModel[] Models)> LiteLlmModelsAsync(string owner, AppEndpoint app, CancellationToken ct)

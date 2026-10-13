@@ -240,7 +240,7 @@ public static class HostAuthentication
             // Traefik connects through Docker's network, never loopback; the API key is still required.
             if (context.Connection.LocalIpAddress is { } local
                 && System.Net.IPAddress.IsLoopback(local.IsIPv4MappedToIPv6 ? local.MapToIPv4() : local)
-                && context.Request.Path.StartsWithSegments("/v1")
+                && (context.Request.Path.StartsWithSegments("/v1") || context.Request.Path.StartsWithSegments("/assistant-engine"))
                 && context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
                 await next(context);

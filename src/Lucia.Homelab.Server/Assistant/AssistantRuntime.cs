@@ -24,12 +24,14 @@ public sealed class AssistantOptions
 
 /// <param name="Reasoning">The reasoning effort to ask Copilot's model for, when it supports one.</param>
 /// <param name="ContextTier">"default" or "long_context", for Copilot models that offer both.</param>
+/// <param name="ModelEfforts">The owner's allowed reasoning efforts per model of their own, which only a turn that needs one reads.</param>
 public sealed record AssistantTurn(string Owner, string SessionKey, string Prompt, string? Model, string Mode = "execute",
-    string Actor = "assistant", string? User = null, string? Reasoning = null, string? ContextTier = null);
+    string Actor = "assistant", string? User = null, string? Reasoning = null, string? ContextTier = null,
+    IReadOnlyDictionary<string, string[]>? ModelEfforts = null);
 
 /// <summary>One Copilot CLI child in Empty mode (no built-in tools, files, shell or ambient config), shared by every session.</summary>
 public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubSignIn github, AssistantProviders providers,
-    ILoggerFactory loggers) : IAsyncDisposable
+    ILoggerFactory loggers, AssistantEngineProxy? engines = null) : IAsyncDisposable
 {
     public const string TelemetryName = "Lucia.Assistant";
 
@@ -120,11 +122,18 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
 
     /// <summary>Every source's models; a source that can't list says why instead of failing the others.
     /// <c>connected</c> is false when Copilot can't be used with the owner's sign-in, and stays true through a passing failure.</summary>
-    public async Task<object> ModelsAsync(string owner, CancellationToken ct)
+    /// <param name="efforts">The owner's reasoning efforts for their own models, which replace what a source reported.</param>
+    public async Task<object> ModelsAsync(string owner, IReadOnlyDictionary<string, string[]>? efforts, CancellationToken ct)
     {
         var others = providers.ListAsync(owner, ct);
         var (connected, copilot) = await CopilotModelsAsync(owner, ct);
         AssistantSource[] sources = [copilot, .. await others];
+        if (efforts is { Count: > 0 })
+            sources = [.. sources.Select(source => source with
+            {
+                Models = [.. source.Models.Select(model => efforts.TryGetValue(model.Id, out var allowed)
+                    ? model with { Reasoning = allowed.Length > 0 ? allowed : null, DefaultReasoning = null } : model)],
+            })];
         return new { connected, defaultModel = DefaultModel, sources, models = sources.SelectMany(source => source.Models).ToArray() };
     }
 
@@ -188,14 +197,26 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         var (provider, model) = await providers.ResolveAsync(turn.Owner, turn.Model ?? DefaultModel, ct);
         var token = provider is null ? await github.TokenAsync(turn.Owner, ct) ?? throw GitHubSignIn.NotConnected() : null;
         var (effort, tier) = provider is null ? await TuningAsync(turn, model, ct) : (null, null);
+        // A model of the owner's gets its effort through a loopback shim, only when they allow that effort for it.
+        IDisposable? lease = null;
+        var modelId = turn.Model ?? DefaultModel;
+        if (provider is not null && turn.Reasoning is { } wanted && engines is not null
+            && (turn.ModelEfforts is not null && modelId is not null && turn.ModelEfforts.TryGetValue(modelId, out var allowed)
+                ? allowed.Contains(wanted) : AssistantEngineProxy.Efforts.Contains(wanted))
+            && engines.Open(provider, wanted) is { } routed)
+            (provider, lease) = (routed.Provider, routed.Lease);
         var client = await ClientAsync(ct);
         var resume = await client.GetSessionMetadataAsync(turn.SessionKey, ct) is not null;
         var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, model, token, provider, kit, effort, tier),
             name: "lucia-assistant", loggerFactory: loggers);
         using var agent = new OpenTelemetryAgent(copilot, TelemetryName);
         var session = resume ? await copilot.CreateSessionAsync(turn.SessionKey) : await copilot.CreateSessionAsync(ct);
-        await foreach (var update in agent.RunStreamingAsync(turn.Prompt, session, cancellationToken: ct))
-            yield return update;
+        try
+        {
+            await foreach (var update in agent.RunStreamingAsync(turn.Prompt, session, cancellationToken: ct))
+                yield return update;
+        }
+        finally { lease?.Dispose(); }
     }
 
     /// <summary>Cancelling a MAF run only detaches from the session, so reattach and abort the turn. Best effort.</summary>

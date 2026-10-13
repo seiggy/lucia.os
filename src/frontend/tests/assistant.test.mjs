@@ -176,7 +176,9 @@ assert.deepEqual(waitingParts([], true), [])
 
 const settings = { autoTools: ['app_action'], hosts: ['docs.docker.com'], tools: [{ name: 'app_action', tier: 'change', description: 'Starts an app.' },
   { name: 'run_command', tier: 'destructive', description: 'Runs a command.' }] }
-assert.deepEqual(parseSettings(settings), settings)
+assert.deepEqual(parseSettings(settings), { ...settings, modelEfforts: {} })
+assert.deepEqual(parseSettings({ ...settings, modelEfforts: { 'local:qwen3': ['none', 'low', 'turbo', 3], 'bad id!': ['low'], gpt: 'x' } }).modelEfforts, { 'local:qwen3': ['none', 'low'] })
+assert.equal(effortLabel('none'), 'Disabled')
 for (const broken of [null, { ...settings, hosts: 'docs.docker.com' }, { ...settings, autoTools: [3] }, { ...settings, tools: null },
   { ...settings, tools: [{ name: 'x', tier: 'risky', description: '' }] }, { ...settings, tools: [{ name: '', tier: 'read', description: '' }] }])
   assert.throws(() => parseSettings(broken))

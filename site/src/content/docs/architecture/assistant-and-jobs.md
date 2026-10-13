@@ -33,6 +33,8 @@ The composer's footer carries three controls beside the model menu:
 
 Your picks are remembered per model on this browser. Lucia only passes an effort or window to a model that offers it, so a stale choice never fails a turn.
 
+**Models of your own.** LiteLLM and Local AI models report no reasoning efforts, so you say which each accepts in **Settings → Assistant → Reasoning for your own models**: Disabled, Low, Medium, High and Extra high. A LiteLLM model that reports reasoning starts with Low, Medium and High. For a turn that picks one of these, Lucia sends the model's requests through a small loopback shim that writes the choice in: Disabled sends `chat_template_kwargs.enable_thinking: false` (how Qwen-style engines turn thinking off) and the others send `reasoning_effort`. Turns that leave the effort on the default skip the shim.
+
 ## Tools
 
 Every tool belongs to a tier, and the tier decides what happens when the assistant calls it.

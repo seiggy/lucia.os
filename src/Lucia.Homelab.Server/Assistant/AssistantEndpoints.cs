@@ -25,6 +25,7 @@ public static class AssistantEndpoints
             AssistantProviders.CreateClient(),
             (Func<CancellationToken, Task<IReadOnlyList<AppEndpoint>>>)(ct => services.GetRequiredService<StackStore>().AiEndpoints(ct)),
             (Func<SparkInference>)(() => Spark(services))));
+        builder.Services.AddSingleton(services => new AssistantEngineProxy(() => LoopbackPort(services)));
         builder.Services.AddSingleton<AssistantRuntime>();
         builder.Services.AddSingleton<AssistantBroker>();
         builder.Services.AddSingleton<AssistantTools>();
@@ -34,13 +35,17 @@ public static class AssistantEndpoints
         builder.Services.AddHostedService(services => services.GetRequiredService<AssistantJobs>());
     }
 
+    /// <summary>The port the host listens on over plain HTTP, which only loopback callers inside the container reach.</summary>
+    private static int? LoopbackPort(IServiceProvider services) =>
+        services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses
+            .Select(BindingAddress.Parse).FirstOrDefault(address => address.Scheme == "http")?.Port;
+
     /// <summary>The Spark's model over loopback, which the host proxy lets through with the inference key.</summary>
     private static SparkInference Spark(IServiceProvider services)
     {
         var runtime = services.GetRequiredService<InferenceRuntime>();
         var platform = services.GetRequiredService<IOptions<HostPlatformOptions>>().Value;
-        var port = services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses
-            .Select(BindingAddress.Parse).FirstOrDefault(address => address.Scheme == "http")?.Port;
+        var port = LoopbackPort(services);
         var model = runtime.ChatModelName;
         var problem = string.IsNullOrEmpty(platform.InferenceApiKey) ? "Set HostPlatform:InferenceApiKey to use the Spark's model."
             : model is null ? runtime.StartupError ?? "No chat model is loaded on the Spark. Load one on the AI page."
@@ -61,6 +66,8 @@ public static class AssistantEndpoints
     {
         var group = app.MapGroup("/api/assistant").WithTags("Assistant")
             .RequireAuthorization("HostOwner").AddEndpointFilter<AssistantFilter>();
+        // Loopback only, with a per-turn key the host hands the runtime; the host proxy lets exactly that through.
+        app.Map(AssistantEngineProxy.Path + "/{**rest}", (HttpContext context, AssistantEngineProxy engines) => engines.Forward(context)).AllowAnonymous();
         group.MapPost("/chat", async (HttpContext context, AssistantRuns runs, CancellationToken ct) =>
         {
             var (actor, user) = Actor(context);
@@ -119,7 +126,8 @@ public static class AssistantEndpoints
             await runs.DeleteAsync(Owner(context), id, ct);
             return Results.NoContent();
         });
-        group.MapGet("/models", (HttpContext context, AssistantRuntime runtime, CancellationToken ct) => runtime.ModelsAsync(Owner(context), ct));
+        group.MapGet("/models", async (HttpContext context, AssistantRuntime runtime, AssistantBroker broker, CancellationToken ct) =>
+            await runtime.ModelsAsync(Owner(context), (await broker.SettingsAsync(Owner(context), ct)).ModelEfforts, ct));
         // The registries a job may be allowed to query: the common public ones, and those the owner signed in to.
         group.MapGet("/registries", async (StackStore stacks, CancellationToken ct) => new
         {
@@ -222,6 +230,7 @@ public static class AssistantEndpoints
     {
         autoTools = settings.AutoTools,
         hosts = settings.Hosts,
+        modelEfforts = settings.ModelEfforts ?? [],
         tools = tools.Create("owner", null).Select(tool => new { name = tool.Name, tier = tool.Tier, description = tool.Description }),
     };
 

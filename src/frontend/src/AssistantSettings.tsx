@@ -2,8 +2,8 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
-import { parseSettings, toolLabel } from './assistant'
-import type { AssistantTool } from './assistant'
+import { effortLabel, parseModels, parseSettings, reasoningEfforts, toolLabel } from './assistant'
+import type { AssistantModel, AssistantTool } from './assistant'
 import './NetworkSettings.css'
 
 const failureText = (failure: unknown, fallback: string) => failure instanceof TypeError
@@ -16,6 +16,11 @@ function siteName(entry: string) {
 export function AssistantSettings({ session, refreshSession }: { session: AuthenticationSession; refreshSession: () => Promise<void> }) {
   const [tools, setTools] = useState<AssistantTool[]>([])
   const [auto, setAuto] = useState<string[]>([])
+  const [custom, setCustom] = useState<AssistantModel[]>([])
+  const [chosen, setChosen] = useState<Record<string, string[]>>({})
+  // What each model offered when the page opened, and which the host already holds a choice for, so Save sends only what changed.
+  const initial = useRef<Record<string, string[]>>({})
+  const configured = useRef<Record<string, string[]>>({})
   const [sites, setSites] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -33,9 +38,19 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
   useEffect(() => {
     const controller = new AbortController()
     if (!session.isOwner) { setLoading(false); return }
-    void ownerRequest(session, refreshSession, '/api/assistant/settings', 'GET', undefined, controller.signal)
-      .then(response => response.json()).then(parseSettings).then(value => {
-        if (!controller.signal.aborted) { setTools(value.tools); setAuto(value.autoTools); setSites(value.hosts.join('\n')) }
+    void Promise.all([
+      ownerRequest(session, refreshSession, '/api/assistant/settings', 'GET', undefined, controller.signal).then(response => response.json()).then(parseSettings),
+      // Models are read apart from the settings, so a source that is down never hides the permissions.
+      ownerRequest(session, refreshSession, '/api/assistant/models', 'GET', undefined, controller.signal).then(response => response.json()).then(parseModels)
+        .catch(() => null),
+    ]).then(([value, models]) => {
+        if (controller.signal.aborted) return
+        setTools(value.tools); setAuto(value.autoTools); setSites(value.hosts.join('\n'))
+        const own = models?.sources.filter(source => source.id !== 'github').flatMap(source => source.models) ?? []
+        setCustom(own)
+        configured.current = value.modelEfforts
+        initial.current = Object.fromEntries(own.map(model => [model.id, model.reasoning ?? []]))
+        setChosen(initial.current)
       }).catch(failure => { if (!controller.signal.aborted) setError(failureText(failure, 'Assistant settings are unavailable.')) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => { controller.abort(); pending.current?.abort() }
@@ -48,10 +63,13 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
     pending.current = controller
     setBusy(true); setSaveError(null); setBadSites(false); setNotice('')
     try {
+      const modelEfforts = Object.fromEntries(Object.entries(chosen).filter(([id, list]) =>
+        id in configured.current || JSON.stringify(list) !== JSON.stringify(initial.current[id] ?? [])))
       const value = parseSettings(await (await ownerRequest(session, refreshSession, '/api/assistant/settings', 'PUT',
-        { autoTools: auto, hosts: sites.split(/[\s,]+/).filter(Boolean).map(siteName) }, controller.signal)).json())
+        { autoTools: auto, hosts: sites.split(/[\s,]+/).filter(Boolean).map(siteName), modelEfforts }, controller.signal)).json())
       if (controller.signal.aborted) return
       setTools(value.tools); setAuto(value.autoTools); setSites(value.hosts.join('\n'))
+      configured.current = value.modelEfforts
       setNotice('Saved. The assistant follows these from your next message.')
     } catch (failure) {
       if (controller.signal.aborted) return
@@ -63,6 +81,13 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
     }
   }
   const toggle = (name: string) => { setNotice(''); setAuto(current => current.includes(name) ? current.filter(item => item !== name) : [...current, name]) }
+  const toggleEffort = (model: string, effort: string) => {
+    setNotice('')
+    setChosen(current => {
+      const list = current[model] ?? []
+      return { ...current, [model]: reasoningEfforts.filter(item => item === effort ? !list.includes(item) : list.includes(item)) }
+    })
+  }
 
   if (!session.isOwner) return <div className="page-intro"><h1>Owner access is needed.</h1><p>Only lab owners can choose what the assistant may do.</p></div>
   const changes = tools.filter(tool => tool.tier === 'change')
@@ -88,6 +113,17 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
           spellCheck={false} disabled={busy} aria-invalid={badSites || undefined} aria-describedby={badSites ? `${sitesHint} ${saveAlert}` : sitesHint}
           onChange={event => { setNotice(''); setSites(event.target.value) }} placeholder="docs.docker.com" /></label>
         <p id={sitesHint} className="section-note">One host name per line, like docs.docker.com; a subdomain needs its own line. For any other site it asks first. It reads public sites only, never your own network.</p>
+      </section>
+      <section className="surface network-section">
+        <h2>Reasoning for your own models</h2>
+        <p className="section-note">Tick the efforts each model accepts and they appear on the composer’s reasoning button and in jobs. Disabled turns thinking off (it sends <code>enable_thinking: false</code>); the others send <code>reasoning_effort</code>. LiteLLM models that report reasoning start with Low, Medium and High.</p>
+        {!custom.length ? <p className="section-note">{loading ? '' : 'Models from LiteLLM and Local AI appear here once they’re running.'}</p>
+          : <div className="assistant-settings-models">{custom.map(model => <fieldset key={model.id} className="assistant-settings-model">
+            <legend>{model.name}</legend>
+            {reasoningEfforts.map(effort => <label key={effort} className="network-checkbox">
+              <input type="checkbox" checked={(chosen[model.id] ?? []).includes(effort)} disabled={busy} onChange={() => toggleEffort(model.id, effort)} />
+              <span>{effortLabel(effort)}</span></label>)}
+          </fieldset>)}</div>}
       </section>
       {/* Beside Save, not at the top: the page outgrows a laptop screen. */}
       <div className="network-actions">

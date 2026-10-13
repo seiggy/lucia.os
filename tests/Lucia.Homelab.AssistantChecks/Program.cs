@@ -282,6 +282,23 @@ try
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
         "The assistant has 16 read, 1 web, 1 registry, 1 secret, 9 change and 6 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolRegistry = ToolSchema("query_registry");
+    // Reasoning for models the owner brought: written into the request for the engine, only for chat requests, and only for allowed efforts.
+    string RewriteOf(string json, string effort) => System.Text.Encoding.UTF8.GetString(AssistantEngineProxy.Rewrite(System.Text.Encoding.UTF8.GetBytes(json), effort));
+    var disabled = JsonNode.Parse(RewriteOf("""{"model":"q","messages":[],"reasoning_effort":"high","chat_template_kwargs":{"x":1}}""", "none"))!;
+    var lowered = JsonNode.Parse(RewriteOf("""{"model":"q","messages":[]}""", "low"))!;
+    Check(disabled["reasoning_effort"] is null && !(bool)disabled["chat_template_kwargs"]!["enable_thinking"]! && (int)disabled["chat_template_kwargs"]!["x"]! == 1
+        && (string)lowered["reasoning_effort"]! == "low" && lowered["chat_template_kwargs"] is null
+        && RewriteOf("""{"input":"x"}""", "low") == """{"input":"x"}""" && RewriteOf("not json", "low") == "not json",
+        "Disabled turns thinking off with enable_thinking:false, other efforts send reasoning_effort, and only chat requests change.");
+    Check(AssistantEngineProxy.Target(new Uri("http://10.0.0.6:8000/v1/"), "/assistant-engine/v1/chat/completions", "?a=1").ToString() == "http://10.0.0.6:8000/v1/chat/completions?a=1"
+        && AssistantEngineProxy.Target(new Uri("http://10.0.0.6:8000/v1/"), "/assistant-engine/v1/models", "").ToString() == "http://10.0.0.6:8000/v1/models",
+        "The shim sends a request on to the same path under the engine's own base.");
+    var shim = new AssistantEngineProxy(() => 8080);
+    var opened = shim.Open(new GitHub.Copilot.ProviderConfig { Type = "openai", WireApi = "completions", BaseUrl = "http://10.0.0.6:8000/v1", ApiKey = "real-key", MaxOutputTokens = 100, MaxPromptTokens = 900 }, "low");
+    Check(opened is { Provider: { BaseUrl: "http://127.0.0.1:8080/assistant-engine/v1" } routedProvider } && routedProvider.ApiKey != "real-key" && routedProvider.MaxPromptTokens == 900
+        && new AssistantEngineProxy(() => null).Open(new GitHub.Copilot.ProviderConfig { BaseUrl = "http://10.0.0.6:8000/v1" }, "low") is null,
+        "A turn's provider points at the shim with its own key, never the engine's, and needs the host to listen on HTTP.");
+    opened?.Lease.Dispose();
     var imageRows = AssistantTools.ParseImages("""
         {"Repository":"ghcr.io/home-operations/jackett","Tag":"0.24.2668","Digest":"sha256:abc","ID":"sha256:111","CreatedAt":"2026-10-01 10:00:00 +0000 UTC"}
         {"Repository":"local/app","Tag":"dev","Digest":"<none>","ID":"sha256:222","CreatedAt":"x"}
@@ -358,6 +375,20 @@ try
     using var broker = new AssistantBroker(options, NullLogger<AssistantBroker>.Instance);
     await using var runs = new AssistantRuns(runtime, options, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance, broker);
     const string owner = "0123456789abcdef", stranger = "fedcba9876543210";
+    var efforts = await broker.SaveSettingsAsync(owner, new AssistantSettings([], [], new() { ["local:qwen3"] = ["xhigh", "none", "low", "low"] }), [], default);
+    Check(efforts.ModelEfforts!["local:qwen3"].SequenceEqual(["none", "low", "xhigh"]) && (await broker.SettingsAsync(owner, default)).ModelEfforts!["local:qwen3"].Length == 3,
+        "The efforts an owner allows for a model are kept once each, cheapest first.");
+    foreach (var bad in new Dictionary<string, string[]>[] { new() { ["gpt-5"] = ["low"] }, new() { ["local:q"] = ["turbo"] }, new() { ["litellm:bad id"] = ["low"] } })
+        await Reject(() => broker.SaveSettingsAsync(owner, new AssistantSettings([], [], bad), [], default), 400, "invalid_efforts", "Only the owner's own models get efforts, from the known list.");
+    var overlaid = Node(await runtime.ModelsAsync(owner, new Dictionary<string, string[]> { ["local:qwen3-spark"] = ["none", "medium"] }, default));
+    var qwen = overlaid["models"]!.AsArray().First(model => (string)model!["id"]! == "local:qwen3-spark")!;
+    Check(qwen["reasoning"]!.AsArray().Select(item => (string)item!).SequenceEqual(["none", "medium"]) && qwen["defaultReasoning"] is null,
+        "An owner's allowed efforts show on their model's card.");
+    var gpt = overlaid["models"]!.AsArray().First(model => (string)model!["id"]! == "litellm:gpt-4o")!;
+    Check(gpt["reasoning"]!.AsArray().Select(item => (string)item!).SequenceEqual(["low", "medium", "high"]) && (int)gpt["context"]! == 128_000,
+        "A LiteLLM model it says can reason gets the standard efforts, and its input limit.");
+    await broker.SaveSettingsAsync(owner, new AssistantSettings([], [], new()), [], default);
+    Directory.Delete(Path.Combine(directory, "users"), recursive: true);
     var chat = Guid.NewGuid().ToString("N");
     AssistantChatRequest Ask(string text, string messageId = "m1", string mode = "execute", string? model = null, string? session = null) =>
         new(session ?? chat, messageId, text, mode, model, "/apps");
@@ -375,7 +406,7 @@ try
     await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), "tester via assistant", null, default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi"), "tester via assistant", null, default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
     Check(!Directory.Exists(Path.Combine(directory, "users")), "Rejected requests write nothing.");
-    var listed = Node(await runtime.ModelsAsync(owner, default));
+    var listed = Node(await runtime.ModelsAsync(owner, null, default));
     var sources = listed["sources"]!.AsArray();
     Check(signIn.Status(owner) == new GitHubStatus("disconnected") && !(bool)listed["connected"]! && (string)sources[0]!["id"]! == "github"
         && sources[0]!["models"]!.AsArray().Count == 0 && (string)sources[0]!["reason"]! == "Sign in with GitHub to use Copilot's models.",
@@ -389,10 +420,10 @@ try
     Check(openAi.Minted == 1 && File.Exists(keyFile) && !File.ReadAllText(keyFile).Contains("sk-virtual")
         && openAi.Calls.Any(call => call.Contains("/key/generate") && call.Contains($"\"key_alias\":\"lucia-assistant-{owner}\"")),
         "LiteLLM gets the owner a virtual key, named for them and saved encrypted.");
-    await runtime.ModelsAsync(owner, default);
+    await runtime.ModelsAsync(owner, null, default);
     Check(openAi.Minted == 1, "The saved key is reused.");
     openAi.Revoked.Add("sk-virtual-1");
-    await runtime.ModelsAsync(owner, default);
+    await runtime.ModelsAsync(owner, null, default);
     Check(openAi.Minted == 2 && openAi.Calls.Count(call => call.Contains("/key/delete")) == 2, "A key LiteLLM refuses is replaced, deleting the old one first.");
 
     var (provider, served) = await providers.ResolveAsync(owner, "litellm:gpt-4o", default);
@@ -414,7 +445,7 @@ try
 
     spark = spark with { Model = null, Problem = "No chat model is loaded on the Spark. Load one on the AI page." };
     apps = [apps[1]];
-    sources = Node(await runtime.ModelsAsync(owner, default))["sources"]!.AsArray();
+    sources = Node(await runtime.ModelsAsync(owner, null, default))["sources"]!.AsArray();
     Check((string)sources[1]!["reason"]! == "Install the LiteLLM app to use its models." && sources[2]!["models"]!.AsArray().Count == 1
         && (string)sources[2]!["reason"]! == "No chat model is loaded on the Spark. Load one on the AI page.",
         "Without LiteLLM or a Spark model, the picker says what to do and lists what's left.");
@@ -1109,6 +1140,10 @@ sealed class FakeOpenAi : HttpMessageHandler
             ("GET", "http://10.0.0.5:4000/v1/models") when key is not null && key.StartsWith("sk-virtual-") && !Revoked.Contains(key) =>
                 Json(new { data = new object[] { new { id = "gpt-4o" }, new { id = "bad id" } } }),
             ("GET", "http://10.0.0.5:4000/v1/models") => new(HttpStatusCode.Unauthorized),
+            ("GET", "http://10.0.0.5:4000/model/info") when key == "sk-master" => Json(new
+            {
+                data = new object[] { new { model_name = "gpt-4o", model_info = new { supports_reasoning = true, max_input_tokens = 128_000 } } }
+            }),
             ("GET", "http://10.0.0.6:8000/v1/models") when key == "local-key" => Json(new
             {
                 data = new object[] { new { id = "qwen3", max_model_len = 32_768 }, new { id = "embed", capabilities = new[] { "embedding" } } }

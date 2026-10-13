@@ -22,7 +22,8 @@ public static class ToolTier
 }
 
 /// <summary>The owner's standing choices: change tools that run without asking, and sites the assistant may read without asking.</summary>
-public sealed record AssistantSettings(string[] AutoTools, string[] Hosts)
+/// <param name="ModelEfforts">For models the owner brought (<c>local:</c> and <c>litellm:</c> ids): the reasoning efforts each accepts, from <see cref="AssistantEngineProxy.Efforts"/>.</param>
+public sealed record AssistantSettings(string[] AutoTools, string[] Hosts, Dictionary<string, string[]>? ModelEfforts = null)
 {
     public static readonly AssistantSettings Default = new([], ["docs.docker.com", "hub.docker.com", "github.com", "raw.githubusercontent.com"]);
 }
@@ -315,7 +316,16 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
         var names = hosts.Select(Host).ToArray();
         if (Array.FindIndex(names, name => name is null) is var bad and >= 0)
             throw new AssistantException(400, "invalid_sites", SiteProblem(hosts[bad]));
-        var saved = new AssistantSettings(auto, [.. names.OfType<string>().Distinct()]);
+        var efforts = new Dictionary<string, string[]>();
+        foreach (var (model, list) in settings.ModelEfforts ?? [])
+        {
+            var kept = (list ?? []).Distinct().ToArray();
+            if (!model.StartsWith("local:", StringComparison.Ordinal) && !model.StartsWith("litellm:", StringComparison.Ordinal)
+                || !AssistantRuns.ModelPattern().IsMatch(model) || kept.Any(effort => !AssistantEngineProxy.Efforts.Contains(effort)) || efforts.Count >= 200)
+                throw new AssistantException(400, "invalid_efforts", "Reasoning efforts can be set for your own models, from Disabled to Extra high.");
+            efforts[model] = [.. AssistantEngineProxy.Efforts.Where(kept.Contains)];
+        }
+        var saved = new AssistantSettings(auto, [.. names.OfType<string>().Distinct()], efforts);
         await DomainOnboardingStore.WriteJson(SettingsPath(owner), saved, ct, AssistantStream.Json);
         return saved;
     }

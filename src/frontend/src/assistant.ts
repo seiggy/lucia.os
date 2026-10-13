@@ -28,7 +28,7 @@ export type DockState = { open: boolean; side: DockSide }
 export type DockLayout = 'push' | 'overlay' | 'sheet'
 export type ToolTier = 'read' | 'web' | 'registry' | 'change' | 'destructive' | 'secret'
 export type AssistantTool = { name: string; tier: ToolTier; description: string }
-export type AssistantSettings = { autoTools: string[]; hosts: string[]; tools: AssistantTool[] }
+export type AssistantSettings = { autoTools: string[]; hosts: string[]; tools: AssistantTool[]; modelEfforts: Record<string, string[]> }
 export type ToolTone = 'busy' | 'done' | 'failed' | 'waiting' | 'muted'
 export type ToolStatus = { word: string; tone: ToolTone }
 
@@ -212,8 +212,10 @@ export function chooseModel(models: AssistantModels, saved: string | null | unde
 }
 
 // Reasoning efforts with the short name the composer button shows, in order of cost.
-const efforts = new Map([['none', ['0', 'None']], ['minimal', ['XS', 'Minimal']], ['low', ['S', 'Low']], ['medium', ['M', 'Medium']],
+const efforts = new Map([['none', ['0', 'Disabled']], ['minimal', ['XS', 'Minimal']], ['low', ['S', 'Low']], ['medium', ['M', 'Medium']],
   ['high', ['L', 'High']], ['xhigh', ['XL', 'Extra high']], ['max', ['XXL', 'Max']]])
+// The efforts an owner can allow for a model of their own, cheapest first; the host keeps to the same list.
+export const reasoningEfforts = ['none', 'low', 'medium', 'high', 'xhigh']
 export const effortShort = (effort: string) => efforts.get(effort)?.[0] ?? effort.slice(0, 2).toUpperCase()
 export const effortLabel = (effort: string) => efforts.get(effort)?.[1] ?? effort[0].toUpperCase() + effort.slice(1)
 export const findModel = (models: AssistantModels | null | undefined, id?: string) => models?.models.find(model => model.id === id)
@@ -424,7 +426,11 @@ export function parseSettings(value: unknown): AssistantSettings {
       || typeof tool.description !== 'string') throw unexpected()
     return { name: tool.name, tier: tool.tier as ToolTier, description: tool.description }
   })
-  return { autoTools: value.autoTools, hosts: value.hosts, tools }
+  const modelEfforts: Record<string, string[]> = {}
+  if (record(value.modelEfforts))
+    for (const [id, list] of Object.entries(value.modelEfforts))
+      if (isModelId(id) && Array.isArray(list)) modelEfforts[id] = list.filter((item): item is string => typeof item === 'string' && reasoningEfforts.includes(item))
+  return { autoTools: value.autoTools, hosts: value.hosts, tools, modelEfforts }
 }
 
 // The host's descriptions are written for the model; the settings page names what each change tool lets the assistant do.
