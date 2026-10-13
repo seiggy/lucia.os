@@ -8,6 +8,7 @@ import { cronOf, emptyJob, frequencies, parseJob, parseJobs, parseNext, parseReg
   weekdays } from './assistantJobs'
 import type { Job, JobDraft, JobRun, Schedule } from './assistantJobs'
 import { Icon } from './Icon'
+import { MultiSelect } from './MultiSelect'
 import type { IconName } from './Icon'
 import './NetworkSettings.css'
 import './Jobs.css'
@@ -236,7 +237,6 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
     }
   }
   const toggle = (name: string) => update({ tools: draft.tools.includes(name) ? draft.tools.filter(tool => tool !== name) : [...draft.tools, name] })
-  const toggleRegistry = (host: string) => update({ registries: draft.registries.includes(host) ? draft.registries.filter(item => item !== host) : [...draft.registries, host] })
   const registryOptions = [
     ...registryChoices.common.map(item => ({ host: item.host, label: `${item.name} (${item.host})` })),
     ...registryChoices.added.filter(host => !registryChoices.common.some(item => item.host === host)).map(host => ({ host, label: `${host} (added in Registries)` })),
@@ -317,12 +317,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
         <p id="job-sites-hint" className="section-note">One host name per line, on top of the allowed sites in Assistant settings.</p>
         {tools.some(tool => tool.tier === 'registry') && <div className="job-field" role="group" aria-labelledby="job-registries-label">
           <span id="job-registries-label">Container registries it may query</span>
-          <details className="job-picker">
-            <summary>{draft.registries.length ? `${draft.registries.length} selected: ${draft.registries.join(', ')}` : 'None selected'}</summary>
-            <div className="job-picker-options">{registryOptions.map(item => <label key={item.host} className="network-checkbox">
-              <input type="checkbox" checked={draft.registries.includes(item.host)} disabled={busy} onChange={() => toggleRegistry(item.host)} />
-              <span>{item.label}</span></label>)}</div>
-          </details>
+          <MultiSelect labelledBy="job-registries-label" options={registryOptions.map(item => ({ value: item.host, label: item.label }))}
+            selected={draft.registries} onChange={registries => update({ registries })} disabled={busy} placeholder="Select registries…" />
           <span className="ssh-key-hint">Lets it look up image tags and digests there, to see whether an image has an update. Add private registries in Settings → Registries.</span>
         </div>}
       </section>
