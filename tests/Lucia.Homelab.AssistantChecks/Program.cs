@@ -277,10 +277,10 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}:{pair.Value}")) == "change:8,destructive:5,read:14,registry:1,secret:1,web:1"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}:{pair.Value}")) == "change:9,destructive:5,read:16,registry:1,secret:1,web:1"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
-        "The assistant has 14 read, 1 web, 1 registry, 1 secret, 8 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+        "The assistant has 16 read, 1 web, 1 registry, 1 secret, 9 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolRegistry = ToolSchema("query_registry");
     var imageRows = AssistantTools.ParseImages("""
         {"Repository":"ghcr.io/home-operations/jackett","Tag":"0.24.2668","Digest":"sha256:abc","ID":"sha256:111","CreatedAt":"2026-10-01 10:00:00 +0000 UTC"}
@@ -816,6 +816,22 @@ try
         labProtection, null!, null!, null!, null!, TimeProvider.System, null!);
     var labTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance)
         .Create("tester via assistant", "tester");
+    // The Spark isn't a managed node, so its health and updates have tools of their own.
+    var sparkBuffer = new Lucia.Homelab.Server.Telemetry.SparkTelemetryBuffer(TimeProvider.System);
+    sparkBuffer.Add(new(DateTimeOffset.UtcNow, 42.26, 20, 3.456, 128L << 30, 100L << 30, 4000L << 30, 3000L << 30, "enP7s7", 1_250_000, 125_000,
+        "NVIDIA GB10", 12.5, 51.2, 33.3, true, 7200, []));
+    var sparkTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance, null, null, sparkBuffer,
+        new Lucia.Homelab.Server.Telemetry.SparkTelemetryOptions { Enabled = true }).Create("tester via assistant", "tester");
+    var sparkHealth = JsonNode.Parse(((TextContent)(await sparkTools.Single(tool => tool.Name == "get_spark_health").InvokeAsync(new AIFunctionArguments()))!).Text)!;
+    Check((string)sparkHealth["state"]! == "Healthy" && (double)sparkHealth["cpu"]!["percent"]! == 42.3 && (double)sparkHealth["memoryGiB"]!["available"]! == 100
+        && (string)sparkHealth["gpu"]!["name"]! == "NVIDIA GB10" && (double)sparkHealth["network"]!["receiveMbps"]! == 10 && (double)sparkHealth["uptimeHours"]! == 2
+        && (int)sparkHealth["lastHour"]!["samples"]! == 1 && ToolSchema("get_spark_health")["required"] is null && ToolSchema("get_spark_updates")["required"] is null
+        && toolSet.Single(tool => tool.Name == "get_spark_updates").Tier == ToolTier.Read && toolSet.Single(tool => tool.Name == "check_spark_updates").Tier == ToolTier.Change
+        && toolSet.Single(tool => tool.Name == "list_nodes").Description.Contains("get_spark_health"),
+        "The Spark's health reads as rounded host readings, its updates are a read tool and checking them a change, and list_nodes points to them.");
+    var sparkMissing = await Reject(() => sparkTools.Single(tool => tool.Name == "get_spark_updates").InvokeAsync(new AIFunctionArguments()).AsTask(), 400, "tool_error",
+        "Spark updates say so when the update service isn't there.");
+    Check(sparkMissing.Message == "Spark updates aren't available.", "The assistant is told plainly that Spark updates aren't available.");
     AIFunctionArguments InChat(string callId, Dictionary<string, object?> values) => new(values)
     {
         Context = new Dictionary<object, object?> { [typeof(ToolInvocation)] = new ToolInvocation { SessionId = govKey, ToolCallId = callId, ToolName = "tool" } },

@@ -11,7 +11,9 @@ using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Onboarding;
+using Lucia.Homelab.Server.Packages;
 using Lucia.Homelab.Server.Stacks;
+using Lucia.Homelab.Server.Telemetry;
 using Microsoft.Extensions.AI;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Lucia.Homelab.AssistantChecks")]
@@ -70,7 +72,8 @@ public sealed class AssistantTool(AIFunction inner, string tier, Func<string, Ca
 /// </summary>
 public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackStore stacks, NodeRequests requests,
     UniFiConnectionService unifi, AdGuardConnectionService adguard, DomainOnboardingStore domains, AssistantBroker broker,
-    ILogger<AssistantTools> logger, AssistantPush? push = null)
+    ILogger<AssistantTools> logger, AssistantPush? push = null, PackageUpdatesService? sparkPackages = null,
+    SparkTelemetryBuffer? sparkTelemetry = null, SparkTelemetryOptions? sparkTelemetryOptions = null)
 {
     private const string NodeHelp = "The server: its hostname, DNS name, address or id.";
     private const string AppHelp = "The app's name, from list_apps.";
@@ -83,6 +86,92 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
     private static readonly HashSet<string> SecretFields = new(StackCatalog.Apps.SelectMany(app => app.Fields)
         .Where(field => field.Kind == "secret").SelectMany(field => new[] { field.Id, StackCatalog.SecretKey(field) }),
         StringComparer.OrdinalIgnoreCase);
+    private const int MaxSparkUpdates = 200;
+    private const double Gib = 1024d * 1024 * 1024;
+
+    /// <summary>The Spark's latest host readings, with the last hour's peaks. Rounded so a model reads them, not raw counters.</summary>
+    private object SparkHealth()
+    {
+        if (sparkTelemetry is null || sparkTelemetryOptions is null) throw new AssistantException(503, "spark_unavailable", "Spark monitoring isn't available.");
+        var snapshot = sparkTelemetry.Snapshot(sparkTelemetryOptions.Enabled);
+        double? Round(double? value, int digits = 1) => value is { } number ? Math.Round(number, digits) : null;
+        double? Gibibytes(long? bytes) => bytes is { } count ? Math.Round(count / Gib, 1) : null;
+        var latest = snapshot.Latest;
+        var history = snapshot.History;
+        return new
+        {
+            snapshot.State, snapshot.Message,
+            At = latest?.Timestamp,
+            Cpu = latest is null ? null : new { Percent = Round(latest.CpuPercent), latest.CpuCores, LoadAverage = Round(latest.LoadAverage, 2) },
+            MemoryGiB = latest is null ? null : new { Total = Gibibytes(latest.MemoryTotalBytes), Available = Gibibytes(latest.MemoryAvailableBytes), latest.UnifiedMemory },
+            StorageGiB = latest is null ? null : new { Total = Gibibytes(latest.StorageTotalBytes), Available = Gibibytes(latest.StorageAvailableBytes) },
+            Gpu = latest?.GpuName is null ? null : new { Name = latest.GpuName, Percent = Round(latest.GpuPercent), TemperatureC = Round(latest.GpuTemperatureCelsius), PowerWatts = Round(latest.GpuPowerWatts) },
+            Network = latest?.NetworkInterface is null ? null : new
+            {
+                Interface = latest.NetworkInterface, ReceiveMbps = Round(latest.ReceiveBytesPerSecond * 8 / 1e6), TransmitMbps = Round(latest.TransmitBytesPerSecond * 8 / 1e6),
+            },
+            UptimeHours = Round(latest?.UptimeSeconds / 3600),
+            LastHour = history.Length == 0 ? null : new
+            {
+                Samples = history.Length,
+                PeakCpuPercent = Round(history.Max(sample => sample.CpuPercent)),
+                PeakGpuPercent = Round(history.Max(sample => sample.GpuPercent)),
+                PeakGpuTemperatureC = Round(history.Max(sample => sample.GpuTemperatureCelsius)),
+                LowestMemoryAvailableGiB = Gibibytes(history.Min(sample => sample.MemoryAvailableBytes)),
+            },
+            Unavailable = latest?.Unavailable is { Length: > 0 } missing ? missing : null,
+        };
+    }
+
+    /// <summary>The Spark's package status, trimmed to what an update check needs: no operation logs, and a capped list.</summary>
+    private async Task<object?> SparkUpdates(CancellationToken ct)
+    {
+        if (sparkPackages is null) throw new AssistantException(503, "spark_unavailable", "Spark updates aren't available.");
+        JsonObject status;
+        try { status = await sparkPackages.GetAsync(ct); }
+        catch (PackageUpdatesException e) { throw new AssistantException(e.StatusCode, e.Code, e.Message); }
+        var updates = status["updates"] as JsonArray ?? [];
+        var shown = new JsonArray(updates.OfType<JsonObject>().Take(MaxSparkUpdates).Select(item => (JsonNode)new JsonObject
+        {
+            ["name"] = item["name"]?.DeepClone(), ["currentVersion"] = item["currentVersion"]?.DeepClone(), ["candidateVersion"] = item["candidateVersion"]?.DeepClone(),
+            ["security"] = item["security"]?.DeepClone(), ["platform"] = item["platform"]?.DeepClone(), ["restart"] = item["restart"]?.DeepClone(),
+            ["keptBack"] = item["keptBack"]?.DeepClone(),
+        }).ToArray());
+        var running = status["operation"] as JsonObject;
+        var result = new JsonObject
+        {
+            ["worker"] = status["worker"] is JsonObject worker ? worker["state"]?.DeepClone() : null,
+            ["system"] = status["system"]?.DeepClone(),
+            ["lastUpdateCheckAt"] = status["lastUpdateCheckAt"]?.DeepClone(),
+            ["scannedAt"] = status["scannedAt"]?.DeepClone(),
+            ["scanning"] = status["scanning"]?.DeepClone(),
+            ["updateCount"] = updates.Count,
+            ["securityCount"] = updates.OfType<JsonObject>().Count(item => item["security"]?.GetValue<bool>() == true),
+            ["updates"] = shown,
+            ["restart"] = status["restart"]?.DeepClone(),
+            ["automaticUpdates"] = status["automaticUpdates"]?.DeepClone(),
+            ["packageDatabase"] = status["packageDatabase"]?.DeepClone(),
+            ["operation"] = running is null ? null : new JsonObject
+            {
+                ["action"] = running["action"]?.DeepClone(), ["state"] = running["state"]?.DeepClone(), ["startedAt"] = running["startedAt"]?.DeepClone(),
+                ["finishedAt"] = running["finishedAt"]?.DeepClone(), ["message"] = running["message"]?.DeepClone(),
+            },
+            ["schedule"] = status["schedule"]?.DeepClone(),
+            ["lastSchedule"] = status["lastSchedule"]?.DeepClone(),
+            ["pendingRequest"] = status["pendingRequest"]?.DeepClone(),
+            ["modelsPaused"] = status["modelsPaused"]?.DeepClone(),
+        };
+        if (updates.Count > MaxSparkUpdates) result["note"] = $"Showing {MaxSparkUpdates} of {updates.Count} updates.";
+        return result;
+    }
+
+    private async Task<object?> SparkCheck(CancellationToken ct)
+    {
+        if (sparkPackages is null) throw new AssistantException(503, "spark_unavailable", "Spark updates aren't available.");
+        try { await sparkPackages.CheckAsync(ct); }
+        catch (PackageUpdatesException e) { throw new AssistantException(e.StatusCode, e.Code, e.Message); }
+        return "Asked the Spark to check for updates. Read get_spark_updates in a minute for the result.";
+    }
 
     /// <summary>The tools for one turn, acting as <paramref name="actor"/> for the Lucia user <paramref name="user"/>.</summary>
     public IReadOnlyList<AssistantTool> Create(string actor, string? user)
@@ -93,7 +182,8 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         return
         [
             Tool(ToolTier.Read, "list_nodes",
-                "Lists Lucia's managed servers: hostname, address, DNS name, state, when each last reported, agent and OS status, GPUs and pending updates.",
+                "Lists Lucia's managed servers: hostname, address, DNS name, state, when each last reported, agent and OS status, GPUs and pending updates. "
+                + "The DGX Spark that runs Lucia isn't one of them; use get_spark_health and get_spark_updates for it.",
                 async Task<object?> (CancellationToken ct) =>
                 {
                     var rows = await NodeRows(ct);
@@ -119,9 +209,20 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     };
                     return row;
                 }),
+            Tool(ToolTier.Read, "get_spark_health",
+                "Shows the health of the DGX Spark that runs Lucia: CPU, load, memory, storage, GPU, network and uptime now, with the last hour's "
+                + "peaks. The Spark isn't a managed server, so list_nodes and the node tools don't cover it.",
+                () => SparkHealth()),
+            Tool(ToolTier.Read, "get_spark_updates",
+                "Shows the DGX Spark's OS package updates: when it last checked, each update available (marking security and platform ones, and "
+                + "those that need a restart), whether the Spark must restart, automatic updates, and any install running or scheduled. "
+                + "The Spark isn't a managed server, so check_node_updates doesn't cover it.",
+                async Task<object?> (CancellationToken ct) => await SparkUpdates(ct)),
             Tool(ToolTier.Read, "list_containers",
                 "Lists every container and listening port a server last reported, including ones Lucia doesn't manage.",
                 async Task<object?> ([Description(NodeHelp)] string node, CancellationToken ct) => stacks.Inventory((await Node(node, ct)).Id)),
+            Tool(ToolTier.Change, "check_spark_updates", "Asks the DGX Spark to check for OS package updates now. Read the result with get_spark_updates.",
+                async Task<object?> (CancellationToken ct) => await SparkCheck(ct)),
             Tool(ToolTier.Change, "list_node_images",
                 "Lists the container images a server has pulled, with the registry digest each came from, so you can compare them with "
                 + "query_registry to see whether an image has an update. Leave image out for all of them.",
