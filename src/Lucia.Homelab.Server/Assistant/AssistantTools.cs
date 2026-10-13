@@ -122,7 +122,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
             Tool(ToolTier.Read, "list_containers",
                 "Lists every container and listening port a server last reported, including ones Lucia doesn't manage.",
                 async Task<object?> ([Description(NodeHelp)] string node, CancellationToken ct) => stacks.Inventory((await Node(node, ct)).Id)),
-            Tool(ToolTier.Read, "list_node_images",
+            Tool(ToolTier.Change, "list_node_images",
                 "Lists the container images a server has pulled, with the registry digest each came from, so you can compare them with "
                 + "query_registry to see whether an image has an update. Leave image out for all of them.",
                 async Task<object?> ([Description(NodeHelp)] string node,

@@ -29,10 +29,10 @@ Every tool belongs to a tier, and the tier decides what happens when the assista
 
 | Tier | Tools |
 |---|---|
-| **Read** | `list_nodes`, `get_node`, `list_containers`, `list_node_images`, `read_logs`, `list_apps`, `get_app`, `list_catalog`, `get_catalog_app`, `list_storage`, `list_backups`, `dns_lookup`, `list_network_clients`, `ask_owner`, `notify_owner` |
+| **Read** | `list_nodes`, `get_node`, `list_containers`, `read_logs`, `list_apps`, `get_app`, `list_catalog`, `get_catalog_app`, `list_storage`, `list_backups`, `dns_lookup`, `list_network_clients`, `ask_owner`, `notify_owner` |
 | **Web** | `read_web_page`: public pages only, up to 2 MB fetched and 20,000 characters returned |
 | **Registry** | `query_registry`: asks an image's container registry (over the registry protocol, not HTTP page reads) for its tag count, its `latest` digest, its 5 newest tags with digests, and tag search |
-| **Change** | `save_custom_app`, `install_catalog_app`, `app_action`, `move_app`, `run_backup`, `upgrade_app_images`, `check_node_updates` |
+| **Change** | `save_custom_app`, `install_catalog_app`, `app_action`, `move_app`, `run_backup`, `upgrade_app_images`, `check_node_updates`, `list_node_images` |
 | **Destructive** | `delete_app`, `restore_backup`, `set_public_route`, `node_action` (install updates, restart, update agent), `run_command` |
 | **Secret** | `request_secret` |
 

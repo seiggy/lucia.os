@@ -265,6 +265,7 @@ const toolTitles = new Map([
   ['run_backup', 'Back up {app}'],
   ['upgrade_app_images', 'Upgrade images of {app}'],
   ['check_node_updates', 'Check {node} for updates'],
+  ['list_node_images', 'Check images pulled on {node}'],
   ['delete_app', 'Delete {app}'],
   ['restore_backup', 'Restore {app} from a backup'],
   ['set_public_route:on', 'Publish {host} as {publicName}'],
@@ -366,6 +367,7 @@ const changeLabels = new Map([
   ['run_backup', 'Back up apps'],
   ['upgrade_app_images', 'Upgrade app images'],
   ['check_node_updates', 'Check servers for updates'],
+  ['list_node_images', 'Query node container cache'],
   // Only a job may be granted these.
   ['delete_app', 'Delete apps'],
   ['restore_backup', 'Restore app backups'],

@@ -260,10 +260,10 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:15,web:1,registry:1,secret:1,change:7,destructive:5"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}:{pair.Value}")) == "change:8,destructive:5,read:14,registry:1,secret:1,web:1"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
-        "The assistant has 14 read, 1 web, 1 registry, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+        "The assistant has 14 read, 1 web, 1 registry, 1 secret, 8 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolRegistry = ToolSchema("query_registry");
     var imageRows = AssistantTools.ParseImages("""
         {"Repository":"ghcr.io/home-operations/jackett","Tag":"0.24.2668","Digest":"sha256:abc","ID":"sha256:111","CreatedAt":"2026-10-01 10:00:00 +0000 UTC"}
