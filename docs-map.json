@@ -1,0 +1,85 @@
+{
+  "$comment": "Maps source paths (globs, repo-relative) to the doc pages that describe them (paths under docs-site/docs, without extension). The docs agent reads this, and adds entries for code that matches none.",
+  "entries": [
+    {
+      "name": "Platform overview",
+      "paths": ["src/Lucia.Homelab.AppHost/**", "src/Lucia.Homelab.sln", "README.md"],
+      "docs": ["guide/overview", "deploy/overview", "code/overview"]
+    },
+    {
+      "name": "Assistant and jobs",
+      "paths": ["src/Lucia.Homelab.Server/Assistant/**", "src/frontend/src/Assistant*.tsx", "src/frontend/src/assistant*.ts", "src/frontend/src/Jobs.tsx", "src/frontend/src/MultiSelect.*", "tests/Lucia.Homelab.AssistantChecks/**"],
+      "docs": ["guide/assistant", "code/assistant", "deploy/assistant"]
+    },
+    {
+      "name": "Apps, stacks and the catalog",
+      "paths": ["src/Lucia.Homelab.Server/Stacks/**", "src/frontend/src/Stacks.tsx", "src/frontend/src/stackManagement.ts", "src/frontend/src/RegistrySettings.tsx", "tests/Lucia.Homelab.DomainChecks/StackChecks.cs"],
+      "docs": ["guide/apps", "code/apps-and-stacks", "deploy/apps"]
+    },
+    {
+      "name": "Identity and sign-in",
+      "paths": ["src/Lucia.Homelab.Identity.AppHost/**", "tools/identity/**", "deployment/identity/**", "src/Lucia.Homelab.Server/Host/HostAuthentication*.cs", "src/Lucia.Homelab.Server/Domains/PeopleDirectory.cs", "src/frontend/src/People.tsx", "src/frontend/src/AccountAccess.tsx"],
+      "docs": ["guide/people-and-sign-in", "code/identity", "deploy/identity"]
+    },
+    {
+      "name": "Managed nodes and the node agent",
+      "paths": ["src/Lucia.NodeAgent/**", "src/Lucia.Homelab.Server/Nodes/**", "src/Lucia.Homelab.Server/Onboarding/**", "tools/nodes/**", "tests/Lucia.NodeAgent.Checks/**"],
+      "docs": ["guide/servers", "code/nodes", "deploy/nodes"]
+    },
+    {
+      "name": "Installer and network boot",
+      "paths": ["deployment/boot/**", "src/Lucia.Homelab.Server/Boot/**", "tools/boot/**", "docs/unifi-network-boot.md", "tests/Lucia.Homelab.BootChecks/**"],
+      "docs": ["guide/adding-a-server", "code/installer", "deploy/installer"]
+    },
+    {
+      "name": "Domains, DNS and certificates",
+      "paths": ["src/Lucia.Homelab.Server/Domains/**", "tools/domains/**", "docs/domain-onboarding.md", "src/frontend/src/Domain*.tsx", "src/frontend/src/networkManagement.ts", "tests/Lucia.Homelab.DomainChecks/**", "tests/Lucia.Homelab.CloudflareChecks/**", "tests/Lucia.Homelab.CertbotChecks/**"],
+      "docs": ["guide/your-domain", "code/domains-and-dns", "deploy/networking-and-dns"]
+    },
+    {
+      "name": "AdGuard and network devices",
+      "paths": ["src/Lucia.Homelab.Server/Host/AdGuard*.cs", "src/Lucia.Homelab.Server/Host/UniFi*.cs", "src/frontend/src/UniFi*.tsx", "src/frontend/src/AdGuard*.tsx", "tests/Lucia.Homelab.AdGuardChecks/**"],
+      "docs": ["guide/network", "code/network-devices", "deploy/adguard-ha"]
+    },
+    {
+      "name": "Spark updates",
+      "paths": ["src/Lucia.Homelab.Server/Packages/**", "tools/packages/**", "src/frontend/src/SparkUpdates.tsx", "src/frontend/src/packageUpdates.ts"],
+      "docs": ["guide/updates", "code/spark-updates", "deploy/spark-updates"]
+    },
+    {
+      "name": "Spark health and telemetry",
+      "paths": ["src/Lucia.Homelab.Server/Telemetry/**", "src/frontend/src/SparkHealth.tsx", "src/frontend/src/sparkTelemetry.ts", "tests/Lucia.Homelab.TelemetryChecks/**"],
+      "docs": ["guide/spark-health", "code/spark-telemetry", "deploy/observability"]
+    },
+    {
+      "name": "Local AI and inference",
+      "paths": ["src/Lucia.Inference.Worker/**", "src/Lucia.Homelab.Server/Host/**", "tools/host/**", "deployment/inference/**", "src/frontend/src/LocalAI.tsx", "src/frontend/src/ModelManager.tsx", "src/frontend/src/modelManagement.ts", "src/frontend/src/Playground*.tsx", "tests/Lucia.Homelab.HuggingFaceChecks/**"],
+      "docs": ["guide/local-ai", "code/local-ai", "deploy/local-ai"]
+    },
+    {
+      "name": "Observability",
+      "paths": ["src/Lucia.Homelab.Server/Stacks/StackCatalog.cs"],
+      "docs": ["guide/monitoring", "code/observability", "deploy/observability"]
+    },
+    {
+      "name": "Lab map and portal",
+      "paths": ["src/Lucia.Homelab.Server/LabMap/**", "src/frontend/src/LabMap*.tsx", "src/frontend/src/labMapModel.ts", "src/frontend/src/Universe*.ts", "src/frontend/src/navigation.ts", "tools/assets/**"],
+      "docs": ["guide/lab-map", "code/lab-map-and-portal"]
+    },
+    {
+      "name": "Desktop bootstrap",
+      "paths": ["src/Lucia.Desktop/**", "src/Lucia.Desktop.Core/**", "tools/desktop/**", "tests/Lucia.Desktop.*/**"],
+      "docs": ["guide/first-hour", "code/desktop-bootstrap", "deploy/desktop-bootstrap"]
+    },
+    {
+      "name": "Host server, configuration and security",
+      "paths": ["src/Lucia.Homelab.Server/Program.cs", "src/Lucia.Homelab.Server/appsettings*.json", "src/Lucia.Homelab.Server/Host/HostWebHosting.cs"],
+      "docs": ["code/host-server", "deploy/configuration", "deploy/security-model"]
+    },
+    {
+      "name": "Docs tooling",
+      "paths": ["docs-site/src/**", "docs-site/docusaurus.config.ts", "tools/docs/**", ".githooks/**", ".github/agents/docs-keeper.agent.md", ".github/skills/lucia-docs*/**"],
+      "docs": ["code/documentation"]
+    }
+  ]
+}

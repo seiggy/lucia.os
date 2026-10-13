@@ -1,0 +1,39 @@
+.card {
+  display: grid;
+  gap: 0;
+  margin: 0 0 2rem;
+  border: 1px solid var(--lucia-line);
+  border-radius: 12px;
+  background: var(--lucia-soft);
+  overflow: hidden;
+}
+
+.card > div {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+.card > div + div {
+  border-top: 1px solid var(--lucia-line);
+}
+
+.card dt {
+  font-size: 0.875rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.card dd {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .card > div {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+}

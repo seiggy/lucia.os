@@ -1,0 +1,4 @@
+#!/bin/sh
+# Keeps the docs in step with code changes. See tools/docs/pre-commit.mjs. LUCIA_SKIP_DOCS=1 skips it.
+root="$(git rev-parse --show-toplevel)"
+exec node "$root/tools/docs/pre-commit.mjs"

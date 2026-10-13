@@ -1,0 +1,34 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.card {
+  display: block;
+  padding: 1.25rem;
+  border: 1px solid var(--lucia-line);
+  border-radius: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.card:hover {
+  border-color: var(--ifm-color-primary);
+  background: var(--lucia-soft);
+  color: inherit;
+  text-decoration: none;
+}
+
+.card h3 {
+  margin-bottom: 0.5rem;
+}
+
+.card p {
+  margin: 0 0 0.5rem;
+}
+
+.what {
+  color: var(--ifm-color-emphasis-700);
+}

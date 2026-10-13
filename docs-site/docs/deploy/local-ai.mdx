@@ -1,0 +1,214 @@
+---
+title: Local AI
+description: Where Local AI runs, the memory plan, model storage, the OpenAI-compatible API and its keys, the Qwen3.8 TensorFold recipe, and the GPU worker for managed servers.
+sidebar_position: 15
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+import Source from '@site/src/components/Source';
+
+# Local AI
+
+<WhoWhatWhy
+  who="Operators who run, size, secure or debug Lucia's local model serving."
+  what="The three engines, how memory is budgeted, where models and keys live, the API's authentication, the Spark recipe protocol and the inference worker image."
+  why="The Spark has 128 GB of unified memory, and a model that does not fit takes the controller down with it. Lucia refuses a load it cannot fit instead of finding out at allocation time."
+/>
+
+## What runs where
+
+| Engine | Runs in | Use |
+|---|---|---|
+| TensorSharp | `lucia-host` container on the Spark, on the GB10 GPU | Lucia's own LLM and embedding model, one of each |
+| TensorFold recipe | A container started by the `lucia-spark-model` user service on the Spark | Qwen3.8-Flash-Next, 200,000 tokens of context, 4 conversations, nearly all of the Spark's memory |
+| Local AI app | `lucia-inference` container on a managed GPU server | Lucia Inference (the same engine), vLLM or llama.cpp, from the catalog. See [Apps](./apps.mdx). |
+
+```mermaid
+flowchart LR
+  app[Apps and assistant] -->|/v1 with a key| host[lucia-host]
+  host --> ts[TensorSharp, in process]
+  host -->|only while wanted| tf[TensorFold container on the Docker bridge]
+  svc[lucia-spark-model service] -->|owns| tf
+  host <-->|request.json, status.json| svc
+  host -->|/api/host/nodes/id/ai| worker[Inference worker on a GPU server]
+```
+
+The web host has no Docker access. Anything that needs a container runtime goes through a worker that owns the privileged step: `lucia-spark-model` for the Spark recipe, and the node agent for servers.
+
+## State and storage
+
+In the production deployment the host container mounts two host directories, both created by the installer under `~/.local/share/lucia/host`.
+
+| Container path | Holds | Back up? |
+|---|---|---|
+| `/models` | Model library and `active-models.json` | Usually no. Models re-download. |
+| `/data/huggingface` | `hf` cache and auth home | No |
+| `/data/inference-keys` | `keys.json`, SHA-256 hashes of API keys | Yes |
+| `/data/provider-credentials` | Hugging Face token, encrypted with Data Protection | Yes, with `/data/data-protection` |
+
+Inside `/models` each model has its own directory named by a GUID with no dashes:
+
+```text
+/models/
+  .lucia-model-catalog.lease      held open while the host runs
+  active-models.json              saved chat and embedding selection with context sizes
+  <guid>/model.json               manifest: source, state, inspection
+  <guid>/files/                   what `hf download` wrote
+```
+
+The lease file keeps two hosts from sharing one directory. A second process fails to start rather than corrupt the first one's catalog. Do not point two Lucia hosts at the same NFS path, unless each uses its own subfolder, as the Local AI app does for a shared library.
+
+A model has the states `Queued`, `Downloading`, `Ready`, `Failed`, `Canceled` and `Interrupted`. At startup the host marks anything that was queued or downloading as `Interrupted`, keeps the partial files, and shows **Retry**. It re-inspects every `Ready` GGUF, and a file that now fails validation becomes `Failed`. The queue holds at most 16 downloads at a time.
+
+## The memory plan
+
+Before every load the host computes a plan and refuses the load if the context does not fit:
+
+```text
+cacheBudget = memoryLimit
+            - (OsReserveGiB + ServicesReserveGiB + VoiceReserveGiB + RuntimeReserveGiB)
+            - weights * WeightMemoryMultiplier
+            - the other loaded model (weights + its KV cache)
+context     = min(nativeContext, cacheBudget / kvBytesPerToken), rounded down to 256
+```
+
+`kvBytesPerToken` is attention layers × KV heads × (key + value length) × 2 bytes (4 with `KV_CACHE_DTYPE=f32`). For the hybrid Qwen architectures only the full-attention layers count. Embedding models load on the CPU and count at their file size.
+
+The memory limit is what .NET reports as available, so on the Spark it is the container's view of the unified memory. On anything that is not Linux arm64, a CUDA backend with no `HostPlatform__MemoryBudgetGiB` throws "Set HostPlatform:MemoryBudgetGiB to the usable device-memory budget", because host RAM is not VRAM.
+
+The four reserves also set `TS_VRAM_HEADROOM_MB` for TensorSharp (their sum in MiB, or the existing value if it is larger). The production reserves are 8 GiB each, so TensorSharp keeps 32 GiB of headroom. The defaults in code are 4, 3, 8 and 3 GiB. The weight multiplier is 2 in the shipped `appsettings.json`. It is a calibration knob and not a measured constant.
+
+The voice reserve belongs to a voice pipeline that does not exist on the Spark yet. It still counts, and it cannot go below 8 GiB.
+
+Chat loads run with `MaxNumRunningSequences = 1` and a KV cache of context ÷ 256 blocks. All loads, unloads and requests share one semaphore, so model swaps wait for running requests to finish.
+
+## API and authentication
+
+The portal origin serves the OpenAI-compatible routes at `/v1`. They require the `HostInference` policy, which accepts any of these:
+
+| Credential | Role | Notes |
+|---|---|---|
+| A signed-in portal session | Owner or Inference | What the Playground uses |
+| `HostPlatform__ApiKey` as a bearer token | Owner | At least 32 characters |
+| `HostPlatform__InferenceApiKey` | Inference | At least 32 characters, must differ from the owner key. The assistant uses it, over loopback, to reach the Spark's own model. |
+| `lucia_inf_…` key from **Local AI → API keys** | Inference | Stored as a SHA-256 hash, optional expiry, checked on every request, up to 1,000 keys |
+
+An inference role can call `/v1` and nothing under `/api/host`.
+
+```bash
+export LUCIA=https://lucia.example.com
+export KEY=lucia_inf_xxxxxxxx   # created on Local AI → API keys
+
+curl -sS -H "Authorization: Bearer $KEY" $LUCIA/v1/models | jq '.data[] | {id, backend, context_length}'
+
+curl -sS $LUCIA/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3.6-35B-A3B-UD-Q6_K_XL","messages":[{"role":"user","content":"Say hello."}],"max_tokens":64}'
+```
+
+The `model` field is the loaded chat model's file name without the extension, as listed by `/v1/models`. A name that does not match returns 404 with "The requested model is not the loaded chat model."
+
+| Route | Notes |
+|---|---|
+| `GET /v1/models` | Loaded chat and embedding models |
+| `POST /v1/chat/completions`, `POST /v1/responses` | Text only, 2 MiB body. `max_tokens`, `max_completion_tokens` and `max_output_tokens` must be between 1 and `MaxOutputTokens`. |
+| `POST /v1/embeddings` | `503 model_not_loaded` when no embedding model is loaded |
+| `GET /v1/responses/{id}` | A stored response |
+
+Kestrel caps request bodies at 16 MiB. A 503 with `code: model_not_loaded` means nothing is loaded, paused for platform updates, or held by the Spark recipe. The body says which.
+
+## Spark recipe: Qwen3.8-Flash-Next on TensorFold
+
+TensorFold has no authentication, so it never listens on the LAN. The `lucia-spark-model` user service binds it to the gateway address of the host container's Docker network, which the host reaches and the LAN does not. Lucia's authenticated `/v1` forwards to it for `models`, `chat/completions` and `responses`.
+
+<Source path="tools/runners/spark_model_worker.py" /> owns the recipe, pinned to one commit of its git repository, and its settings (`PARALLEL=4`, `CONTEXT=200000`, `TENSORFOLD_MEMORY_RESERVE_GIB=4`, `PORT=8888`). The host can only ask for `running` or `stopped`.
+
+The bootstrap installs the service but leaves it stopped. It needs `docker` and `git`, a non-root user and persistent user services (`loginctl` linger). It runs as `systemctl --user` unit `lucia-spark-model.service`.
+
+```mermaid
+sequenceDiagram
+  participant O as Owner
+  participant H as Host
+  participant F as spark-model directory
+  participant S as lucia-spark-model
+  O->>H: Start
+  H->>H: Pause Lucia models, unload both
+  H->>F: request.json generation N, desired running
+  S->>F: status.json state starting
+  S->>S: git checkout pinned commit, start.sh
+  S->>F: status.json state running, url
+  O->>H: Call /v1
+  H->>S: Forward to the bridge address
+  O->>H: Stop
+  H->>F: request.json generation N+1, desired stopped
+  S->>F: status.json state stopped
+  H->>H: Reload saved models
+```
+
+The files sit in `<data>/spark-model/`:
+
+```json
+{ "schemaVersion": 1, "generation": 3, "desired": "running" }
+```
+
+`status.json` echoes the `generation` it applied, with `state` (`starting`, `running`, `stopping`, `stopped`, `failed`), `since`, `message`, `url` and `checkedAt`. The host ignores a status whose generation does not match the request, and treats the worker as unavailable when `checkedAt` is older than one minute. The first start downloads about 125 GB. The worker reports the last line of the recipe's output while it waits, which keeps the heartbeat fresh.
+
+After a reboot the worker resets its remembered generation, so it re-applies the current request. Starting a running model again leaves it alone. If the container dies while `state` is `running`, the status becomes `failed` with its exit code.
+
+While the model runs, the worker writes `telemetry/spark-model.json`, a Prometheus file-based service-discovery file. The Spark's relay reads it and scrapes TensorFold's `/metrics`. See [Observability](./observability.mdx).
+
+## Hugging Face access
+
+Downloads call the `hf` CLI (`HostPlatform__HuggingFaceExecutable`, `/opt/hf/bin/hf` in the container) with `--revision`, `--local-dir` and `--quiet`. The host strips `HF_TOKEN` and `HUGGING_FACE_HUB_TOKEN` from the child's environment and sets one deliberately: a token saved on the Models page wins, then `HostPlatform__HuggingFaceToken`. With no token, `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` stops the CLI from picking up cached credentials. The token is never put in an argument list or a log.
+
+## Inference worker for GPU servers
+
+`Lucia.Inference.Worker` is the same runtime without the portal. It serves `/health`, `/metrics` (scrape with the inference key), `/api/worker/*` for model management (owner key) and `/v1/*` (inference key). Lucia deploys it as the Local AI app and sets these:
+
+```yaml
+services:
+  inference:
+    image: seiggy/lucia-inference:0.1.8-cuda13@sha256:7668db75424bf957fd63c2eb354eeef6f8568a5826c661650c001ee4d85b8913
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    environment:
+      HostPlatform__ApiKey: ${LUCIA_WORKER_KEY}
+      HostPlatform__InferenceApiKey: ${LUCIA_INFERENCE_KEY}
+      HostPlatform__MemoryBudgetGiB: "24"
+      HostPlatform__ModelDirectory: /models
+    volumes: ["models:/models", "data:/data"]
+```
+
+The worker refuses to start unless `MemoryBudgetGiB` is positive, both keys are at least 32 characters and differ, the backend is `ggml_cuda` and the runtime reserve is at least 1 GiB. Its built-in defaults are OS, services and voice reserves of 0 and a runtime reserve of 2 GiB, because a GPU server serves models only and its OS lives in host RAM.
+
+Build one image per CUDA line, from the commands at the top of <Source path="deployment/inference/Dockerfile" />:
+
+```bash
+dotnet publish src/Lucia.Inference.Worker -c Release -p:CudaLine=13 -o <context>/publish
+docker build --platform linux/amd64 -f deployment/inference/Dockerfile -t lucia-inference:<version>-cuda13 <context>
+```
+
+With the vLLM or llama.cpp engine, the app sets `Worker__LibraryOnly=true`. The worker then only keeps the model library, mounts no GPU, and sets `RequireTensorSharp` to false so GGUFs that TensorSharp cannot run still become `Ready`. For llama.cpp, `HostPlatform__LlamaCache` points at a local directory that Ready GGUFs are copied into, with a `llama-models.ini` preset file that its router reads. `HostPlatform__LlamaLoadOnStartup` lists the model names it loads at start. Loading 40 GB from a 1 GbE share takes minutes. From local NVMe it takes seconds.
+
+## Metrics
+
+TensorSharp logs each finished chat request. Lucia reads those entries with a logger provider and records the numbers as OpenTelemetry metrics under the meter `Lucia.Inference`, without the prompt or answer text. They are `lucia.inference.input_tokens`, `cached_tokens`, `output_tokens`, `time_to_first_token` and `duration`, tagged with `model` and `outcome`. The Observability app charts them next to vLLM, llama.cpp and TensorFold on its Inference dashboard.
+
+## Checks and failure modes
+
+```bash
+docker inspect lucia-homelab-host --format '{{.State.Health.Status}}'
+docker logs lucia-homelab-host --tail 50
+ls -l ~/.local/share/lucia/host/data/spark-model/
+```
+
+| Symptom | Cause |
+|---|---|
+| Host exits at startup with an options error | A key shorter than 32 characters, both keys equal, an unsupported `Backend` (use `cpu`, `ggml_cpu`, `ggml_cuda` or `cuda`) or a reserve out of range |
+| `/v1` returns `model_not_loaded` | No model selected, a platform update is running ([Spark updates](./spark-updates.mdx)), or the Spark recipe holds the memory |
+| "The model does not fit after voice, OS, services, and runtime reservations." | Lower the context, pick a smaller quantization, or unload the other model |
+| Startup message "Startup model loading failed" | The saved selection could not load. The management API stays up so an owner can fix it. |
+| Recipe `state: failed` | Read `status.json` `message`, then `journalctl --user -u lucia-spark-model` |
+| Another Lucia host fails on `/models` | The lease file is held. Stop the other host. |
+
+All settings are listed in [Configuration](./configuration.mdx). The code behind this page is in [Local AI (code)](../code/local-ai.mdx).

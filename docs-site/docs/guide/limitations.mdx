@@ -1,0 +1,92 @@
+---
+title: Limitations
+description: What Lucia does not do yet, what has only been tried in one lab, and what stays your job.
+sidebar_position: 4
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Limitations
+
+<WhoWhatWhy
+  who="You, deciding whether Lucia fits your lab."
+  what="An honest list of missing features, untested setups and tasks Lucia leaves to you."
+  why="Lucia is young software built in one lab. It is better to know the gaps before you plan around them."
+/>
+
+Three words mean something specific here:
+
+- **Not built.** Lucia does not do it.
+- **Not tested.** It might work, but nobody has tried it.
+- **Manual.** You do it yourself, on purpose.
+
+## Installing Lucia
+
+| Item | Status |
+|---|---|
+| A signed download of the setup app | **Not built.** Someone builds the app from source, and Windows and macOS warn you because it is unsigned |
+| Building from source without the maintainer's AI packages | **Not built.** One of the packages is not published, so only the maintainer's setup can make the full app. See [Install from source](../deploy/install-from-source.mdx) |
+| A controller other than a DGX Spark | **Not tested** |
+| Setup apps for Linux and macOS | Build, but only Windows has been used with a real Spark |
+
+## Servers
+
+| Item | Status |
+|---|---|
+| Starting the network-install service from the setup app | **Not built.** It is prepared outside the app today, so a fresh install has it off |
+| Installing servers on a fresh install | Held back until Lucia's installer files and certificates are marked ready. Devices says "Discovery is ready. Installation is not." |
+| Network start on the Spark's own network with UEFI | The only layout that has been tested |
+| Older BIOS network start, ARM servers, installs across networks | **Not tested** |
+| Secure Boot | Lucia reports it and never changes it. Only tested with it off |
+| Operating systems other than Debian 13 | **Not built** |
+
+Approving an install erases every internal disk in that machine, not only the one that gets Debian. See [Adding a server](./adding-a-server.mdx).
+
+## Network and domains
+
+| Item | Status |
+|---|---|
+| Gateways other than UniFi | **Not built** |
+| UniFi Network Boot setting | **Manual** |
+| The DNS servers UniFi hands out | **Manual.** You point your network at AdGuard yourself |
+| DNS providers other than Cloudflare | **Not built.** Without Cloudflare you stay on Lucia's private certificates |
+| More than one domain | **Not built.** One per install, and the page has no way to remove it |
+| Moving AdGuard's main role back after a failover | **Not built.** You do it |
+| Certificate revocation lists on the private authority | **Not built.** A few strict programs may refuse its certificates |
+
+## Local AI
+
+| Item | Status |
+|---|---|
+| The bundled chat model | Chosen, but its testing on the Spark is not finished |
+| A bundled embedding model | None. The slot stays empty until you load one |
+| Voice on the Spark | **Not built.** Lucia sets memory aside for it anyway |
+| Memory estimates for models | Estimates, not guarantees |
+
+## The assistant
+
+| Item | Status |
+|---|---|
+| "Allow for this chat" permissions | Forgotten when the chat ends or Lucia restarts |
+| Copilot models | Need a GitHub account with Copilot. The other models do not |
+| The Spark's GitHub runner token | Stored as plain text in a private file. Every other login Lucia keeps is encrypted |
+
+## Health and monitoring
+
+| Item | Status |
+|---|---|
+| Spark health history | Kept in memory for one hour, so a restart empties it |
+| Server charts on Devices | Same: one hour, in memory |
+| Alerts | None come ready-made. You get charts and logs, and you set up alert rules |
+| Long-term history | Only with the Observability app installed |
+
+## Spark updates
+
+| Item | Status |
+|---|---|
+| Automatic security updates | Lucia does not turn them on. It tells you whether Ubuntu's own are on |
+| Checking on a timer | Lucia checks when you ask, and again when the package list changes |
+| Removing packages during an update | Refused on purpose |
+| Repeating maintenance windows | **Not built.** You schedule one at a time |
+
+If something you plan to rely on is not mentioned in these docs, ask before building your lab around it.

@@ -1,0 +1,146 @@
+---
+title: Install from source
+description: Build the desktop setup package, prepare the Spark, run the installer and trust the private CA.
+sidebar_position: 2
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Install from source
+
+<WhoWhatWhy
+  who="Engineers installing Lucia on a DGX Spark today."
+  what="The supported path from a clone to a running Lucia, plus the recovery and development routes the same code exposes."
+  why="No signed installer exists yet, so the package you build is the product. It carries everything the Spark needs, and the Spark never clones the repository."
+/>
+
+This page assumes the Spark meets the [requirements](../guide/requirements.mdx): past NVIDIA's first-run setup, SSH and Docker working, and a UniFi gateway on the network.
+
+## Build machine
+
+| Tool | Used for |
+|---|---|
+| .NET 10 SDK | Server, node agent, desktop app |
+| Node.js and npm | The React portal (`src/frontend`). Needs Node `^20.19.0` or `>=22.12.0` |
+| Python 3 | `tools/host/package.py`, which packs the host archive |
+| PowerShell 7 (`pwsh`) | `tools/desktop/publish.ps1` |
+| TensorSharp GB10 package feed | In-process inference |
+
+### The TensorSharp feed
+
+`Lucia.Homelab.Server` references `TensorSharp.Server`, `TensorSharp.Models` and `TensorSharp.Native.Cuda` at `2.8.6-gb10.20260921.1`. These are not the public NuGet releases. They are a locally built set for the GB10, and the build expects them in a folder registered as a NuGet source:
+
+```powershell
+dotnet nuget add source "$HOME\.nuget\local-feeds\tensorsharp-cuda" --name TensorSharp-Local-Cuda
+```
+
+The repository does not document how to produce these packages, and they are not published. Without them the Linux ARM64 host publish fails with `The maintainer build requires the configured TensorSharp package feed`, and no deployable desktop package comes out. You can still run the desktop UI alone (see below). This is the largest gap in the source install, and [limitations](../guide/limitations.mdx) lists it.
+
+## 1. Get the source
+
+```bash
+git clone https://github.com/seiggy/lucia.os.git
+cd lucia.os
+```
+
+## 2. Build the desktop package
+
+```powershell
+pwsh -File tools\desktop\publish.ps1 -Runtime win-x64
+```
+
+Other runtimes: `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`. The script, in order:
+
+1. Runs `npm run build` in `src\frontend`, and `npm ci` first if `node_modules` is missing.
+2. Publishes `Lucia.Homelab.Server` for `linux-arm64` (needs the TensorSharp feed).
+3. Publishes the node agent self-contained for `linux-x64` into the server's `boot\node-agent-linux-x64`.
+4. Copies the portal into `wwwroot` and runs `tools\host\package.py` to make `host-linux-arm64.tar.gz` and a manifest.
+5. Publishes the desktop app self-contained into `artifacts\desktop\<runtime>`, with `BootstrapPayload` (hash-checked setup scripts and the Identity AppHost) and `HostPayload` (the host archive) beside it.
+
+The result is an unsigned development build. No model weights or Hugging Face tokens are packaged. Keep the output folder together, because the app finds `HostPayload` relative to itself. Build distributables on their target OS so executable permissions survive. On macOS the output is wrapped in `Lucia.app`.
+
+## 3. Prepare the Spark
+
+As the account you will use for setup:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+The desktop installs the domain, enrollment and Spark model/runner user services only if lingering is already on. Leave .NET and Aspire alone. If they are missing, the desktop installs .NET 10.0.401 and Aspire 13.5.4 under your home from pinned, checksummed packages, after you approve.
+
+## 4. Run the desktop
+
+```powershell
+artifacts\desktop\win-x64\Lucia.Desktop.exe
+```
+
+It walks through **Connect**, **Review**, **Your account**, **Set up** and **Ready**. [Desktop bootstrap](./desktop-bootstrap.mdx) covers each step and the job it starts. When the job finishes, **Ready** opens Lucia at its HTTPS origin.
+
+## 5. Install the root update worker
+
+Spark package updates go through a small root service with a fixed action list. The desktop never asks for a sudo password, so install it yourself:
+
+```bash
+sudo python3 ~/.local/share/lucia/bootstrap/app/tools/packages/package_worker.py install
+```
+
+It needs `python3-apt`. The **Updates** page shows this command until the worker reports in. See [Spark updates](./spark-updates.mdx).
+
+## Trust the private CA by hand
+
+Until you connect a domain, every certificate comes from the private CA. The desktop offers to import its public root. To do it yourself, copy `trust/lucia-root-ca.crt` and `trust/fingerprint.txt` from `~/.local/share/lucia/identity`, check the SHA-256 fingerprint of the DER certificate, then import:
+
+```powershell
+$certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new((Resolve-Path .\lucia-root-ca.crt).Path)
+$certificate.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+# Compare with the trusted fingerprint before running the next command.
+Import-Certificate -FilePath .\lucia-root-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
+```
+
+Never copy the `ca` or `secrets` directories off the Spark.
+
+## Other routes
+
+### Desktop UI only
+
+Needs only the .NET 10 SDK. A source run has no `HostPayload`, so it can connect and run preflight but cannot deploy the host.
+
+```powershell
+dotnet run --project src\Lucia.Desktop
+dotnet run --project tests\Lucia.Desktop.Checks -- --payload .
+python tools\desktop\check.py
+python tools\identity\check.py
+```
+
+### Identity stack by hand
+
+`tools/identity/provision.py` is the installer the desktop calls. Run it from a checkout on a Spark that has Docker, Python 3, OpenSSL, .NET 10 and Aspire 13.5.4:
+
+```bash
+python3 tools/identity/provision.py prepare --host 192.0.2.10
+python3 tools/identity/provision.py publish
+python3 tools/identity/provision.py apply --owner-username <your-username>
+python3 tools/identity/provision.py verify
+```
+
+`apply` includes prepare and publish. To enroll an owner on an existing install, or recheck their sign-in:
+
+```bash
+python3 tools/identity/provision.py owner --owner-username <your-username>
+python3 tools/identity/provision.py verify-owner-login
+```
+
+This covers the identity stack only. Deploying the host and portal is the desktop's job. State lives in `~/.local/share/lucia/identity`, which `--state` overrides.
+
+### Network boot service
+
+`tools/boot/prepare.py` builds the PXE bundle and `tools/boot/provision_boot.py` prepares it on the Spark. Neither the desktop nor a documented command runs that yet, so a stock install comes up with boot disabled. See [Installer](./installer.mdx).
+
+### Development loop
+
+To work on the server and portal from a workstation, the development AppHost runs the server, a Redis container and the Vite frontend. See [Getting started](../code/getting-started.mdx) for the full loop.
+
+## Verify
+
+After **Ready**, check the stack as described in the [deployment overview](./overview.mdx#verify-health). On the Spark, `docker ps --filter label=io.lucia.component` should list every container as healthy.

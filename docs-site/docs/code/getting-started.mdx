@@ -1,0 +1,148 @@
+---
+title: Getting started
+description: Clone, build, test and run Lucia on a development machine.
+sidebar_position: 2
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+import Source from '@site/src/components/Source';
+
+# Getting started
+
+<WhoWhatWhy
+  who="Developers setting up a workstation to change Lucia."
+  what="The tools you need, the commands to build and test each part, and the development loop that runs the server and portal together."
+  why="Most of Lucia runs on a laptop. Only the Spark-side pieces need a Spark, so knowing which is which saves a lot of waiting."
+/>
+
+## Tools
+
+| Tool | Version | For |
+|---|---|---|
+| .NET SDK | 10 | Everything in `src` and `tests` |
+| Node.js | `^20.19.0` or `>=22.12.0` | The portal in `src/frontend` |
+| Docker | Recent, with Compose | The dev AppHost's Redis container |
+| Aspire CLI | 13.5 | `aspire start` for the dev loop |
+| Hugging Face CLI (`hf`) | 1.27 or newer | Model downloads from the server |
+| Python | 3.11+ | Spark-side tools and their tests. Not installed by default on Windows. Use `uv`, WSL or the Spark |
+| PowerShell 7 | any | `tools/desktop/publish.ps1` |
+
+The server needs the TensorSharp GB10 packages at `2.8.6-gb10.20260921.1` from a local NuGet feed. They are not on nuget.org, and without them `dotnet restore` fails for the server and for every project that references it. See [Install from source](../deploy/install-from-source.mdx#the-tensorsharp-feed).
+
+## Clone and layout
+
+```bash
+git clone https://github.com/seiggy/lucia.os.git
+cd lucia.os
+```
+
+The solution file is `src/Lucia.Homelab.sln`. It lists the main projects. Several test projects are not in it and are built by path.
+
+Conventions from `AGENTS.md` worth knowing on day one: `.cs` files use CRLF line endings, and `src/frontend/src/UniverseScene.ts` is LF and ASCII-only. The repository is public, so no secrets, no lab addresses in docs and no licensed assets.
+
+## Run the server and portal
+
+The development AppHost starts the server, a Redis container for output caching, and the Vite dev server for `src/frontend`.
+
+<Source path="src/Lucia.Homelab.AppHost/AppHost.cs"/>
+
+```csharp title="src/Lucia.Homelab.AppHost/AppHost.cs"
+var cache = builder.AddRedis("cache");
+var hostApiKey = builder.AddParameter("host-api-key", secret: true);
+
+var server = builder.AddProject<Projects.Lucia_Homelab_Server>("server")
+    .WithEnvironment("HostPlatform__ApiKey", hostApiKey)
+    // ...
+    .WithHttpHealthCheck("/health")
+```
+
+Set the owner key once, then start:
+
+```powershell
+dotnet restore src\Lucia.Homelab.Server\Lucia.Homelab.Server.csproj
+dotnet user-secrets set "Parameters:host-api-key" "<at-least-32-characters>" --project src\Lucia.Homelab.AppHost
+aspire start --non-interactive
+aspire wait server --non-interactive
+```
+
+Optional parameters, read only when set: `Parameters:huggingface-token` and `Parameters:inference-api-key`. The listeners bind to all interfaces so you can test from another device. Do not expose them to the internet.
+
+In `Development` the server runs with `HostAuthentication:Enabled` set to `false`, so there is no browser sign-in. Requests authenticate with `Authorization: Bearer <host-api-key>`. The Vite dev server proxies `/api` without adding that header, so owner-only pages in the portal will get 401 in this loop. Use `curl` against the API for those, and set `Parameters:inference-api-key` to get the playground bridge for local AI.
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:5329/api/host/models
+curl -H "Authorization: Bearer $KEY" http://localhost:5329/v1/models
+```
+
+Port 5329 is the `http` launch profile when you run the server alone. Under Aspire, read the real port from `aspire describe`.
+
+### Server alone
+
+Without Docker you can run the server directly. The one setting it cannot start without is the owner API key, and it must be 32 characters or more. Without Redis it falls back to in-memory output caching.
+
+```powershell
+$env:HostPlatform__ApiKey = "<at-least-32-characters>"
+$env:HostPlatform__Backend = "cpu"
+dotnet run --project src\Lucia.Homelab.Server --launch-profile http
+```
+
+The `cpu` backend avoids needing the GB10's CUDA. The package, assistant and domain state directories default under `%LOCALAPPDATA%\Lucia\data` on Windows, so nothing needs creating first.
+
+### Portal alone
+
+```powershell
+cd src\frontend
+npm ci
+npm run dev
+npm run build
+npm run lint
+npm test
+```
+
+`npm run build` runs `tsc -b` then `vite build`. `npm test` compiles the pure logic modules (`dashboard.ts`, `navigation.ts`, `assistant.ts` and others) with `tsc` and runs the matching `tests/*.test.mjs` with Node. There is no browser test runner. UI components stay thin and the logic they call is what gets tested.
+
+## Run the tests
+
+Tests are console applications. Each one throws on the first failed check and exits non-zero. There is no test framework.
+
+```powershell
+dotnet run --project tests\Lucia.Homelab.AuthChecks
+dotnet run --project tests\Lucia.Homelab.Checks
+dotnet run --project tests\Lucia.NodeAgent.Checks
+dotnet run --project tests\Lucia.Desktop.Checks -- --payload .
+```
+
+| Project | Covers |
+|---|---|
+| `Lucia.Homelab.AuthChecks` | Host authentication, scheme selection, origin and CSRF rules |
+| `Lucia.Homelab.Checks` | Model catalog validation and other host checks |
+| `Lucia.Homelab.AssistantChecks` | Assistant broker, tools and jobs |
+| `Lucia.Homelab.DomainChecks`, `CloudflareChecks`, `CertbotChecks`, `AdGuardChecks` | Domains and DNS |
+| `Lucia.Homelab.BootChecks`, `OnboardingChecks`, `Lucia.ManagedNode.Qualification` | Boot and onboarding |
+| `Lucia.Homelab.TelemetryChecks`, `HuggingFaceChecks`, `KeyChecks` | Telemetry, model downloads, API keys |
+| `Lucia.NodeAgent.Checks` | The node agent |
+| `Lucia.Desktop.Checks`, `Lucia.Desktop.UiChecks` | Desktop protocol and UI |
+
+The domain page for each area says which checks cover it. The Spark-side Python has offline tests that use fixtures and mock Docker, SSH and LDAP:
+
+```bash
+python tools/desktop/check.py
+python tools/identity/check.py
+python -B -m unittest discover -s tools/host -v
+```
+
+Set `LUCIA_TEST_APPHOST=1` for the host tests to also publish both AppHost variants locally through Aspire.
+
+## Build a package
+
+`tools/desktop/publish.ps1` builds the portal, the server for `linux-arm64`, the node agent for `linux-x64` and the desktop app, and bundles them. See [Install from source](../deploy/install-from-source.mdx) and [Desktop bootstrap](./desktop-bootstrap.mdx).
+
+Deploying a change to a real Spark uses the lab skills under `.github/skills/` (`lucia-host-deploy`, `lucia-node-agent-upgrade`, `lucia-installer-deploy`, `lucia-stack-templates`).
+
+## Docs
+
+The documentation lives in `docs-site/` and is checked by `node tools/docs/lint-prose.mjs`. See [Documentation](./documentation.mdx) for the page layout and the pre-commit agent.
+
+## Next
+
+Read the [architecture overview](./overview.mdx) and then [Host server](./host-server.mdx), the wiring every feature plugs into.

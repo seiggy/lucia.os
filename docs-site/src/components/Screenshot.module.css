@@ -1,0 +1,15 @@
+.shot {
+  margin: 1.5rem 0;
+}
+
+.shot img {
+  width: 100%;
+  border: 1px solid var(--lucia-line);
+  border-radius: 12px;
+}
+
+.shot figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--ifm-color-emphasis-700);
+}

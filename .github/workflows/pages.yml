@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'docs-site/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -20,18 +21,30 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: site
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: |
+            site/package-lock.json
+            docs-site/package-lock.json
+      # The landing page (Astro) sits at the site root.
       - run: npm ci
+        working-directory: site
       - run: npm run build
+        working-directory: site
+      # The docs (Docusaurus) are mounted under /docs/, which its baseUrl expects.
+      - run: npm ci
+        working-directory: docs-site
+      - run: node ../tools/docs/lint-prose.mjs
+        working-directory: docs-site
+      - run: npm run check:diagrams
+        working-directory: docs-site
+      - run: npm run build
+        working-directory: docs-site
+      - run: cp -r docs-site/build site/dist/docs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist

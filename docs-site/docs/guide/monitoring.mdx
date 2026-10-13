@@ -1,0 +1,76 @@
+---
+title: Monitoring
+description: See how your servers are doing with the Observability app and Grafana, and know what Lucia does and doesn't watch for you.
+sidebar_position: 9
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Monitoring
+
+<WhoWhatWhy
+  who="Lab owners who want graphs of their servers, apps and AI models."
+  what="Installing the Observability app, opening Grafana, and what the three ready-made dashboards show."
+  why="When something feels slow, a graph of the last day tells you more than a guess, and it costs nothing to keep."
+/>
+
+Lucia gives you two levels of monitoring. The first is always on. The **Home** page shows live readings for the Spark, your main machine: processor use, memory, disk space, graphics card and network. It keeps the last hour. See [Spark health](./spark-health.mdx).
+
+The second level is optional. The **Observability** app adds graphs and searchable logs for every server Lucia manages, and keeps the history for days or weeks. Install it if you've ever wanted to know what a server was doing last Tuesday. Skip it if the Home page tells you enough.
+
+## What you get
+
+Observability bundles several tools, and you only ever open one of them:
+
+- **Grafana** is the website where you look at graphs. Everything else works behind it.
+- **Prometheus and Thanos** store the numbers, like CPU use over time.
+- **Loki** stores log lines, the running commentary apps write about themselves.
+- **Tempo** stores traces, which follow one request from app to app.
+
+Each of your servers also gets a small helper app named **telemetry-relay**. It collects that server's readings and sends them to Observability. Lucia installs it for you, and removes it if you remove Observability.
+
+## Install it
+
+1. Install **Object storage** first, from **Apps → Add an app**. Observability keeps its long-term history there. Without it, history stays on the Observability server's own disk, which works but is harder to move.
+2. Install **Observability** on a server with Docker ready and about 20 GB of free space.
+3. Open the app's page and click **Open Grafana**.
+
+Sign in with your Lucia account. Owners get full access. Until your domain is set up, Grafana also answers at `http://<server>:3030`.
+
+The page also shows the address and login that other apps can use to send their own data. Apps in Lucia's catalog that can send data are pointed there automatically.
+
+## The dashboards
+
+Lucia adds three read-only dashboards in a Grafana folder called **Lucia**. They refresh every 30 seconds.
+
+| Dashboard | What it shows |
+|---|---|
+| **Hardware** | One row per machine, then processor and memory, storage and network, temperatures and graphics cards. This opens first |
+| **Containers** | How much processor, memory, network and disk each running container uses |
+| **Inference** | Speed, delay and volume for each local AI engine, side by side |
+
+Use the machine picker at the top of a dashboard to focus on one server. Use the time picker at the top right to go back in time.
+
+## How far back you can look
+
+| Look back | You see |
+|---|---|
+| Up to 1 hour | Every reading |
+| Up to 6 hours | One average per minute |
+| Up to 24 hours | One average per 30 minutes |
+| Up to 7 days | One average per hour |
+| Up to 30 days | One average per 4 hours |
+
+Logs are kept for 7 days. Traces are kept for 14 days. Older graphs get coarser on purpose, so a month of history fits in a small space.
+
+## What Lucia doesn't do
+
+Lucia doesn't send you alerts from these graphs. Nothing pages you when a disk fills up. If you want to hear about problems, ask the [assistant](./assistant-jobs.mdx) to check your lab on a schedule and message you.
+
+## If something looks wrong
+
+- **Grafana shows no data for a server.** The relay may not have reached that server yet. Open **Apps** and look for `telemetry-relay` on it, or wait a minute. A server that's offline sends nothing.
+- **Graphs stop at a certain time.** The Observability app was probably stopped or moved. Check its state on the Apps page.
+- **Grafana won't let you in.** Add `/login?disableAutoLogin=true` to the address to reach the admin form, then copy the admin password from the Observability app's page.
+
+Engineers setting this up can read [Observability for operators](../deploy/observability.mdx).

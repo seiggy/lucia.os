@@ -1,0 +1,53 @@
+---
+title: What Lucia is
+description: A plain-language tour of Lucia, the home lab manager that runs on a DGX Spark.
+sidebar_position: 1
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+import Screenshot from '@site/src/components/Screenshot';
+
+# What Lucia is
+
+<WhoWhatWhy
+  who="You run a home lab and want one place to look after it."
+  what="What Lucia does, the pieces it is made of, and where each one lives in your lab."
+  why="Running apps, servers, names and certificates by hand takes a lot of memory and a lot of evenings. Lucia keeps that work in one web page."
+/>
+
+Lucia is a manager for your home lab. You open it in a browser, and from there you install apps, add servers, give things proper web addresses and keep everything updated. It also comes with an assistant that can check on things for you.
+
+<Screenshot name="home" alt="The Lucia Home page, showing the health of the Spark and the lab at a glance">
+  The Home page. It is the first thing you see after you sign in.
+</Screenshot>
+
+## The pieces
+
+A Lucia lab has one controller and any number of servers.
+
+**The Spark** is the controller. It is an NVIDIA DGX Spark, a small computer with a powerful graphics chip, and it is the "brain" of your lab. Lucia's website, its sign-in system and its local AI all run on it. You install Lucia on the Spark once, from your own computer, using the setup app.
+
+**Servers** are the other computers in your lab. Lucia installs Debian Linux on them over the network and then looks after them. They run your apps, such as photo libraries or media servers. See [Servers](./servers.mdx) and [Adding a server](./adding-a-server.mdx).
+
+**Your network gear** stays in charge of handing out addresses. Lucia works with a UniFi gateway for that and does not replace it. See [Network](./network.mdx).
+
+**You** sign in with an account you create during setup. Lucia keeps your list of people and their access in one place, and the same account works for the web page and for logging in to your servers. See [People and sign-in](./people-and-sign-in.mdx).
+
+## What you can do with it
+
+- Install apps from a catalog and keep them backed up. See [Apps](./apps.mdx).
+- Put your lab under a domain you own, so addresses look like `photos.lab.example.com` and browsers trust them. See [Your domain](./your-domain.mdx).
+- Run AI models on the Spark and use them from other apps. See [Local AI](./local-ai.mdx).
+- Ask the assistant to look at logs, restart something or run a check every morning. See [Assistant](./assistant.mdx) and [Assistant jobs](./assistant-jobs.mdx).
+- Watch the health of the Spark and of each server. See [Spark health](./spark-health.mdx) and [Monitoring](./monitoring.mdx).
+- Install the Spark's own software updates when you choose to. See [Updates](./updates.mdx).
+
+## What Lucia keeps private
+
+Nothing is open to the internet unless you turn that on for a specific app. Your passwords stay in your lab. Lucia asks before it does anything that could lose data, such as erasing a disk or deleting an app.
+
+## Before you start
+
+Lucia expects certain hardware and a UniFi network. Read [Requirements](./requirements.mdx) first, and [Limitations](./limitations.mdx) to see what is not finished yet. When you are ready, follow [Your first hour](./first-hour.mdx).
+
+If you are a DevOps engineer or a developer, the [deployment overview](../deploy/overview.mdx) and the [architecture map](../code/overview.mdx) go much deeper.

@@ -1,0 +1,92 @@
+---
+title: Adding a server
+description: Plug in a spare computer, boot it from the network and let Lucia install Debian on it and take it over.
+sidebar_position: 14
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Adding a server
+
+<WhoWhatWhy
+  who="Lab owners adding a spare PC or mini server to their lab."
+  what="What you need, the one-time router setting, the steps on the Devices page, what the server's screen shows, and what to do when it doesn't appear."
+  why="Installing an operating system by hand means a USB stick, a monitor and an evening. Lucia does it from the network, so you click one approval and wait."
+/>
+
+Lucia can turn an ordinary x86-64 computer into a managed server. You boot the machine from the network, Lucia shows you what it found, and you approve it. Lucia then installs Debian 13 and sets the machine up. When it's done, the server appears under **Your lab → Devices**. [Servers](./servers.mdx) covers life after that.
+
+:::danger
+Approving an installation erases **every** disk in the machine, not only the one you pick for Debian. Back up anything you want to keep first. This can't be undone.
+:::
+
+## What you need
+
+- A 64-bit Intel or AMD machine that supports **UEFI** network boot. Legacy BIOS boot isn't supported.
+- **Secure Boot turned off** in the machine's firmware settings. Lucia reads this setting and never changes it.
+- The machine on the same network as your Spark, usually the same router or switch. Booting across separate networks (VLANs) isn't supported.
+- A UniFi gateway as your DHCP server. UniFi Network is the only router Lucia supports for this.
+- A way to reach the machine's firmware menu once, usually by pressing a key such as F12 or Esc at power-on.
+
+ARM computers (a Raspberry Pi, for example) can't be added this way.
+
+:::note
+Installing from the network has to be switched on for your Lucia first. On a default setup it isn't, and **Devices** says **Discovery is ready. Installation is not.** The person who maintains your Spark turns it on. See [Installer](../deploy/installer.mdx).
+:::
+
+## Set up your router once
+
+Lucia never changes your router. You tell UniFi once where to find Lucia's boot files, and you never touch it again.
+
+1. In UniFi Network, open **Settings → Networks** and pick the network the new server will plug into.
+2. Keep UniFi as the DHCP server and turn on **Network Boot**.
+3. Set the **Boot server** to the Spark's address (digits only, without `https://` or a port).
+4. Set the **Boot file** to `debian-installer/amd64/bootnetx64.efi`. Keep the forward slashes exactly as written.
+5. Leave UniFi's separate **TFTP Server** switch off. It isn't needed.
+6. Save.
+
+The machine also has to find Lucia by name when it boots. The name is the one in your browser's address bar for Lucia on the Spark. If you use AdGuard Home as your DNS server, add a DNS rewrite there that points that name at the Spark's address. A hosts-file entry on your own computer doesn't help a machine that is still booting. Check that the machine's clock is right too, since Lucia checks certificates during the install.
+
+## Add the server
+
+1. Sign in as an owner and open **Your lab → Devices**.
+2. Click **Add hardware**. Lucia opens a **discovery window** for 30 minutes. **Extend 30 minutes** and **Stop discovery** change it.
+3. Connect the machine to the network and power it on. Open its boot menu and choose the network (PXE) option for UEFI.
+4. Watch the machine's screen, if it has one. A monitor is optional, and nothing on the screen waits for a key. You'll see this:
+   - A Lucia boot menu that starts by itself after 3 seconds.
+   - A status screen that checks the hardware and registers it with Lucia.
+   - A **verification code** such as `1a2b-3c4d-5e6f`.
+5. In **Devices**, find the machine under **Reported devices** (**Other devices** once you already have a server). Compare its code with the one on its screen. If they match, click **Review installation or reject this device**.
+6. Fill in the form:
+   - A **hostname**: a lowercase letter first, then lowercase letters, digits or hyphens.
+   - The **disk to install Debian on**. Nothing is picked for you.
+   - A **recovery SSH public key**. Paste one, or type a GitHub username and import it. It's the only key the machine's `lucia-recovery` account accepts.
+   - Tick the box that says you checked the physical device and matched the code.
+   - Type `ERASE`.
+7. Click **Erase disk and install**. On a machine with more than one disk the button reads **Erase all disks and install**, and the form tells you the other disks will join into one data volume.
+
+{/* TODO screenshot: devices-approve — the approval form on the Devices page with the erase warning, disk list and ERASE box */}
+{/* TODO screenshot: boot-verification-code — the server's status screen showing the verification code */}
+
+After you approve, the installer runs on its own. Follow it under **Your lab → Installation tasks**. Debian downloads its packages during the install, so your internet speed sets how long it takes. The machine restarts once. After the restart it introduces itself to Lucia and shows up as **Online** on the Devices page.
+
+Once the machine has its operating system, change its firmware's boot order back to the local disk. Use the one-time network boot choice only when you want to reinstall.
+
+## Not the right machine?
+
+If a device appears that you didn't expect, or the codes don't match, don't approve it. Click **Reject discovery**. Nothing is erased. A rejected entry stays in the list until you click **Dismiss discovery** to hide it. **View dismissed** and **Restore to list** bring it back.
+
+## When something looks wrong
+
+| What you see | What to try |
+|---|---|
+| The machine says it timed out looking for a network boot server | Check that discovery is open on the Devices page. Then check the **Boot server** address and boot file in UniFi, and that the machine is on the right network. |
+| It starts, then complains it can't find a file named `grubx64.efi` | Your boot files are out of date. Ask whoever maintains your Spark to refresh them. Leave the UniFi boot file alone. |
+| The screen says Lucia didn't register the machine, or it can't reach Lucia securely | Check that the DNS rewrite for Lucia's name is in the DNS server the machine gets from DHCP, and that the machine's clock is right. |
+| The screen says **the approved install settings could not be applied** or approval did not arrive | Approve it in Devices while discovery is still open. If the window closed, open it again and reboot the machine. |
+| Debian is installed but the screen says **this machine could not join Lucia** | Debian is on the disk but Lucia isn't managing it yet. Look at **Installation tasks** for the reason, then network-boot the machine again. Reinstalling replaces what is there. |
+| A disk can't be chosen | Lucia needs a disk with a stable identity. Pick another one, or check whether the firmware hides it. |
+| The Installation controls are greyed out | Installing from the network isn't switched on for your Lucia. See the note above. |
+| An installation shows **Stopped responding** | The machine stopped reporting before it finished. Remove it on the Devices page, then boot it from the network again. |
+
+You can cancel an install that's stuck from its card on the Devices page. Power the machine off first. A half-written disk is erased again on the next install.

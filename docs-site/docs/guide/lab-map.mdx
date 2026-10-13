@@ -1,0 +1,114 @@
+---
+title: Lab map
+description: See your network, servers, apps and devices as one live map, with traffic flowing between them, and learn what each part and colour means.
+sidebar_position: 22
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Lab map
+
+<WhoWhatWhy
+  who="Lucia owners who want to see their whole lab at a glance."
+  what="What the map draws, how to move around it, what the colours and moving traffic mean, and how to teach it about things it got wrong."
+  why="A list of devices tells you what exists. A map tells you what is connected to what, what is busy and what just stopped answering."
+/>
+
+{/* TODO screenshot: lab-map — the City theme with a few quarters, the status strip along the bottom and the detail panel open on a server */}
+
+## What it shows
+
+Open **Map** in the sidebar under **Your lab**. Lucia joins what it knows from three places into one picture:
+
+- **Your network**, read from UniFi: the gateway, switches, access points, the VLANs, and the phones, laptops and gadgets connected right now.
+- **Your Lucia servers and their apps**, including the Spark itself.
+- **Your NAS**, if you mounted one, linked to the servers that use it.
+
+The picture is a small city. Your gateway sits at the edge, with a road out to the **Internet**. Each network or VLAN is a quarter. Servers and devices are buildings in it, and apps stand beside the server that runs them. Roads follow your real cabling: a laptop connects through the access point it uses, and that connects through its switch.
+
+The Internet side is a city too. Each **district** is a kind of place your devices talk to, such as streaming, gaming, social, cloud and updates. Each destination is a building in it.
+
+If you switch **Theme** to **Universe**, the same map becomes a galaxy: your network is a solar system, devices are planets and moons, servers are stations, and the Internet is a galaxy through a wormhole. Nothing about the data changes. Universe needs a browser with 3D graphics turned on, and it is off if your system asks for reduced motion.
+
+:::note
+UniFi is optional. Without it, the map still draws your Lucia servers and apps under a stand-in gateway, and says "UniFi is not connected" along the bottom. Connect it under **Settings → UniFi Network**. See [Network](./network.mdx).
+:::
+
+## Moving around
+
+| Do this | To do this |
+|---|---|
+| Drag, scroll and pinch | Turn, zoom and move the view |
+| Click a building | Open its details panel |
+| **Find on the map** | Jump to a server, app, device or client by name |
+| **List** | Open a plain list of everything on the map. It works with a keyboard and a screen reader. |
+| **Layers** | Hide link traffic, conversations, apps, clients or storage |
+| **Esc** | Close the panel |
+
+The panel shows the object's health, the **route out** to the Internet, the traffic it carries by type, the ports it answers on, an app's containers and an **Open** button that takes you to the right page. **Ask the assistant about this** hands the object to the assistant with the facts filled in.
+
+## Health colours
+
+Buildings glow in their category colour while healthy. Trouble overrides that.
+
+| Colour | Meaning |
+|---|---|
+| Green, or the category colour | Running |
+| Amber | Needs attention |
+| Red | Failed |
+| Grey | Unknown, not reporting, or an offline client |
+
+The strip along the bottom counts servers, apps running and clients online. When something needs attention, press the count to jump to it.
+
+## Traffic
+
+Moving cars on the roads are traffic. Roads widen toward the Internet, where everyone's traffic adds up. Each car's colour is a kind of traffic, such as web, streaming, gaming, DNS or file sharing. The legend lists them. The **Traffic** switch picks how the speed is averaged: **Live**, **15m**, **1h** or **24h**. **Internet sites** picks how many destinations get a building: 40, 100, 1k or all.
+
+What you see depends on what Lucia can measure:
+
+| You have | You get |
+|---|---|
+| UniFi only | Rates for devices, the WAN and clients. The strip says traffic is from UniFi only. |
+| The **Observability** app | Rates for servers and containers, and conversations. |
+| SNMPv3 turned on in UniFi, and its details saved under **Settings → UniFi Network → Device traffic (SNMPv3)** | Per-port rates on switches and access points |
+| NetFlow sent from your gateway to the Observability app | **Conversations**: who talks to whom, and which Internet sites, with names from AdGuard where Lucia can find them |
+
+Nothing is required. The map gets richer as you add them. See [Monitoring](./monitoring.mdx).
+
+## Sorting things Lucia guesses wrong
+
+Lucia guesses what a device is from its name, its maker and what UniFi says about it. Sometimes it gets it wrong. In the panel you can change:
+
+- a client's **Group** (Phones, Computers, Smart home, Entertainment, Infrastructure, Unsorted). Choose **Automatic** to go back to Lucia's guess.
+- a building's **Category**, which sets its colour. Pick one or type your own, such as "Smart plugs".
+- an Internet destination's **District**. Pick one or name a new one.
+
+These choices are saved on your Spark for every owner. A client you moved stays moved, even when its address changes.
+
+## Wallboard
+
+Press **Wallboard** to fill the screen with the map, with no controls. It slowly flies to whatever needs attention, one thing every 12 seconds, and shows a caption. With nothing wrong, it shows the whole map. This is handy on a spare monitor. Press **Esc** or **Exit wallboard** to leave.
+
+## When something looks wrong
+
+| You see | What to do |
+|---|---|
+| **The map could not be drawn** | Press **Try again**. If it repeats, check that Lucia is running. |
+| "UniFi is not connected" | Connect UniFi under **Settings → UniFi Network**. |
+| "UniFi: …" with an error | Open **Settings → UniFi Network** and check the connection. The message is what UniFi answered. |
+| "Traffic is from UniFi only" | Install the Observability app. |
+| "No traffic readings yet" | It has just started. Wait a minute, and check the Observability app is running. |
+| "Conversations appear once NetFlow arrives" | Send NetFlow from your gateway to the Observability app. |
+| **Live readings paused** | Your browser could not reach Lucia for over 35 seconds. It resumes by itself. |
+| A device is on the wrong quarter or group | Open it and set its **Group**. |
+| A server shows **Not reporting** | It has not contacted Lucia for a couple of minutes. See [Servers](./servers.mdx). |
+| Clients are missing | The map shows the ones UniFi saw in the last 30 days, up to 2,000. Offline clients older than that drop off. |
+
+The map redraws its structure about once a minute and its traffic every 10 seconds. A new device can take up to a minute to appear.
+
+## Next
+
+- [Network](./network.mdx) for connecting UniFi and AdGuard.
+- [Monitoring](./monitoring.mdx) for the Observability app that powers traffic and conversations.
+- [Spark health](./spark-health.mdx) for the Spark's own readings, which also feed the map.
+- How it is built: [Lab map and portal](../code/lab-map-and-portal.mdx).

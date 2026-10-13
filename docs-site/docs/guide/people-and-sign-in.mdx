@@ -1,0 +1,93 @@
+---
+title: People and sign-in
+description: Add people to your lab, choose what each of them can open, and fix the usual sign-in problems.
+sidebar_position: 12
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# People and sign-in
+
+<WhoWhatWhy
+  who="Lab owners who add family, friends or housemates to Lucia, and anyone who signs in to it."
+  what="How sign-in works, how to add and manage accounts under Settings → People, what owners and members can do, and what to try when sign-in fails."
+  why="One account per person means you can hand someone access without sharing a password, and take it away again without changing anything else."
+/>
+
+Everyone who uses your lab gets their own account. The same username and password open Lucia in the browser and the apps you share with them. For owners, it also works on every server Lucia manages.
+
+You don't create passwords for each app or server. Lucia keeps one list of people (the **directory**) and a sign-in service called **Authentik** checks it. When you click **Sign in with Authentik**, you're sent to that service, you type your password there, and you land back in Lucia.
+
+## Owners and members
+
+Every account is one of two kinds, and the difference is a group.
+
+| Kind | Group | What they can do |
+|---|---|---|
+| **Owner** | `lucia-owners` | Everything. Owners manage servers, apps, domains and people, and they can sign in to servers over SSH with `sudo`. |
+| **Member** | `lucia-users` | A smaller set of pages: Home, the Playground and Appearance. Members can't change anything about the lab. |
+
+Someone who is in neither group can sign in to Authentik but gets a page that says **Your account needs access**. Ask an owner to put them in a group.
+
+:::warning
+Owners have full control. An owner can change your Spark, sign in to every server as an administrator, remove apps, change your domain, and edit or delete any account, yours included. Add someone to `lucia-owners` only when you'd trust them with the house keys.
+:::
+
+## Sign in and out
+
+1. Open Lucia in your browser.
+2. Click **Sign in with Authentik**.
+3. Type your username and password on the Authentik page.
+
+You stay signed in for 8 hours, even if you close the browser. After that, Lucia asks you to sign in again. The 8 hours run from the moment you signed in. Using Lucia doesn't extend them.
+
+To sign out, use **Sign out** next to your name in the corner.
+
+## Add a person
+
+Only owners see **Settings → People**.
+
+1. Click **Add person**.
+2. Fill in a **Username** and a **Full name**. The username uses lowercase letters, digits, `-` or `_`, starts with a letter, and can't change later. Email is optional.
+3. Keep the suggested **Temporary password** or click **Generate** for a new one. Passwords need 14 or more characters with an uppercase letter, a lowercase letter, a digit and a symbol.
+4. Tick the groups. `lucia-users` is ticked for you. Add `lucia-owners` only for another owner.
+5. Click **Add person** and copy the password.
+
+Lucia shows the temporary password once and never again. Give it to them privately, in person or through a messaging app, not in a group chat. They can change it themselves after their first sign-in, in their Authentik settings.
+
+Some usernames are refused because servers already use them for something else, such as `root`, `docker` or `admin`. Names that start with `lucia-`, `ldap-` or `node-` are refused too. Pick another name.
+
+## Change what someone can do
+
+Click **Manage** on a person's row. Each part saves on its own.
+
+- **Details** changes the full name and email.
+- **Groups** changes which groups the person belongs to. Moving someone into `lucia-owners` asks you to confirm that you trust them with everything above.
+- **Password** sets a new password. It replaces their old one everywhere, and Lucia shows it to you once.
+- **Access** disables or deletes the account. A disabled account can't sign in to Lucia, apps or servers until you enable it again. Deleting is permanent and also removes the SSH keys the person added. Files they own on servers stay.
+
+Two rules protect you from locking yourself out. You can't disable or delete your own account, or leave `lucia-owners`. The first owner, the account made when you set Lucia up, can't be disabled, deleted or removed from `lucia-owners` by anyone.
+
+## Groups and app access
+
+Groups decide who can open which apps. Under **Groups**, **New group** makes one, for example `family`. Put people in it, then open **App access** and choose which apps that group can open. Owners can always open every app.
+
+Only apps that support sign-in with Lucia show up under **App access**. Today that's Grafana, Immich, LiteLLM and the Object storage console, and they need your domain to be set up first. See [Your domain](./your-domain.mdx) and [Apps](./apps.mdx).
+
+## Sign in to servers
+
+Owners can sign in to servers Lucia manages with the same account: `ssh yourname@servername`. To skip the password, add your public SSH keys under **Settings → SSH keys**. [Servers](./servers.mdx) has the details.
+
+## When something looks wrong
+
+| What you see | What to try |
+|---|---|
+| **Your account needs access** | You're signed in but in no Lucia group. Ask an owner to add you to `lucia-users`. |
+| The sign-in page says the password is wrong | Check caps lock. If it still fails, ask an owner to set a new password for you under **Manage → Password**. |
+| **Sign-in failed. Try again or contact the host owner.** | Wait a minute and try again. If it keeps happening, the sign-in service may be down. See [Identity](../deploy/identity.mdx). |
+| **Waiting for the identity service** on the People page | Lucia publishes the list of people about once a minute. If this stays for several minutes, the helper that applies changes on the Spark has stopped. See [Identity](../deploy/identity.mdx). |
+| A change shows **didn't finish** | Read the reason under the message. It usually says what to fix, such as a name that's taken. Click **Dismiss**, correct it and try again. |
+| A new person shows **Not in Authentik yet** | The sign-in service copies new accounts in on a schedule. Wait a minute and refresh. |
+| You can't sign in as the only owner | Another owner can reset your password. If there is no other owner, the person who runs your Spark has a recovery account. See [Identity](../deploy/identity.mdx). |
+
+Changes you make under **People** take a few seconds to apply, and longer when the sign-in service is copying accounts over. The page shows **Applying a change** until they're done.

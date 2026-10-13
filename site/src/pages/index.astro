@@ -5,7 +5,7 @@ import Button from '../components/Button.astro';
 import Shot from '../components/Shot.astro';
 import { u, repo } from '../lib/url';
 
-const install = u('/docs/getting-started/install-from-source/');
+const install = u('/docs/deploy/install-from-source/');
 ---
 <Lab
   title="Lucia · The homelab that takes the 2 a.m. shift"
@@ -64,7 +64,7 @@ const install = u('/docs/getting-started/install-from-source/');
               Saved prompts on a cron schedule. Every run opens its own chat thread, uses only the actions you approved
               for that job, and sends a push notification to the devices you picked when it needs you.
             </p>
-            <a class="more" href={u('/docs/architecture/assistant-and-jobs/')}>How jobs work</a>
+            <a class="more" href={u('/docs/guide/assistant-jobs/')}>How jobs work</a>
           </div>
           <Shot class="ch-shot" name="jobs" route="#/ai/jobs" alt="Lucia's Assistant jobs page: a job named Fix stopped containers, scheduled every day at 7:00, with its last run finished." />
         </article>
@@ -80,7 +80,7 @@ const install = u('/docs/getting-started/install-from-source/');
               Network-boot a box, approve the disk, and Lucia installs Debian 13 and enrolls it. From then on it reports
               CPU, memory, GPU and temperatures every 30 seconds.
             </p>
-            <a class="more" href={u('/docs/architecture/nodes/')}>Nodes and onboarding</a>
+            <a class="more" href={u('/docs/guide/servers/')}>Nodes and onboarding</a>
           </div>
         </article>
 
@@ -98,7 +98,7 @@ const install = u('/docs/getting-started/install-from-source/');
               AdGuard runs on every node, each on its own virtual IP. Change a filter on the primary and the replicas
               follow. Reboot a server and the house still resolves.
             </p>
-            <a class="more" href={u('/docs/architecture/adguard-ha/')}>AdGuard high availability</a>
+            <a class="more" href={u('/docs/deploy/adguard-ha/')}>AdGuard high availability</a>
           </div>
         </article>
 
@@ -113,7 +113,7 @@ const install = u('/docs/getting-started/install-from-source/');
               One language model and one embedding model, served on the Spark's GB10 and reachable from your apps through
               Lucia's OpenAI-compatible API. Memory is budgeted so the rest of the system keeps breathing.
             </p>
-            <a class="more" href={u('/docs/architecture/local-ai/')}>Local AI</a>
+            <a class="more" href={u('/docs/guide/local-ai/')}>Local AI</a>
           </div>
           <Shot class="ch-shot" name="playground" route="#/ai" alt="Lucia's Playground page with the hosted model Qwen3.8-Flash-Next ready, served context 200,000 tokens, backend TensorFold." />
         </article>
@@ -130,7 +130,7 @@ const install = u('/docs/getting-started/install-from-source/');
               local DNS answered by AdGuard. Skip it and Lucia serves everything from its own private CA. Public access is
               off until you turn it on.
             </p>
-            <a class="more" href={u('/docs/architecture/networking-and-dns/')}>Networking and DNS</a>
+            <a class="more" href={u('/docs/deploy/networking-and-dns/')}>Networking and DNS</a>
           </div>
         </article>
 
@@ -152,7 +152,7 @@ const install = u('/docs/getting-started/install-from-source/');
               Authentik runs the front door. One account covers Lucia, the apps a person's groups can open, and, for
               owners, the servers themselves.
             </p>
-            <a class="more" href={u('/docs/architecture/identity/')}>Identity</a>
+            <a class="more" href={u('/docs/guide/people-and-sign-in/')}>Identity</a>
           </div>
         </article>
 
@@ -167,7 +167,7 @@ const install = u('/docs/getting-started/install-from-source/');
               Traces, metrics and logs from Lucia and your nodes land in Grafana, along with the inference server's
               Prometheus metrics. The Spark's own health is sampled every 10 seconds.
             </p>
-            <a class="more" href={u('/docs/architecture/observability/')}>Observability</a>
+            <a class="more" href={u('/docs/guide/monitoring/')}>Observability</a>
           </div>
         </article>
 
@@ -185,7 +185,7 @@ const install = u('/docs/getting-started/install-from-source/');
               Lucia lists the Spark's pending packages and security fixes, installs them in one pass or on a schedule, and
               restarts only the services still holding old files.
             </p>
-            <a class="more" href={u('/docs/architecture/spark-updates/')}>Spark updates</a>
+            <a class="more" href={u('/docs/guide/updates/')}>Spark updates</a>
           </div>
         </article>
       </div>
@@ -283,7 +283,7 @@ const install = u('/docs/getting-started/install-from-source/');
       <div><dt class="engr">Apps</dt><dd>Docker Compose. Each app is one Compose file placed on one server.</dd></div>
       <div><dt class="engr">You</dt><dd>Comfortable with SSH, and happy to let something else hold the pager.</dd></div>
     </dl>
-    <a class="more" href={u('/docs/getting-started/requirements/')}>Full requirements</a>
+    <a class="more" href={u('/docs/guide/requirements/')}>Full requirements</a>
   </section>
 
   <section class="notyet-sec wrap" aria-labelledby="notyet-title">
@@ -307,7 +307,7 @@ const install = u('/docs/getting-started/install-from-source/');
         </li>
       </ul>
     </div>
-    <a class="more" href={u('/docs/reference/limitations/')}>Every known limitation</a>
+    <a class="more" href={u('/docs/guide/limitations/')}>Every known limitation</a>
   </section>
 
   <section class="close-sec" aria-labelledby="close-title">

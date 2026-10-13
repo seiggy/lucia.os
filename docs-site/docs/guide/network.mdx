@@ -1,0 +1,119 @@
+---
+title: Network
+description: Connect AdGuard Home and your UniFi gateway so Lucia can keep names and addresses tidy, and know what it will never touch.
+sidebar_position: 16
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Network
+
+<WhoWhatWhy
+  who="Lab owners who run AdGuard Home for DNS and a UniFi gateway for the network."
+  what="Connecting each, what Lucia does with the connection, running AdGuard on more than one server, and the settings that stay yours."
+  why="Names that stop working and servers that change address are the usual reasons a lab feels flaky. Lucia keeps both steady and leaves the rest of your network alone."
+/>
+
+Lucia's rule here is small footprint. It adds what it needs and reports what it finds. It does not rewrite your router. Both connections need a Lucia owner and live under **Settings**.
+
+## Two words first
+
+- **DNS** is the phonebook that turns a name like `grafana.homelab.example.com` into an address. **AdGuard Home** is a DNS server you run at home. Lucia adds entries (called *rewrites*) to it so your lab's names resolve inside your house.
+- **DHCP** is how your router hands every device an address when it joins. A **reservation** tells the router to always give a particular device the same one.
+
+## Connect AdGuard Home
+
+Lucia works with the AdGuard Home you already run. Open **Settings → AdGuard** and enter:
+
+- the address of its web page, with the port if it has one, such as `https://192.168.1.2:3000`. Leave off `/control`;
+- the username and password you use to sign in to AdGuard.
+
+Lucia reads the account, version and settings, then saves the connection. It does not read your query log or browsing history, and it does not create test entries.
+
+A few things worth knowing:
+
+- AdGuard has no limited keys, so this is a full administrator login. Lucia stores it encrypted on the Spark and never sends the password back to your browser.
+- Use HTTPS if you can. Lucia checks the certificate normally and has no "ignore errors" switch. Plain HTTP works only for a private home address, and only after you tick a box that says you understand the password crosses your network in the clear.
+- Only home-network addresses are accepted.
+- **Verify connection** checks again. **Disconnect** removes Lucia's access but leaves every entry it already made.
+- Lucia will not switch things on for you. If DNS, protection or rewrites are turned off in AdGuard itself, Lucia says so and waits until you fix it there.
+
+With AdGuard connected, you can set up your [domain](./your-domain.mdx). From then on Lucia keeps these entries current:
+
+| Entry | Points at |
+|---|---|
+| Lucia, the sign-in page and the Spark's name | The Spark |
+| `<server>.<subdomain>` for each server you added | That server's current address, checked every 5 minutes |
+| App names such as `immich.<subdomain>` | The Spark, which forwards to the app |
+
+Lucia adds only entries that are missing. If one of yours already says the same thing, it leaves it and does not take it over. If one of yours says something different, Lucia stops and tells you instead of overwriting it.
+
+### A certificate for AdGuard itself
+
+Under **HTTPS certificate** you can tick **Manage AdGuard's certificate**. Lucia then gets a certificate for AdGuard's own name, installs it for AdGuard's web page and encrypted DNS, and renews it twice a day. It reuses the Cloudflare token from your domain setup, so finish [your domain](./your-domain.mdx) first.
+
+Connect AdGuard by name rather than by IP number so the certificate has a name to cover. Turning the option off leaves the last certificate in place.
+
+## AdGuard on every server
+
+One DNS server on one machine means a reboot takes your whole house offline. If you have two or more [servers](./servers.mdx), Lucia can run AdGuard on each of them, copy settings between them, and move to a spare if the main one stops.
+
+To start it, install **AdGuard Home** once from **Apps**. After that Lucia takes over: it puts an instance on each ready server and gives each its own address. The **AdGuard servers** table on the AdGuard page shows each instance, whether it is healthy and which one is the **primary**.
+
+What to know:
+
+- **Make changes on the primary.** Every minute, Lucia copies the primary's settings, filter lists, clients and rewrites to the others. A change made on a replica is overwritten.
+- **Failover is automatic, failback is not.** If the primary stops answering for three minutes, the most recently synced healthy server takes over. When the old one returns, it stays a replica until you choose **Make primary** on it.
+- **Choose "Make primary" with care.** That server's settings become the truth and replace the others' within about a minute.
+- **If you delete an instance, Lucia does not put it back.**
+- **The Spark itself does not run AdGuard.** With one server there is nothing to fail over to.
+- **You do one thing by hand.** In your router's DHCP settings, give devices every AdGuard address as a DNS server. The AdGuard page prints the list. Devices then try the next address when the first is silent.
+
+If the page says "Connect AdGuard first", "Finish domain setup first" or "Install AdGuard Home from Apps first", do that step. Turn on **Manage AdGuard's certificate** too; a new instance does not finish setup without a certificate. The [AdGuard HA deployment page](../deploy/adguard-ha.mdx) covers the mechanics.
+
+## Connect UniFi
+
+If you use UniFi, Lucia can pin addresses. Open **Settings → UniFi Network**.
+
+1. In UniFi Network, open **Settings → Control Plane → Integrations** and create an API key. If you can, use an admin limited to Network.
+2. In Lucia, enter the gateway's address, such as `https://192.168.1.1`. Leave the site as `default` unless your console has several.
+3. Paste the key and choose **Verify and save**.
+
+UniFi gateways usually ship with a self-signed certificate. If Lucia reports the certificate is not trusted, compare the fingerprint it shows with the one in your browser. If they match, choose **Trust this certificate and connect**. Lucia remembers the fingerprint and refuses the gateway if it ever changes.
+
+Once connected, Lucia pins the Spark's address, and each server's address as soon as it finishes onboarding. It checks every 5 minutes, and the page shows each machine's state:
+
+| State | Meaning |
+|---|---|
+| Reserved | The address is pinned. |
+| Reserving | Lucia is about to add it. |
+| Reserved elsewhere | You pinned a different address for it. Lucia leaves your choice. |
+| Address taken | Another device holds a reservation on that address. Lucia does not take it. |
+| Not seen | UniFi has no live lease for that machine yet. |
+
+Lucia only adds reservations. It never changes or removes yours. Untick **Reserve managed-node addresses automatically** if you would rather do it yourself. **Disconnect** leaves existing reservations in place.
+
+If you also turn on [public access](./your-domain.mdx#sharing-an-app-with-the-internet), the same connection manages one port forward named "Lucia public ingress".
+
+### Device traffic for the lab map
+
+The [lab map](./lab-map.mdx) can show live traffic per port. For that, Lucia reads your gateway and switches over SNMPv3, which is a standard way for network gear to report how busy it is. In UniFi, open **Settings → System → Advanced**, turn on SNMPv3, and enter the same username and password in Lucia under **Device traffic (SNMPv3)**. The passwords need at least 8 characters. Without it, the map falls back to the rates UniFi reports itself.
+
+## What stays with you
+
+Lucia does not change:
+
+- **Network boot** (the DHCP options that let a new server install itself). See [Adding a server](./adding-a-server.mdx).
+- **The DNS servers your router hands out.** You set them, including the AdGuard addresses above.
+- **Firewall rules.**
+- **Other people's DHCP reservations.**
+
+## When something looks wrong
+
+| Symptom | Try |
+|---|---|
+| "Cannot securely reach the UniFi gateway" | Check the gateway's LAN address and that Lucia's Spark can reach it. |
+| UniFi says the API key cannot see the site | Use the site's short name, usually `default`. |
+| A name does not resolve on a device | The device may not be using AdGuard for DNS. Check its DNS setting, or the DHCP list in your router. |
+| AdGuard page says an instance is unhealthy | Open that server in [Servers](./servers.mdx) and check it is online. DNS may not be running inside AdGuard. |
+| Setup is blocked by an AdGuard rule | Open the rule in AdGuard, then remove it or choose another name. |

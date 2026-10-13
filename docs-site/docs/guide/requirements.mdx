@@ -1,0 +1,94 @@
+---
+title: Requirements
+description: What your lab needs before you install Lucia, and what you only do once by hand.
+sidebar_position: 2
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Requirements
+
+<WhoWhatWhy
+  who="You, before you install Lucia."
+  what="The hardware, network and accounts Lucia expects, and which parts you set up yourself."
+  why="Lucia is built around one kind of lab. Checking now is quicker than finding out an hour into the install."
+/>
+
+Each item below is marked one of three ways:
+
+- **Required.** Setup stops without it.
+- **Manual.** You do it once, by hand. Lucia never changes it for you.
+- **Not tested.** It might work, but nobody has tried it.
+
+## The Spark
+
+Lucia's controller is one NVIDIA DGX Spark. **Required.**
+
+Finish NVIDIA's own first-time setup on the Spark before you start. That means it is on your network and you have a login you can use over SSH (a way to control a computer by typing commands from another one). The login must be able to use Docker, the program that runs apps in containers.
+
+Lucia starts from that point. It does not repair the Spark's operating system, change Docker's setup or install graphics drivers.
+
+The setup app checks these things for you and shows a plain list of what passes and what blocks:
+
+| Check | What it wants |
+|---|---|
+| Operating system | Ubuntu 22.04 or 24.04, which DGX OS is built on |
+| Chip type | Linux on ARM64 |
+| Docker | Running, reachable by your login, version 28 or newer, with the Compose plugin |
+| Graphics access | The NVIDIA device `nvidia.com/gpu=all` already present |
+| Python | Version 3.11 or newer |
+| OpenSSL | Installed |
+| .NET and Aspire | Lucia's tools. If missing, the app offers to install them in your home folder |
+| Ports | 443, 636, 9443 and 9444 free, or already used by Lucia |
+| Disk space | At least 12 GiB free |
+
+Give the Spark a steady address, and keep it the same over time. Once you connect your UniFi gateway, Lucia reserves that address for you.
+
+### One command on the Spark
+
+A few of Lucia's helper programs on the Spark only keep running after you log out if you allow it. Run this once, as the login you will use for setup:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+Skip it and setup still finishes, but changing your domain, managing people and adding servers stay blocked. The Lucia page tells you when that is the reason.
+
+## The network
+
+Lucia works with a **UniFi Network** gateway and no other kind. **Required.** UniFi stays in charge of handing out addresses, and Lucia does not run a second address server.
+
+You do these by hand, in the UniFi settings:
+
+- **Network Boot.** Turn it on for the network where new servers will start up. Set the Spark's address as the boot server and `debian-installer/amd64/bootnetx64.efi` as the boot file. Leave the separate TFTP Server switch off. **Manual**, and only needed if you want Lucia to install servers.
+- **DNS servers.** Tell UniFi to hand out the addresses of your AdGuard Home DNS servers, if you use them. **Manual.**
+
+You can also give Lucia a UniFi API key under **Settings → UniFi Network**. With it, Lucia reserves addresses for the Spark and your servers. It only adds reservations, and it never asks for your UniFi password or changes your firewall or networks.
+
+## Servers Lucia installs
+
+- A regular x86-64 PC or mini PC that can start from the network in UEFI mode. **Required.**
+- On the same network as the Spark. **Required.** Other layouts are not tested.
+- Its clock set correctly, because Lucia checks certificates.
+
+Lucia installs Debian 13. Approving an install **erases every internal disk** in that machine. Read [Adding a server](./adding-a-server.mdx) before you approve one.
+
+## Names and certificates
+
+Out of the box Lucia makes its own certificates. A certificate is what lets a browser show a padlock. Yours come from Lucia's private authority, so your browser will warn about them until you tell it to trust that authority. The setup app can do that for you, with a separate approval.
+
+For addresses that browsers trust without any setup, connect a domain you own. It needs to be managed by **Cloudflare**, a DNS provider with a free tier. See [Your domain](./your-domain.mdx). Without Cloudflare you stay on the private authority, and that is fine.
+
+## Your computer
+
+The setup app runs on Windows, macOS or Linux. You need the Spark's address and its SSH login, with a password or a key file.
+
+There is no ready-made download yet. Someone has to build the app from the source code. See [Install from source](../deploy/install-from-source.mdx), which is written for that person.
+
+## The assistant
+
+The assistant can use GitHub Copilot models, which need a GitHub account with Copilot. It can also use models running on the Spark itself, which need no account at all.
+
+## What is not covered
+
+The short list is on [Limitations](./limitations.mdx). Check it before you plan around a feature.

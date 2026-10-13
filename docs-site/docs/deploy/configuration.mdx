@@ -1,0 +1,231 @@
+---
+title: Configuration
+description: Every configuration key the Lucia host and inference worker read, with code defaults, the shipped appsettings.json values and what the installer sets in production.
+sidebar_position: 30
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+import Source from '@site/src/components/Source';
+
+# Configuration
+
+<WhoWhatWhy
+  who="Operators running the host from source or in production, and anyone who needs to know why the production deployment looks the way it does."
+  what="Every key the host and the inference worker bind, grouped by area, with its default in code, its value in the shipped appsettings.json and its value in the Spark deployment."
+  why="Most settings live in the portal. The ones here are the few the installer fixes at deploy time, and they are easier to reason about when each default is written down once."
+/>
+
+## How configuration is read
+
+The host is an ASP.NET Core app. It reads `appsettings.json`, then `appsettings.<Environment>.json`, then environment variables. In an environment variable, `__` stands for `:`, so `HostPlatform__ApiKey` sets `HostPlatform:ApiKey`. Indexed lists use numbers: `HostAuthentication__TrustedProxyNetworks__0`.
+
+You rarely edit these by hand on the Spark. The installer writes the Compose project for the host from `src/Lucia.Homelab.Identity.AppHost/AppHost.cs`, and it takes its values from the per-installation settings in `~/.local/share/lucia/host`. Secrets are generated files under the installation's `secrets` directory. They reach the container as environment variables or as read-only mounted files, and never go into `appsettings.json`.
+
+Day-to-day settings are not configuration. The domain, AdGuard, UniFi, storage, registries and assistant permissions are stored in the host's own state and edited in the portal under **Settings**.
+
+Three columns recur below:
+
+- **Code** is the default when nothing is set.
+- **Shipped** is the value in <Source path="src/Lucia.Homelab.Server/appsettings.json" />.
+- **Spark** is what the production Compose project sets.
+
+Options that fail validation stop the host at startup, with the key named in the message.
+
+## HostPlatform
+
+Models, inference and the owner API. Bound and validated at startup (`ValidateOnStart`).
+
+| Key | Code | Shipped | Spark | Range and notes |
+|---|---|---|---|---|
+| `ApiKey` | none, required | none | generated secret | 32 or more characters. Owner-level bearer key. |
+| `InferenceApiKey` | none | none | generated secret | 32 or more characters, and different from `ApiKey`. Inference-only. |
+| `ModelDirectory` | `data/models` | `data/models` | `/models` | Model library and `active-models.json` |
+| `HuggingFaceExecutable` | `hf` | `hf` | `/opt/hf/bin/hf` | CLI used for downloads |
+| `HuggingFaceHomeDirectory` | none | none | `/data/huggingface` | `HF_HOME` for the download child. Without it, a `.huggingface` folder under `ModelDirectory`. |
+| `HuggingFaceToken` | none | none | not set | Fallback token. A token saved on the Models page replaces it. |
+| `Backend` | `ggml_cuda` | `ggml_cuda` | `ggml_cuda` | One of `cpu`, `ggml_cpu`, `ggml_cuda`, `cuda` |
+| `ContextTokens` | 32768 | 32768 | 8192 on a fresh install | 256 to 1,048,576. Context used when a load names no size. |
+| `MaxOutputTokens` | 2048 | 2048 | 2048 | 1 to 32,768. Upper bound for `max_tokens` in requests. |
+| `SreThinking` | `true` | `true` | `true` | Whether the assistant's local model reasons before it answers |
+| `MemoryBudgetGiB` | none, detected | none | not set | 1 to 8,192. Required for CUDA on anything but Linux arm64. |
+| `OsReserveGiB` | 4 | 8 | 8 | 0 to 1,024 |
+| `ServicesReserveGiB` | 3 | 8 | 8 | 0 to 1,024 |
+| `VoiceReserveGiB` | 8 | 8 | 8 (installer record) | 8 to 1,024. Held for a voice pipeline that does not exist yet. |
+| `RuntimeReserveGiB` | 3 | 8 | 8 | 1 to 1,024 |
+| `WeightMemoryMultiplier` | 1 | 2 | 2 | 1 to 8. Calibration knob for the weight estimate. |
+| `RequireTensorSharp` | `true` | `true` | `true` | Set false when another engine serves the library |
+| `LlamaCache` | none | none | not set | Local directory that Ready GGUFs are copied to, with `llama-models.ini` |
+| `LlamaLoadOnStartup` | none | none | not set | Comma-separated llama.cpp model names to preload |
+| `ChatModelId`, `EmbeddingModelId` | none | none | not set | Model GUIDs to load at start when no selection is saved |
+
+The memory model that these reserves feed is in [Local AI](./local-ai.mdx). The environment variable `KV_CACHE_DTYPE=f32` doubles the KV estimate from 2 to 4 bytes per element. The host sets `TS_VRAM_HEADROOM_MB` itself, to the larger of its existing value and the sum of the four reserves.
+
+`HF_TOKEN` and `HUGGING_FACE_HUB_TOKEN` in the host's own environment are removed from the download child on purpose. Use the Models page or `HostPlatform__HuggingFaceToken`.
+
+## HostAuthentication
+
+Portal sign-in through Authentik (OpenID Connect with PKCE). Defaults to off in code. Outside Development, `Enabled` must be true or the host will not start.
+
+| Key | Code | Spark | Rule |
+|---|---|---|---|
+| `Enabled` | `false` | `true` | Required `true` outside Development |
+| `Authority` | empty | Authentik's `lucia` application URL | Absolute HTTPS URL, no query or fragment |
+| `ClientId` | empty | from identity provisioning | Required |
+| `ClientSecretFile` | empty | `/run/secrets/host-oidc-client-secret` | Absolute path to a file. The secret is never an environment value. |
+| `PublicOrigin` | empty | the portal's origin | HTTPS origin, no path |
+| `AdditionalPublicOrigins` | empty | not set | At most 4 exact HTTPS origins. No wildcards. |
+| `AuthorityUsesSystemTrust` | `false` | not set | Trust Authentik through the system store instead of the CA file |
+| `CaCertificatePath` | empty | `/trust/lucia-root-ca.crt` | Public certificate of a valid CA. A PEM with a private key is rejected. |
+| `DataProtectionKeysDirectory` | empty | `/data/data-protection` | Absolute. Back it up with `/data`. |
+| `TrustedProxyNetworks` | empty | the identity network's subnets | At least one private CIDR (10/8, 172.16/12, 192.168/16 or fc00::/7) |
+
+Sessions last 8 hours and do not slide. Cookies are `__Host-` prefixed, secure and same-site. The host trusts `X-Forwarded-*` headers only from `TrustedProxyNetworks`, and only for the hosts in `PublicOrigin` and `AdditionalPublicOrigins`. See [Security model](./security-model.mdx) and [Identity](./identity.mdx).
+
+## Storage directories
+
+Each store has its own key. In production they all sit under the container's `/data` volume, which is `~/.local/share/lucia/host/data` on the Spark.
+
+| Key | Code default | Spark |
+|---|---|---|
+| `Assistant:Directory` | local app data `Lucia/data/assistant` | `/data/assistant` |
+| `InferenceKeys:Directory` | local app data `Lucia/inference-keys` | `/data/inference-keys` |
+| `HuggingFaceManagement:CredentialsDirectory` | local app data `Lucia/provider-credentials` | `/data/provider-credentials` |
+| `AdGuardManagement:CredentialsDirectory` | local app data `Lucia/network-credentials` | `/data/network-credentials` |
+| `CloudflareDomains:CredentialsDirectory` | local app data `Lucia/network-credentials` | `/data/network-credentials` |
+| `DomainOnboarding:StateDirectory` | local app data `Lucia/data/domains` | `/data/domains` |
+| `HardwareOnboarding:StateDirectory` | local app data `Lucia/onboarding` | `/data/onboarding` |
+| `PackageUpdates:Directory` | local app data `Lucia/data/packages` | `/data/packages` |
+| `Telemetry:RelayDirectory` | none | `/data/telemetry` |
+
+"Local app data" is `%LOCALAPPDATA%` on Windows and `~/.local/share` on Linux. Directories must be absolute, and the host rejects symbolic links in the path for credential stores. `PackageUpdates:Directory` is shared with the root worker. See [Spark updates](./spark-updates.mdx). Setting `Telemetry:RelayDirectory` makes the controller write the Spark's relay configuration there. It also requires `HostAuthentication:PublicOrigin`.
+
+## Assistant
+
+| Key | Code | Notes |
+|---|---|---|
+| `Directory` | as above | Per-user settings, jobs, run history, push devices and encrypted sign-ins |
+| `GitHubClientId` | Lucia's public GitHub App id | Client id for GitHub's device flow. No secret is involved. |
+| `Model` | none | Model used when the chat bar picks none. Null lets the runtime choose. |
+
+See [Assistant](./assistant.mdx).
+
+## DomainOnboarding
+
+| Key | Code | Spark | Notes |
+|---|---|---|---|
+| `StateDirectory` | as above | `/data/domains` | |
+| `GatewayDirectory` | empty | `/domain-gateway` | Where the Traefik dynamic configuration is written |
+| `CertificateGatewayDirectory` | `/domain-certificates` | not set | |
+| `InstallationId` | none | from the installer | Ties domain state to this installation |
+| `IngressAddress` | none | the boot network's bind address | Address the local DNS rewrites point at |
+
+## HardwareOnboarding and Boot
+
+Set only when the boot service was provisioned. The qualification flags decide what the Devices page may do. See [Nodes](./nodes.mdx) and [Installer](./installer.mdx).
+
+| Key | Code | Spark |
+|---|---|---|
+| `HardwareOnboarding:DiscoveryNetworkCidr` | none | the boot LAN, a private IPv4 subnet |
+| `HardwareOnboarding:BootBaseUrl` | none | the portal origin. HTTPS, no path. |
+| `HardwareOnboarding:DiscoveryAdapterQualified` | `false` | from boot provisioning |
+| `HardwareOnboarding:InstallationEnabled` | `false` | `true` only when installation is qualified |
+| `HardwareOnboarding:BootArtifactsQualified` | `false` | same as above |
+| `HardwareOnboarding:EnrollmentQualified` | `false` | same as above |
+| `HardwareOnboarding:EnrollmentStatusFile` | none | `/data/nodes/enrollment-worker.json` |
+| `Boot:Enabled` | `false` | `true` |
+| `Boot:ControlDirectory` | empty | `/data/boot-control` |
+| `Boot:AllowedNetworks` | empty | the boot LAN CIDR, as `Boot__AllowedNetworks__0` |
+
+`Boot:AllowedNetworks` takes private IPv4 subnets only.
+
+## SparkTelemetry
+
+| Key | Code | Spark | Notes |
+|---|---|---|---|
+| `Enabled` | `false` | `true` | Needs Linux and absolute paths below |
+| `ProcDirectory` | `/host-metrics` | `/host-metrics` | Read-only bind mounts of the host's `stat`, `meminfo`, `loadavg`, `uptime`, `net/dev` and `net/route` |
+| `StoragePath` | `/data` | `/data` | Volume whose free space is reported |
+
+The sampler also runs `nvidia-smi` inside the container, so the container needs the GPU device. See [Spark telemetry](../code/spark-telemetry.mdx).
+
+## Other keys
+
+| Key | Where | Notes |
+|---|---|---|
+| `ConnectionStrings:cache` | host | A Redis connection for output caching. Without it, the host uses an in-memory cache. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | host | When set, the standard OTLP exporter is used. When empty, telemetry goes to the Observability app through the controller's forwarder. |
+| `OTEL_SERVICE_NAME` | host | Defaults to `lucia-controller` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Spark | Set to `host.name` and `lucia.node`, both the machine's lowercase name |
+| `ASPNETCORE_ENVIRONMENT` | Spark | `Production` |
+| `ASPNETCORE_HTTP_PORTS` | Spark | `8080`. The gateway terminates TLS. |
+| `HF_HOME`, `HOME` | Spark | `/data/huggingface` and `/data` |
+| `Worker:LibraryOnly` | inference worker | `true` beside vLLM or llama.cpp: keep the library, serve nothing |
+
+The Spark container runs as the setup account's uid and gid with all capabilities dropped, `no-new-privileges`, the NVIDIA GPU device, and a health check on `/health/live`.
+
+## Inference worker defaults
+
+`Lucia.Inference.Worker` inserts these defaults ahead of its own configuration, so Compose can leave them out:
+
+| Key | Default |
+|---|---|
+| `HostPlatform:Backend` | `ggml_cuda` |
+| `HostPlatform:ModelDirectory` | `/models` |
+| `HostPlatform:HuggingFaceExecutable` | `/opt/hf/bin/hf` |
+| `HostPlatform:OsReserveGiB`, `ServicesReserveGiB`, `VoiceReserveGiB` | `0` |
+| `HostPlatform:RuntimeReserveGiB` | `2` |
+| `HostPlatform:WeightMemoryMultiplier` | `1` |
+
+It requires `ApiKey`, `InferenceApiKey` (distinct, 32 or more characters) and a positive `MemoryBudgetGiB`.
+
+## Example appsettings
+
+This is the shape of the Spark deployment, written as JSON. In production the same values arrive as environment variables, and the three secrets never appear in a file.
+
+```json title="appsettings.Production.json (illustrative)"
+{
+  "HostPlatform": {
+    "ModelDirectory": "/models",
+    "HuggingFaceExecutable": "/opt/hf/bin/hf",
+    "HuggingFaceHomeDirectory": "/data/huggingface",
+    "Backend": "ggml_cuda",
+    "ContextTokens": 8192,
+    "VoiceReserveGiB": 8
+  },
+  "HostAuthentication": {
+    "Enabled": true,
+    "Authority": "https://spark.example.com:9443/application/o/lucia/",
+    "ClientId": "<from identity provisioning>",
+    "ClientSecretFile": "/run/secrets/host-oidc-client-secret",
+    "PublicOrigin": "https://lucia.example.com",
+    "CaCertificatePath": "/trust/lucia-root-ca.crt",
+    "DataProtectionKeysDirectory": "/data/data-protection",
+    "TrustedProxyNetworks": [ "172.18.0.0/16" ]
+  },
+  "PackageUpdates": { "Directory": "/data/packages" },
+  "SparkTelemetry": { "Enabled": true, "ProcDirectory": "/host-metrics", "StoragePath": "/data" },
+  "InferenceKeys": { "Directory": "/data/inference-keys" },
+  "Assistant": { "Directory": "/data/assistant" }
+}
+```
+
+`HostPlatform__ApiKey` and `HostPlatform__InferenceApiKey` come from files in the installation's `secrets` directory.
+
+## Running from source
+
+`src/Lucia.Homelab.AppHost` runs the server, Redis and the Vite frontend with Aspire. It reads three parameters, set as Aspire parameters or user secrets. Use your own values.
+
+| Parameter | Sets | Required |
+|---|---|---|
+| `host-api-key` | `HostPlatform__ApiKey` | Yes, 32 or more characters |
+| `inference-api-key` | `HostPlatform__InferenceApiKey` and the Playground's key in development | No |
+| `huggingface-token` | `HostPlatform__HuggingFaceToken` | No |
+
+```powershell
+dotnet user-secrets set "Parameters:host-api-key" "<owner-key-at-least-32-characters>" --project src\Lucia.Homelab.AppHost
+aspire start --non-interactive
+```
+
+`appsettings.Development.json` sets `HostAuthentication:Enabled` to `false`. In Development only, the host serves its OpenAPI document and a Scalar explorer at `/scalar/v1`, and `/` redirects there.
+
+The Identity AppHost (`src/Lucia.Homelab.Identity.AppHost`) reads `LUCIA_IDENTITY_STATE`, the path to the installation's state directory produced by `tools/identity/provision.py`. See [Install from source](./install-from-source.mdx).
