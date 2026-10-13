@@ -4,7 +4,7 @@ import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { isDestructiveTool, openAssistantChat, parseModels, parseSettings, toolLabel } from './assistant'
 import type { AssistantModels, AssistantTool } from './assistant'
-import { cronOf, emptyJob, frequencies, parseJob, parseJobs, parseNext, parseRun, parseRuns, runStatusText, scheduleOf, scheduleText, scopeText,
+import { cronOf, emptyJob, frequencies, parseJob, parseJobs, parseNext, parseRegistryChoices, parseRun, parseRuns, runStatusText, scheduleOf, scheduleText, scopeText,
   weekdays } from './assistantJobs'
 import type { Job, JobDraft, JobRun, Schedule } from './assistantJobs'
 import { Icon } from './Icon'
@@ -33,8 +33,8 @@ function RunStatus({ run, waiting }: { run: JobRun; waiting?: string }) {
   return <span className={`status status-${tone}`}><Icon name={icon} />{label}</span>
 }
 
-const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts }: Job): JobDraft =>
-  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts })
+const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries }: Job): JobDraft =>
+  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries })
 
 export function Jobs({ session, refreshSession }: Props) {
   const [jobs, setJobs] = useState<Job[] | null>(null)
@@ -182,6 +182,7 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
   const [schedule, setSchedule] = useState<Schedule>(() => scheduleOf(initial.cron))
   const [tools, setTools] = useState<AssistantTool[]>([])
   const [inherited, setInherited] = useState<string[]>([])
+  const [registryChoices, setRegistryChoices] = useState<{ common: { host: string; name: string }[]; added: string[] }>({ common: [], added: [] })
   const [models, setModels] = useState<AssistantModels | null>(null)
   const [next, setNext] = useState<{ times?: string[]; error?: string }>({})
   const [busy, setBusy] = useState(false)
@@ -203,6 +204,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
     const get = (path: string) => ownerRequest(session, refreshSession, path, 'GET', undefined, controller.signal).then(response => response.json())
     get('/api/assistant/settings').then(parseSettings).then(value => { if (!controller.signal.aborted) { setTools(value.tools); setInherited(value.autoTools) } })
       .catch(failure => { if (!controller.signal.aborted) setError(failureText(failure, 'Lucia could not read the assistant’s tools.')) })
+    get('/api/assistant/registries').then(parseRegistryChoices).then(value => { if (!controller.signal.aborted) setRegistryChoices(value) })
+      .catch(() => { /* the picker still lists the common registries and the job's own */ })
     get('/api/assistant/models').then(parseModels).then(value => { if (!controller.signal.aborted) setModels(value) })
       .catch(() => { if (!controller.signal.aborted) setModels({ connected: false, sources: [], models: [] }) })
     return () => controller.abort()
@@ -233,6 +236,12 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
     }
   }
   const toggle = (name: string) => update({ tools: draft.tools.includes(name) ? draft.tools.filter(tool => tool !== name) : [...draft.tools, name] })
+  const toggleRegistry = (host: string) => update({ registries: draft.registries.includes(host) ? draft.registries.filter(item => item !== host) : [...draft.registries, host] })
+  const registryOptions = [
+    ...registryChoices.common.map(item => ({ host: item.host, label: `${item.name} (${item.host})` })),
+    ...registryChoices.added.filter(host => !registryChoices.common.some(item => item.host === host)).map(host => ({ host, label: `${host} (added in Registries)` })),
+  ]
+  for (const host of draft.registries) if (!registryOptions.some(item => item.host === host)) registryOptions.push({ host, label: host })
   const setPrompt = (index: number, text: string) => update({ prompts: draft.prompts.map((prompt, at) => at === index ? text : prompt) })
   const changes = tools.filter(tool => tool.tier === 'change')
   const dangers = tools.filter(tool => tool.tier === 'destructive')
@@ -306,6 +315,16 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
         <label className="job-field">Sites it may read<textarea className="ssh-key-input" value={sites} rows={3} autoComplete="off" spellCheck={false} disabled={busy}
           onChange={event => setSites(event.target.value)} placeholder="docs.docker.com" aria-describedby="job-sites-hint" /></label>
         <p id="job-sites-hint" className="section-note">One host name per line, on top of the allowed sites in Assistant settings.</p>
+        {tools.some(tool => tool.tier === 'registry') && <div className="job-field" role="group" aria-labelledby="job-registries-label">
+          <span id="job-registries-label">Container registries it may query</span>
+          <details className="job-picker">
+            <summary>{draft.registries.length ? `${draft.registries.length} selected: ${draft.registries.join(', ')}` : 'None selected'}</summary>
+            <div className="job-picker-options">{registryOptions.map(item => <label key={item.host} className="network-checkbox">
+              <input type="checkbox" checked={draft.registries.includes(item.host)} disabled={busy} onChange={() => toggleRegistry(item.host)} />
+              <span>{item.label}</span></label>)}</div>
+          </details>
+          <span className="ssh-key-hint">Lets it look up image tags and digests there, to see whether an image has an update. Add private registries in Settings → Registries.</span>
+        </div>}
       </section>
       <div className="network-actions">
         <button className="button primary" disabled={busy || !tools.length}>{busy ? 'Saving…' : id ? 'Save job' : 'Create job'}</button>

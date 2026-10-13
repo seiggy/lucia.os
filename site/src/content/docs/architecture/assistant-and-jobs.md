@@ -31,6 +31,7 @@ Every tool belongs to a tier, and the tier decides what happens when the assista
 |---|---|
 | **Read** | `list_nodes`, `get_node`, `list_containers`, `read_logs`, `list_apps`, `get_app`, `list_catalog`, `get_catalog_app`, `list_storage`, `list_backups`, `dns_lookup`, `list_network_clients`, `ask_owner`, `notify_owner` |
 | **Web** | `read_web_page`: public pages only, up to 2 MB fetched and 20,000 characters returned |
+| **Registry** | `query_registry`: asks an image's container registry (over the registry protocol, not HTTP page reads) for its tag count, its `latest` digest, its 5 newest tags with digests, and tag search |
 | **Change** | `save_custom_app`, `install_catalog_app`, `app_action`, `move_app`, `run_backup`, `upgrade_app_images`, `check_node_updates` |
 | **Destructive** | `delete_app`, `restore_backup`, `set_public_route`, `node_action` (install updates, restart, update agent), `run_command` |
 | **Secret** | `request_secret` |
@@ -49,6 +50,7 @@ Approvals are enforced on the server by a deny-by-default policy (Microsoft's Ag
 |---|---|---|
 | Read | Runs | Runs |
 | Web | Runs for allowed sites; asks for others | Same, plus the job's own allowed sites |
+| Registry | Asks for each registry; "for the rest of this chat" remembers it | Runs for the job's allowed registries; asks for others |
 | Change | Runs if allowed in Settings → Assistant or earlier in this chat; otherwise asks | Runs if allowed in settings or by the job; otherwise asks |
 | Destructive | **Always asks** | Asks, unless that job's settings allow the tool |
 | Secret | Asks you for the value | Same |
@@ -81,7 +83,7 @@ A chat grant lives in memory on the host, so it ends with the chat or a restart 
 - **A name and up to 10 prompts**, each up to 32,768 characters. Prompts run in order in the same chat, each after the last answer ends. If one fails or is stopped, the rest don't run.
 - **A model**, chosen from the same sources as the panel.
 - **A schedule**: presets for common repeats, or a custom five-field cron expression such as `30 6 * * 1-5`, in a time zone you choose. The editor previews the next run times. Untick "Run on this schedule" to pause the job. You can still use **Run now**.
-- **What it may do without asking**: change tools, a separate **Risky changes** group of destructive tools, and extra sites it may read. These add to Settings → Assistant, for this job only.
+- **What it may do without asking**: change tools, a separate **Risky changes** group of destructive tools, extra sites it may read, and a drop-down of **container registries it may query** (Docker Hub, GitHub, GitLab, Quay, Google, Microsoft, plus any you added under Registries). These add to Settings → Assistant, for this job only.
 
 ```text
 30 6 * * 1-5     weekdays at 06:30 in the job's time zone

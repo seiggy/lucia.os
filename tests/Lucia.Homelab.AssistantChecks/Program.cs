@@ -260,10 +260,19 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:14,web:1,secret:1,change:7,destructive:5"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:14,web:1,registry:1,secret:1,change:7,destructive:5"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
-        "The assistant has 14 read, 1 web, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+        "The assistant has 14 read, 1 web, 1 registry, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+    var toolRegistry = ToolSchema("query_registry");
+    Check(Required(toolRegistry).SequenceEqual(["image"])
+        && AssistantTools.RegistryImage("nginx") is ("docker.io", "registry-1.docker.io", "library/nginx")
+        && AssistantTools.RegistryImage("ghcr.io/home-operations/jackett") is ("ghcr.io", "ghcr.io", "home-operations/jackett")
+        && AssistantTools.RegistryImage("index.docker.io/grafana/grafana") is ("docker.io", "registry-1.docker.io", "grafana/grafana"),
+        "query_registry needs an image, and finds Docker Hub's and other registries' hosts and paths.");
+    foreach (var bad in new[] { "nginx:1.25", "ghcr.io/a/b@sha256:0", "../etc", "" })
+        try { AssistantTools.RegistryImage(bad); Check(false, $"query_registry must refuse the image {bad}."); }
+        catch (AssistantException) { }
     var toolWeb = ToolSchema("read_web_page");
     Check(Required(toolWeb).SequenceEqual(["url"]) && (int)toolWeb["properties"]!["start"]!["default"]! == 0,
         $"read_web_page needs a URL, and starts at the top of the page (got {toolWeb.ToJsonString()}).");

@@ -5,6 +5,7 @@ using AgentGovernance;
 using AgentGovernance.Policy;
 using GitHub.Copilot;
 using Lucia.Homelab.Server.Domains;
+using Lucia.Homelab.Server.Onboarding;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using PermissionDecision = GitHub.Copilot.Rpc.PermissionDecision;
@@ -17,7 +18,7 @@ namespace Lucia.Homelab.Server.Assistant;
 /// </summary>
 public static class ToolTier
 {
-    public const string Read = "read", Web = "web", Change = "change", Destructive = "destructive", Secret = "secret";
+    public const string Read = "read", Web = "web", Registry = "registry", Change = "change", Destructive = "destructive", Secret = "secret";
 }
 
 /// <summary>The owner's standing choices: change tools that run without asking, and sites the assistant may read without asking.</summary>
@@ -32,7 +33,7 @@ public sealed record AssistantKit(IReadOnlyList<AIFunction> Tools, Func<Permissi
 #pragma warning restore GHCP001
 
 /// <summary>
-/// What a job's chat may do without asking: "tool:name" and "host:name" grants, which may include destructive tools.
+/// What a job's chat may do without asking: "tool:name", "host:name" and "registry:name" grants, which may include destructive tools.
 /// <paramref name="save"/> keeps a grant the owner adds by approving "always"; <paramref name="waiting"/> tells them a call waits,
 /// and <paramref name="waits"/> holds the run's open approvals so the jobs page can show it waiting.
 /// </summary>
@@ -110,6 +111,14 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             condition: "tier == 'web'"
             action: require_approval
             priority: 60
+          - name: registry-allowed
+            condition: "tier == 'registry' and host_allowed"
+            action: allow
+            priority: 70
+          - name: registry-other
+            condition: "tier == 'registry'"
+            action: require_approval
+            priority: 60
           - name: change-automatic
             condition: "tier == 'change' and autonomy == 'auto'"
             action: allow
@@ -152,17 +161,25 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
                     return PermissionDecision.Reject("Give an absolute http or https URL.");
                 host = uri.IdnHost.TrimEnd('.').ToLowerInvariant();
             }
+            else if (tier == ToolTier.Registry)
+            {
+                if (input is not JsonObject fields || fields["image"] is not JsonValue value || !value.TryGetValue(out string? image))
+                    return PermissionDecision.Reject("Give the image to look up.");
+                try { host = AssistantTools.RegistryImage(image).Host; }
+                catch (Exception e) when (e is HardwareOnboardingException or AssistantException) { return PermissionDecision.Reject(e.Message); }
+            }
             var grant = tier switch
             {
                 ToolTier.Change => "tool:" + call.ToolName,
                 ToolTier.Destructive when job is not null => "tool:" + call.ToolName,
                 ToolTier.Web => "host:" + host,
+                ToolTier.Registry => "registry:" + host,
                 _ => null,
             };
             var granted = grant is not null && _grants.TryGetValue(turn.SessionKey, out var grants) && grants.ContainsKey(grant);
             var jobGranted = grant is not null && job?.Has(grant) == true;
             var automatic = settings.AutoTools.Contains(call.ToolName);
-            var listed = host is not null && settings.Hosts.Contains(host);
+            var listed = tier == ToolTier.Web && host is not null && settings.Hosts.Contains(host);
             var (verdict, rule) = Decide(turn, call.ToolName, tier, autonomy: automatic || granted || jobGranted ? "auto" : "ask",
                 hostAllowed: listed || granted || jobGranted, jobGranted);
             logger.LogInformation("Assistant tool call {Tool} ({Tier}, {Mode} mode): {Verdict} by {Rule}.",
@@ -194,6 +211,7 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             {
                 ToolTier.Destructive => AssistantTools.Warning(call.ToolName, input),
                 ToolTier.Web => $"{host} isn't on the assistant's allowed sites.",
+                ToolTier.Registry => $"{host} isn't on the assistant's allowed registries.",
                 _ => "This changes your lab.",
             };
             var pending = new Pending(turn.SessionKey, grant, job, new(TaskCreationOptions.RunContinuationsAsynchronously));

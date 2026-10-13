@@ -177,7 +177,7 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
 
     private static string Key(ImageRef image) => image.Repository + ":" + image.Tag;
 
-    private static async Task<List<string>> Tags(string registry, string path, string?[] token, CancellationToken ct)
+    internal static async Task<List<string>> Tags(string registry, string path, string?[] token, CancellationToken ct)
     {
         var tags = new List<string>();
         var next = $"/v2/{path}/tags/list?n=1000";
@@ -194,7 +194,7 @@ public sealed partial class ImageRegistry(TimeProvider time, ILogger<ImageRegist
         return tags;
     }
 
-    private static async Task<string?> Digest(string registry, string path, string tag, string?[] token, CancellationToken ct)
+    internal static async Task<string?> Digest(string registry, string path, string tag, string?[] token, CancellationToken ct)
     {
         using var response = await Send(HttpMethod.Head, new Uri($"https://{registry}/v2/{path}/manifests/{Uri.EscapeDataString(tag)}"), registry, path, token, ct);
         return response.IsSuccessStatusCode && response.Headers.TryGetValues("Docker-Content-Digest", out var values)

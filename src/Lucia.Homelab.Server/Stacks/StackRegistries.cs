@@ -75,6 +75,9 @@ public sealed partial class StackStore
     internal async Task<NodeRegistry[]> DesiredRegistries(CancellationToken ct) =>
         [.. (await ReadRegistries(ct)).Select(item => new NodeRegistry(item.Host, item.Username, _registryProtector.Unprotect(item.ProtectedSecret)))];
 
+    /// <summary>The hosts of the registries the owner has signed in to, for the assistant's registry choices.</summary>
+    internal async Task<string[]> RegistryNames(CancellationToken ct) => [.. (await ReadRegistries(ct)).Select(item => item.Host)];
+
     /// <summary>Each signed-in registry's API host with its <c>username:secret</c>, for image update checks.</summary>
     internal async Task<Dictionary<string, string>> RegistryLogins(CancellationToken ct) =>
         (await DesiredRegistries(ct)).ToDictionary(item => RegistryApi(item.Host), item => $"{item.Username}:{item.Secret}");

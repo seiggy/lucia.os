@@ -6,7 +6,7 @@ import { parseRoute } from '../.checks/dashboard.js'
 const id = 'a'.repeat(32)
 const run = { id: 'r1', sessionId: 'b'.repeat(32), trigger: 'manual', started: '2025-01-01T07:00:00Z', finished: null, status: 'running', error: null }
 const job = { id, name: 'Triage', prompts: ['Scan apps'], cron: '0 7 * * *', timeZone: 'America/Chicago', model: null, enabled: true,
-  tools: ['app_action'], hosts: [], created: 'x', updated: 'x', next: '2025-01-02T13:00:00Z', last: run, running: true }
+  tools: ['app_action'], hosts: [], registries: [], created: 'x', updated: 'x', next: '2025-01-02T13:00:00Z', last: run, running: true }
 
 const parsed = parseJob(job)
 assert.equal(parsed.name, 'Triage')
@@ -34,8 +34,10 @@ assert.equal(cronOf({ frequency: 'daily', time: '', day: 1 }), undefined)
 assert.equal(scheduleText('0 7 * * 1'), 'Mondays at 7:00')
 assert.equal(scheduleText('30 18 * * 1-5'), 'Weekdays at 18:30')
 assert.equal(scheduleText('0 7 1 * *'), '0 7 1 * *')
-assert.equal(scopeText({ tools: [], hosts: [] }, () => false), 'Asks before every change')
-assert.equal(scopeText({ tools: ['app_action', 'run_command'], hosts: ['docs.docker.com'] }, tool => tool === 'run_command'), '2 changes without asking · 1 risky · 1 site')
+assert.equal(scopeText({ tools: [], hosts: [], registries: [] }, () => false), 'Asks before every change')
+assert.equal(scopeText({ tools: ['app_action', 'run_command'], hosts: ['docs.docker.com'], registries: ['ghcr.io', 'quay.io'] }, tool => tool === 'run_command'),
+  '2 changes without asking · 1 risky · 1 site · 2 registries')
+assert.throws(() => parseJob({ ...job, registries: undefined }))
 assert.deepEqual(parseNext({ next: ['a', 'b'] }), ['a', 'b'])
 assert.throws(() => parseNext({ next: 'a' }))
 assert.deepEqual(parseDevices([{ id: 'd', name: 'Phone', endpoint: 'https://x', added: 'a', lastUsed: null }]), [{ id: 'd', name: 'Phone', endpoint: 'https://x', added: 'a' }])

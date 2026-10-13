@@ -282,6 +282,15 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                 async Task<object?> ([Description("The page's absolute http or https URL.")] string url,
                     [Description("The character to start at, for a page longer than one read.")] int start = 0, CancellationToken ct = default) =>
                     await AssistantWeb.Read(url, start, ct)),
+            Tool(ToolTier.Registry, "query_registry",
+                "Looks an image up in its container registry, over the registry protocol, to see whether it has a newer version: its tag "
+                + "count, the digest of its latest tag if it has one, and the digests of its 5 newest tags (by version number). Search to "
+                + "find specific tags. Registries the job or owner allowed run at once; others wait for the owner's approval. Private "
+                + "images need the registry's sign-in in Settings → Registries.",
+                async Task<object?> ([Description("The image without a tag, such as ghcr.io/home-operations/jackett, or nginx for Docker Hub.")] string image,
+                    [Description("Only consider tags containing this text, such as 8.9 or alpine; the matches are listed.")] string? search = null,
+                    CancellationToken ct = default) =>
+                    await QueryRegistry(image, search, ct)),
             // Not "ask_user": that is the Copilot runtime's own tool, which answers through a callback without a tool call id.
             Tool(ToolTier.Read, "ask_owner",
                 "Asks the owner a question in the chat and waits for their answer. Ask only when you can't go on without a decision "
@@ -407,6 +416,69 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     await RunCommand(node, command, interpreter, timeoutSeconds, ct)),
         ];
     }
+
+    private const int RegistryShown = 5, RegistryMatches = 50;
+
+    /// <summary>An image's registry as Lucia keys it (Docker Hub is docker.io), the registry's API host and the repository path.</summary>
+    internal static (string Host, string Api, string Path) RegistryImage(string? image)
+    {
+        var name = image?.Trim() ?? "";
+        var slash = name.IndexOf('/');
+        var first = slash > 0 ? name[..slash] : "";
+        var named = first.Contains('.') || first.Contains(':');
+        var path = named ? name[(slash + 1)..] : name;
+        if (name.Length > 300 || !RepositoryPath().IsMatch(path))
+            throw new AssistantException(400, "invalid_image", "Give the image without a tag or digest, such as ghcr.io/home-operations/jackett or nginx.");
+        string host;
+        try { host = StackStore.RegistryHost(named ? first : "docker.io"); }
+        catch (HardwareOnboardingException) { throw new AssistantException(400, "invalid_image", "The image's registry must be a host name, such as ghcr.io."); }
+        return (host, StackStore.RegistryApi(host), host == "docker.io" && !path.Contains('/') ? "library/" + path : path);
+    }
+
+    private async Task<object?> QueryRegistry(string image, string? search, CancellationToken ct)
+    {
+        var (host, api, path) = RegistryImage(image);
+        search = search?.Trim();
+        if (search is { Length: > 128 }) throw new AssistantException(400, "invalid_search", "Search for up to 128 characters.");
+        var login = (await stacks.RegistryLogins(ct)).GetValueOrDefault(api);
+        async Task<string?> Digest(string tag) => await ImageRegistry.Digest(api, path, tag, [null, login], ct);
+        try
+        {
+            var tags = await ImageRegistry.Tags(api, path, [null, login], ct);
+            var matches = tags.Where(tag => string.IsNullOrEmpty(search) || tag.Contains(search, StringComparison.OrdinalIgnoreCase))
+                .Select(tag => (Tag: tag, Version: StackImages.Version(tag)))
+                .OrderByDescending(item => item.Version is not null).ThenByDescending(item => item.Version?.Numbers, NewerNumbers).ThenBy(item => item.Tag, StringComparer.Ordinal)
+                .Select(item => item.Tag).ToArray();
+            var newest = matches.Where(tag => !string.IsNullOrEmpty(search) || tag != "latest").Take(RegistryShown).ToArray();
+            var latest = tags.Contains("latest") ? Digest("latest") : Task.FromResult<string?>(null);
+            var digests = await Task.WhenAll(newest.Select(Digest));
+            return new
+            {
+                Registry = host, Image = path, TagCount = tags.Count,
+                Latest = tags.Contains("latest") ? new { Tag = "latest", Digest = await latest } : null,
+                Newest = newest.Zip(digests, (tag, digest) => new { Tag = tag, Digest = digest }),
+                Matches = string.IsNullOrEmpty(search) ? null : new { Count = matches.Length, Tags = matches.Take(RegistryMatches) },
+                Note = "Tags are ordered by version number; registries give no push dates. Compare digests to see whether a tag has changed.",
+            };
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException && !ct.IsCancellationRequested)
+        {
+            throw new AssistantException(502, "registry_unreachable", error is HttpRequestException { StatusCode: { } code }
+                ? $"{host} answered {(int)code} for {path}. The image may not exist, or may be private."
+                : $"Lucia couldn't read {path} from {host}.");
+        }
+    }
+
+    private static readonly Comparer<long[]?> NewerNumbers = Comparer<long[]?>.Create((a, b) =>
+    {
+        if (a is null || b is null) return (a is null ? 0 : 1) - (b is null ? 0 : 1);
+        for (var i = 0; i < Math.Min(a.Length, b.Length); i++)
+            if (a[i] != b[i]) return a[i].CompareTo(b[i]);
+        return a.Length.CompareTo(b.Length);
+    });
+
+    [GeneratedRegex(@"\A[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*\z")]
+    private static partial Regex RepositoryPath();
 
     private AssistantTool Tool(string tier, string name, string description, Delegate body) =>
         new(AIFunctionFactory.Create(body, new AIFunctionFactoryOptions

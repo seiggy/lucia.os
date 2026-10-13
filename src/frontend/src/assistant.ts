@@ -23,7 +23,7 @@ export type GitHubStatus = { state: GitHubState; login?: string; userCode?: stri
 export type DockSide = 'left' | 'right'
 export type DockState = { open: boolean; side: DockSide }
 export type DockLayout = 'push' | 'overlay' | 'sheet'
-export type ToolTier = 'read' | 'web' | 'change' | 'destructive' | 'secret'
+export type ToolTier = 'read' | 'web' | 'registry' | 'change' | 'destructive' | 'secret'
 export type AssistantTool = { name: string; tier: ToolTier; description: string }
 export type AssistantSettings = { autoTools: string[]; hosts: string[]; tools: AssistantTool[] }
 export type ToolTone = 'busy' | 'done' | 'failed' | 'waiting' | 'muted'
@@ -251,6 +251,7 @@ const toolTitles = new Map([
   ['list_network_clients', 'List network clients'],
   ['ask_owner', '{question}'],
   ['read_web_page', 'Read {url}'],
+  ['query_registry', 'Look up {image} in its registry'],
   ['request_secret', '{app} needs {name}'],
   ['save_custom_app', 'Save app {app}'],
   ['install_catalog_app', 'Install {app}'],
@@ -343,7 +344,7 @@ export function approvalNote(part: AssistantToolPart): string | undefined {
   return approval?.approved ? approval.isAutomatic ? approval.reason : 'You approved this.' : undefined
 }
 
-const tiers: readonly string[] = ['read', 'web', 'change', 'destructive', 'secret']
+const tiers: readonly string[] = ['read', 'web', 'registry', 'change', 'destructive', 'secret']
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string')
 
 export function parseSettings(value: unknown): AssistantSettings {
@@ -380,6 +381,10 @@ export const toolLabel = (tool: AssistantTool) => changeLabels.get(tool.name) ??
 export function grantScope(part: AssistantToolPart, job = false): string | undefined {
   const host = part.toolName === 'read_web_page' && record(part.input) ? urlHost(part.input.url) : undefined
   const label = !job && isDestructiveTool(part.toolName) ? undefined : changeLabels.get(part.toolName)
+  if (part.toolName === 'query_registry' && record(part.input) && typeof part.input.image === 'string') {
+    const first = part.input.image.split('/')[0]
+    return `query ${/[.:]/.test(first) ? first : 'docker.io'}`
+  }
   return host ? `read ${host}` : label && label[0].toLowerCase() + label.slice(1)
 }
 

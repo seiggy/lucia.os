@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Cronos;
 using Lucia.Homelab.Server.Domains;
+using Lucia.Homelab.Server.Onboarding;
+using Lucia.Homelab.Server.Stacks;
 using Microsoft.Extensions.Options;
 
 namespace Lucia.Homelab.Server.Assistant;
@@ -11,10 +13,10 @@ namespace Lucia.Homelab.Server.Assistant;
 /// may run without asking; <see cref="Actor"/> and <see cref="User"/> are who saved it, which the job then acts as.
 /// </summary>
 public sealed record AssistantJob(string Id, string Name, string[] Prompts, string Cron, string TimeZone, string? Model, bool Enabled,
-    string[] Tools, string[] Hosts, string Actor, string? User, DateTimeOffset Created, DateTimeOffset Updated);
+    string[] Tools, string[] Hosts, string Actor, string? User, DateTimeOffset Created, DateTimeOffset Updated, string[]? Registries = null);
 
 public sealed record AssistantJobRequest(string? Name, string[]? Prompts, string? Cron, string? TimeZone, string? Model, bool Enabled,
-    string[]? Tools, string[]? Hosts);
+    string[]? Tools, string[]? Hosts, string[]? Registries = null);
 
 /// <summary>One run of a job: its chat, what started it, and how it ended.</summary>
 public sealed record AssistantJobRun(string Id, string SessionId, string Trigger, DateTimeOffset Started, DateTimeOffset? Finished,
@@ -81,6 +83,13 @@ public sealed class AssistantJobs : BackgroundService
         var hosts = (request.Hosts ?? []).Select(AssistantBroker.Host).ToArray();
         if (hosts.Length > AssistantBroker.MaxHosts || hosts.Any(host => host is null))
             throw Invalid($"Give up to {AssistantBroker.MaxHosts} valid site names.");
+        var registries = new List<string>();
+        foreach (var entry in request.Registries ?? [])
+        {
+            try { registries.Add(StackStore.RegistryHost(entry)); }
+            catch (HardwareOnboardingException) { throw Invalid("Registries must be host names, such as ghcr.io."); }
+        }
+        if (registries.Distinct().Count() > AssistantBroker.MaxHosts) throw Invalid($"Give up to {AssistantBroker.MaxHosts} registries.");
         await _gate.WaitAsync(ct);
         try
         {
@@ -88,7 +97,7 @@ public sealed class AssistantJobs : BackgroundService
             if (existing is null && (await JobsAsync(owner, ct)).Count >= MaxJobs) throw Invalid($"Lucia keeps at most {MaxJobs} jobs.");
             var now = _time.GetUtcNow();
             var job = new AssistantJob(existing?.Id ?? Guid.NewGuid().ToString("N"), name, prompts, cron, zone.Id, request.Model,
-                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now);
+                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now, [.. registries.Distinct()]);
             await DomainOnboardingStore.WriteJson(JobPath(owner, job.Id), job, ct, AssistantStream.Json);
             return View(owner, job, (await RunsAsync(owner, job.Id, ct)).FirstOrDefault());
         }
@@ -147,7 +156,8 @@ public sealed class AssistantJobs : BackgroundService
     {
         if (await ReadAsync(owner, id, ct) is not { } job) return null;
         var active = _active.GetValueOrDefault(Key(owner, id)) is { } run && run.SessionId == sessionId ? run : null;
-        return new AssistantJobGrants(job.Name, [.. job.Tools.Select(tool => "tool:" + tool), .. job.Hosts.Select(host => "host:" + host)],
+        return new AssistantJobGrants(job.Name, [.. job.Tools.Select(tool => "tool:" + tool), .. job.Hosts.Select(host => "host:" + host),
+                .. job.Registries!.Select(registry => "registry:" + registry)],
             grant => AddGrantAsync(owner, id, grant),
             async tool =>
             {
@@ -260,7 +270,12 @@ public sealed class AssistantJobs : BackgroundService
         {
             if (await ReadAsync(owner, id, CancellationToken.None) is not { } job) return;
             var (kind, name) = (grant[..grant.IndexOf(':')], grant[(grant.IndexOf(':') + 1)..]);
-            job = kind == "host" ? job with { Hosts = [.. job.Hosts.Append(name).Distinct()] } : job with { Tools = [.. job.Tools.Append(name).Distinct()] };
+            job = kind switch
+            {
+                "host" => job with { Hosts = [.. job.Hosts.Append(name).Distinct()] },
+                "registry" => job with { Registries = [.. job.Registries!.Append(name).Distinct()] },
+                _ => job with { Tools = [.. job.Tools.Append(name).Distinct()] },
+            };
             await DomainOnboardingStore.WriteJson(JobPath(owner, id), job with { Updated = _time.GetUtcNow() }, json: AssistantStream.Json);
         }
         finally { _gate.Release(); }
@@ -285,7 +300,7 @@ public sealed class AssistantJobs : BackgroundService
             if (!File.Exists(path)) return null;
             DomainOnboardingStore.RejectLinks(path);
             await using var file = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<AssistantJob>(file, AssistantStream.Json, ct);
+            return await JsonSerializer.DeserializeAsync<AssistantJob>(file, AssistantStream.Json, ct) is { } job ? job with { Registries = job.Registries ?? [] } : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -306,7 +321,7 @@ public sealed class AssistantJobs : BackgroundService
         var waiting = active is not null && _waits.TryGetValue(active.Id, out var waits) && !waits.Open.IsEmpty ? waits.Open.Values.Min() : (DateTimeOffset?)null;
         return new
         {
-            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Created, job.Updated,
+            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Registries, job.Created, job.Updated,
             next, last, running = active is not null, waiting,
         };
     }

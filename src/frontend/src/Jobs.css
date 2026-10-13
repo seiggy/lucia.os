@@ -4,6 +4,9 @@
 .job-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .job-field .ssh-key-hint { display: block; margin-top: 8px; font-size: 14px; }
 .job-danger-heading { margin-top: 28px; font-size: 16px; }
+.job-picker { margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; font-weight: 400; }
+.job-picker summary { padding: 10px 12px; cursor: pointer; overflow-wrap: anywhere; }
+.job-picker-options { display: grid; gap: 8px; padding: 4px 12px 12px; max-height: 18rem; overflow-y: auto; }
 @media (min-width: 701px) {
   .job-table th:first-child { width: 28%; }
   .job-table th:nth-child(2) { width: 24%; }

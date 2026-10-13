@@ -2,9 +2,9 @@ export type JobStatus = 'running' | 'succeeded' | 'stopped' | 'failed' | 'unansw
 export type JobRun = { id: string; sessionId: string; trigger: 'schedule' | 'manual'; started: string; finished?: string; status: JobStatus; error?: string }
 export type Job = {
   id: string; name: string; prompts: string[]; cron: string; timeZone: string; model?: string; enabled: boolean
-  tools: string[]; hosts: string[]; next?: string; last?: JobRun; running: boolean; waiting?: string
+  tools: string[]; hosts: string[]; registries: string[]; next?: string; last?: JobRun; running: boolean; waiting?: string
 }
-export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts'>
+export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts' | 'registries'>
 export type PushDevice = { id: string; name: string; endpoint: string; added: string; lastUsed?: string }
 
 const idPattern = /^[a-f0-9]{32}$/
@@ -52,15 +52,16 @@ export function scheduleText(cron: string): string {
 }
 
 // What a job may do with no one watching, for the list.
-export function scopeText(job: Pick<Job, 'tools' | 'hosts'>, isRisky: (tool: string) => boolean): string {
+export function scopeText(job: Pick<Job, 'tools' | 'hosts' | 'registries'>, isRisky: (tool: string) => boolean): string {
   const risky = job.tools.filter(isRisky).length
   const parts = [job.tools.length ? `${job.tools.length} ${job.tools.length === 1 ? 'change' : 'changes'} without asking` : 'Asks before every change',
-    ...(risky ? [`${risky} risky`] : []), ...(job.hosts.length ? [`${job.hosts.length} ${job.hosts.length === 1 ? 'site' : 'sites'}`] : [])]
+    ...(risky ? [`${risky} risky`] : []), ...(job.hosts.length ? [`${job.hosts.length} ${job.hosts.length === 1 ? 'site' : 'sites'}`] : []),
+    ...(job.registries.length ? [`${job.registries.length} ${job.registries.length === 1 ? 'registry' : 'registries'}`] : [])]
   return parts.join(' · ')
 }
 
 export const emptyJob = (timeZone: string): JobDraft =>
-  ({ name: '', prompts: [''], cron: '0 7 * * *', timeZone, enabled: true, tools: [], hosts: [] })
+  ({ name: '', prompts: [''], cron: '0 7 * * *', timeZone, enabled: true, tools: [], hosts: [], registries: [] })
 
 export function parseRun(value: unknown): JobRun {
   if (!record(value) || typeof value.id !== 'string' || typeof value.sessionId !== 'string' || !idPattern.test(value.sessionId)
@@ -73,10 +74,10 @@ export function parseRun(value: unknown): JobRun {
 export function parseJob(value: unknown): Job {
   if (!record(value) || typeof value.id !== 'string' || !idPattern.test(value.id) || typeof value.name !== 'string' || !strings(value.prompts)
     || typeof value.cron !== 'string' || typeof value.timeZone !== 'string' || typeof value.enabled !== 'boolean'
-    || !strings(value.tools) || !strings(value.hosts) || typeof value.running !== 'boolean') throw unexpected()
+    || !strings(value.tools) || !strings(value.hosts) || !strings(value.registries) || typeof value.running !== 'boolean') throw unexpected()
   const model = text(value.model), next = text(value.next), waiting = text(value.waiting)
   return { id: value.id, name: value.name, prompts: value.prompts, cron: value.cron, timeZone: value.timeZone, enabled: value.enabled,
-    tools: value.tools, hosts: value.hosts, running: value.running, ...(model ? { model } : {}), ...(next ? { next } : {}),
+    tools: value.tools, hosts: value.hosts, registries: value.registries, running: value.running, ...(model ? { model } : {}), ...(next ? { next } : {}),
     ...(waiting ? { waiting } : {}), ...(value.last ? { last: parseRun(value.last) } : {}) }
 }
 
@@ -88,6 +89,15 @@ export function parseJobs(value: unknown): Job[] {
 export function parseRuns(value: unknown): JobRun[] {
   if (!Array.isArray(value)) throw unexpected()
   return value.map(parseRun)
+}
+
+export function parseRegistryChoices(value: unknown): { common: { host: string; name: string }[]; added: string[] } {
+  if (!record(value) || !Array.isArray(value.common) || !strings(value.added)) throw unexpected()
+  const common = value.common.map(item => {
+    if (!record(item) || typeof item.host !== 'string' || typeof item.name !== 'string') throw unexpected()
+    return { host: item.host, name: item.name }
+  })
+  return { common, added: value.added }
 }
 
 export function parseNext(value: unknown): string[] {

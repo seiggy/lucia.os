@@ -120,6 +120,13 @@ public static class AssistantEndpoints
             return Results.NoContent();
         });
         group.MapGet("/models", (HttpContext context, AssistantRuntime runtime, CancellationToken ct) => runtime.ModelsAsync(Owner(context), ct));
+        // The registries a job may be allowed to query: the common public ones, and those the owner signed in to.
+        group.MapGet("/registries", async (StackStore stacks, CancellationToken ct) => new
+        {
+            common = new[] { ("docker.io", "Docker Hub"), ("ghcr.io", "GitHub"), ("registry.gitlab.com", "GitLab"), ("quay.io", "Quay"),
+                ("gcr.io", "Google"), ("mcr.microsoft.com", "Microsoft") }.Select(item => new { host = item.Item1, name = item.Item2 }),
+            added = await stacks.RegistryNames(ct),
+        });
         // GitHub sign-in: the host keeps the tokens; the browser only ever sees the code to type on GitHub.
         group.MapGet("/github", (HttpContext context, GitHubSignIn github) => github.Status(Owner(context)));
         group.MapPost("/github/device", (HttpContext context, GitHubSignIn github, CancellationToken ct) => github.StartAsync(Owner(context), ct));
