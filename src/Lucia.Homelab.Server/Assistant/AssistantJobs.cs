@@ -13,10 +13,11 @@ namespace Lucia.Homelab.Server.Assistant;
 /// may run without asking; <see cref="Actor"/> and <see cref="User"/> are who saved it, which the job then acts as.
 /// </summary>
 public sealed record AssistantJob(string Id, string Name, string[] Prompts, string Cron, string TimeZone, string? Model, bool Enabled,
-    string[] Tools, string[] Hosts, string Actor, string? User, DateTimeOffset Created, DateTimeOffset Updated, string[]? Registries = null);
+    string[] Tools, string[] Hosts, string Actor, string? User, DateTimeOffset Created, DateTimeOffset Updated, string[]? Registries = null,
+    string? Reasoning = null, string? ContextTier = null);
 
 public sealed record AssistantJobRequest(string? Name, string[]? Prompts, string? Cron, string? TimeZone, string? Model, bool Enabled,
-    string[]? Tools, string[]? Hosts, string[]? Registries = null);
+    string[]? Tools, string[]? Hosts, string[]? Registries = null, string? Reasoning = null, string? ContextTier = null);
 
 /// <summary>One run of a job: its chat, what started it, and how it ended.</summary>
 public sealed record AssistantJobRun(string Id, string SessionId, string Trigger, DateTimeOffset Started, DateTimeOffset? Finished,
@@ -76,6 +77,9 @@ public sealed class AssistantJobs : BackgroundService
             throw Invalid($"Give 1 to {MaxPrompts} prompts of up to 32,768 characters each.");
         var (cron, zone) = Schedule(request.Cron, request.TimeZone);
         if (request.Model is { } model && !AssistantRuns.ModelPattern().IsMatch(model)) throw Invalid("The model is invalid.");
+        if (request.Reasoning is { Length: 0 } || request.ContextTier is { Length: 0 }
+            || !AssistantRuns.ValidTuning(request.Reasoning, request.ContextTier))
+            throw Invalid("The reasoning effort or context window is invalid.");
         var allowed = _tools?.Create("owner", null).Where(tool => tool.Tier is ToolTier.Change or ToolTier.Destructive)
             .Select(tool => tool.Name).ToHashSet() ?? [];
         var tools = (request.Tools ?? []).Distinct().ToArray();
@@ -97,7 +101,7 @@ public sealed class AssistantJobs : BackgroundService
             if (existing is null && (await JobsAsync(owner, ct)).Count >= MaxJobs) throw Invalid($"Lucia keeps at most {MaxJobs} jobs.");
             var now = _time.GetUtcNow();
             var job = new AssistantJob(existing?.Id ?? Guid.NewGuid().ToString("N"), name, prompts, cron, zone.Id, request.Model,
-                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now, [.. registries.Distinct()]);
+                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now, [.. registries.Distinct()], request.Reasoning, request.ContextTier);
             await DomainOnboardingStore.WriteJson(JobPath(owner, job.Id), job, ct, AssistantStream.Json);
             return View(owner, job, (await RunsAsync(owner, job.Id, ct)).FirstOrDefault());
         }
@@ -321,7 +325,7 @@ public sealed class AssistantJobs : BackgroundService
         var waiting = active is not null && _waits.TryGetValue(active.Id, out var waits) && !waits.Open.IsEmpty ? waits.Open.Values.Min() : (DateTimeOffset?)null;
         return new
         {
-            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Registries, job.Created, job.Updated,
+            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Registries, job.Reasoning, job.ContextTier, job.Created, job.Updated,
             next, last, running = active is not null, waiting,
         };
     }

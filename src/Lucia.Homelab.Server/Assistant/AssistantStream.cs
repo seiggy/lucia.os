@@ -30,8 +30,12 @@ public sealed class AssistantStream(string messageId, string? model)
     private readonly HashSet<string> _streamed = [];
     private string? _open, _openKey, _partId, _model = model, _error, _failure;
     private int _next;
-    private long? _input, _output;
+    private long? _input, _output, _lastInput, _lastLimit;
+    private ContextUse? _context;
     private bool _stopped, _ended;
+
+    /// <summary>How full the context window is: <c>Used</c> of <c>Limit</c> tokens, and where the used tokens go when the runtime says.</summary>
+    private sealed record ContextUse(long Used, long? Limit, long? System, long? Conversation, long? Tools);
 
     public UiMessage Message => new(messageId, "assistant", [.. _parts], Metadata());
 
@@ -86,6 +90,18 @@ public sealed class AssistantStream(string messageId, string? model)
                     _model = e.Data.Model;
                     _input = (_input ?? 0) + (e.Data.InputTokens ?? 0);
                     _output = (_output ?? 0) + (e.Data.OutputTokens ?? 0);
+                    // The last call's prompt is how full the context was, for runtimes that don't report it themselves.
+                    (_lastInput, _lastLimit) = (e.Data.InputTokens ?? _lastInput, e.Data.MaxPromptTokens ?? _lastLimit);
+                    break;
+                case SessionUsageInfoEvent e:
+                    var info = e.Data;
+                    var context = new ContextUse(info.CurrentTokens, info.TokenLimit > 0 ? info.TokenLimit : null, info.SystemTokens,
+                        info.ConversationTokens, info.ToolDefinitionsTokens);
+                    if (context != _context)
+                    {
+                        _context = context;
+                        chunks.Add(new { type = "message-metadata", messageMetadata = Metadata() });
+                    }
                     break;
                 case SessionErrorEvent e:
                     _error = e.Data.Message.Length > 300 ? e.Data.Message[..300] + "…" : e.Data.Message;
@@ -212,6 +228,12 @@ public sealed class AssistantStream(string messageId, string? model)
         var metadata = new JsonObject();
         if (_model is not null) metadata["model"] = _model;
         if (_input is not null) metadata["usage"] = new JsonObject { ["inputTokens"] = _input, ["outputTokens"] = _output };
+        var fill = _context ?? (_lastInput is { } used ? new ContextUse(used, _lastLimit, null, null, null) : null);
+        if (fill is not null)
+            metadata["context"] = new JsonObject
+            {
+                ["used"] = fill.Used, ["limit"] = fill.Limit, ["system"] = fill.System, ["conversation"] = fill.Conversation, ["tools"] = fill.Tools,
+            };
         if (_stopped) metadata["stopped"] = true;
         if (_failure is not null) metadata["error"] = _failure;
         return metadata.Count == 0 ? null : metadata;

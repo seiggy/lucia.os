@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { approvalNote, chatTitle, chooseModel, grantText, isChatId, isDestructiveTool, isGitHubModel, isQuestionTool, messageText, newChatId, pageRoute,
+import { approvalNote, chatTitle, chooseModel, chosenEffort, contextFill, currentTier, effortLabel, effortShort, grantText, isChatId, isDestructiveTool,
+  isGitHubModel, isQuestionTool, lastContext, messageText, newChatId, pageRoute, parseChoices,
   parseDock, parseGitHub, parseModels, parseSessions, parseSettings, parseTranscript, questionOf, secretOf, settledText, signInModel, toolLabel, toolNote,
-  toolStatus, toolTitle, urlHost, waitingParts } from '../.checks/assistant.js'
+  toolStatus, tokenText, toolTitle, urlHost, waitingParts } from '../.checks/assistant.js'
 
 const id = newChatId()
 assert.ok(isChatId(id))
@@ -214,4 +215,42 @@ assert.deepEqual(parseGitHub({ state: 'connected', login: '@octocat' }), { state
 assert.deepEqual(parseGitHub({ state: 'expired', login: 'octocat', userCode: 'ABCD-1234', message: '  The code expired.  ' }),
   { state: 'expired', message: 'The code expired.' })
 assert.equal(parseGitHub({ state: 'error', message: 'x'.repeat(500) }).message.length, 400)
+// Reasoning efforts and context windows: the model card, the saved choices, and how full the context is.
+const card = parseModels({ connected: true, sources: [{ id: 'github', name: 'GitHub', models: [
+  { id: 'claude-x', name: 'Claude X', context: 200000, reasoning: ['low', 'medium', 'bad value!', 'high'], defaultReasoning: 'medium',
+    tiers: [{ id: 'default', name: 'Standard', tokens: 200000 }, { id: 'long_context', name: 'Long', tokens: 1000000 }] },
+  { id: 'plain', name: 'Plain', reasoning: [], defaultReasoning: 'low', tiers: [{ id: 'default', name: 'Only' }, { id: 'nope', name: 'x' }] },
+  { id: 'local:qwen', name: 'qwen', context: 32768 }] }] }).models
+assert.deepEqual(card[0], { id: 'claude-x', name: 'Claude X', context: 200000, reasoning: ['low', 'medium', 'high'], defaultReasoning: 'medium',
+  tiers: [{ id: 'default', name: 'Standard', tokens: 200000 }, { id: 'long_context', name: 'Long', tokens: 1000000 }] })
+assert.deepEqual(card[1], { id: 'plain', name: 'Plain' })
+assert.deepEqual(card[2], { id: 'local:qwen', name: 'qwen', context: 32768 })
+assert.deepEqual([effortShort('none'), effortShort('low'), effortShort('medium'), effortShort('high'), effortShort('xhigh'), effortShort('mystery')], ['0', 'S', 'M', 'L', 'XL', 'MY'])
+assert.equal(effortLabel('xhigh'), 'Extra high')
+assert.equal(effortLabel('mystery'), 'Mystery')
+assert.equal(chosenEffort(card[0], 'high'), 'high')
+assert.equal(chosenEffort(card[0], 'xhigh'), undefined)
+assert.equal(chosenEffort(card[2], 'high'), undefined)
+assert.equal(currentTier(card[0], 'long_context')?.id, 'long_context')
+assert.equal(currentTier(card[0], 'gone')?.id, 'default')
+assert.equal(currentTier(card[2], 'long_context'), undefined)
+assert.deepEqual(parseChoices('{"claude-x":"low","bad id!":"low","m":"High; rm","n":3}'), { 'claude-x': 'low' })
+assert.deepEqual(parseChoices('not json'), {})
+assert.deepEqual(parseChoices(null), {})
+assert.deepEqual([tokenText(900), tokenText(32768), tokenText(128000), tokenText(1000000), tokenText(1500000)], ['900', '33K', '128K', '1M', '1.5M'])
+// A model with windows to choose from shows the chosen one at once; others report their own limit, else the card's.
+assert.deepEqual(contextFill(card[0], currentTier(card[0], 'long_context'), { used: 50000, limit: 200000 }),
+  { used: 50000, limit: 1000000, share: 0.05, detail: { used: 50000, limit: 200000 } })
+assert.equal(contextFill(card[2], undefined, { used: 8000, limit: 24576 }).limit, 24576)
+assert.equal(contextFill(card[2], undefined, undefined).limit, 32768)
+assert.equal(contextFill(card[1], undefined, undefined).share, undefined)
+assert.equal(contextFill(card[2], undefined, { used: 99999, limit: 24576 }).share, 1)
+const filled = parseTranscript({ title: 'Ctx', running: false, messages: [
+  { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+  { id: 'a', role: 'assistant', parts: [{ type: 'text', text: 'hello' }], metadata: { model: 'm', context: { used: 5000, limit: 128000, system: 900, tools: 0, conversation: 'x', extra: 1 } } },
+  { id: 'b', role: 'assistant', parts: [{ type: 'text', text: 'more' }], metadata: { context: { used: -4 } } }] }).messages
+assert.deepEqual(filled[1].metadata.context, { used: 5000, limit: 128000, system: 900 })
+assert.equal(filled[2].metadata, undefined)
+assert.deepEqual(lastContext(filled), { used: 5000, limit: 128000, system: 900 })
+assert.equal(lastContext([]), undefined)
 console.log('Assistant checks passed.')

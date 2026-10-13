@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using GitHub.Copilot;
 using Lucia.Homelab.Server.Domains;
@@ -21,8 +22,10 @@ public sealed class AssistantOptions
     public string? Model { get; set; }
 }
 
+/// <param name="Reasoning">The reasoning effort to ask Copilot's model for, when it supports one.</param>
+/// <param name="ContextTier">"default" or "long_context", for Copilot models that offer both.</param>
 public sealed record AssistantTurn(string Owner, string SessionKey, string Prompt, string? Model, string Mode = "execute",
-    string Actor = "assistant", string? User = null);
+    string Actor = "assistant", string? User = null, string? Reasoning = null, string? ContextTier = null);
 
 /// <summary>One Copilot CLI child in Empty mode (no built-in tools, files, shell or ambient config), shared by every session.</summary>
 public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubSignIn github, AssistantProviders providers,
@@ -62,6 +65,7 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
     ];
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ConcurrentDictionary<string, AssistantModel> _cards = new();
     private readonly ILogger _logger = loggers.CreateLogger<AssistantRuntime>();
     private CopilotClient? _client;
 
@@ -132,8 +136,10 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         {
             var client = await ClientAsync(ct);
             var list = await client.Rpc.Models.ListAsync(gitHubToken: token, cancellationToken: ct);
-            return (true, new(id, name, list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled)
-                .Select(model => new AssistantModel(model.Id, model.Name)).ToArray()));
+            var cards = list.Models.Where(model => model.Policy?.State != ModelPolicyState.Disabled).Select(Card).ToArray();
+            _cards.Clear();
+            foreach (var card in cards) _cards[card.Id] = card;
+            return (true, new(id, name, cards));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -143,13 +149,48 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         }
     }
 
+    private const string StandardTier = "default", LongTier = "long_context";
+
+    /// <summary>A Copilot model's card: its context window, the reasoning efforts it accepts and the context tiers it offers.</summary>
+#pragma warning disable GHCP001 // The SDK marks its model list evaluation-only, but it is the only source of each model's capabilities.
+    private static AssistantModel Card(GitHub.Copilot.Rpc.Model model)
+    {
+        static int? Tokens(long? value) => value is > 0 and <= int.MaxValue ? (int)value : null;
+        var limits = model.Capabilities?.Limits;
+        var context = Tokens(limits?.MaxPromptTokens) ?? Tokens(limits?.MaxContextWindowTokens);
+        var efforts = model.SupportedReasoningEfforts is { Count: > 0 } supported
+            ? supported.Where(effort => AssistantRuns.ReasoningPattern().IsMatch(effort)).ToArray() : null;
+        var prices = model.Billing?.TokenPrices;
+        var offered = model.SupportedContextTiers ?? [];
+        AssistantContextTier[]? tiers = offered.Contains(LongTier)
+            ? [new(StandardTier, "Standard", Tokens(prices?.MaxPromptTokens) ?? context), new(LongTier, "Long", Tokens(prices?.LongContext?.MaxPromptTokens))]
+            : null;
+        return new(model.Id, model.Name, context, efforts is { Length: > 0 } ? efforts : null,
+            efforts?.Contains(model.DefaultReasoningEffort) == true ? model.DefaultReasoningEffort : null, tiers);
+    }
+#pragma warning restore GHCP001
+
+    /// <summary>The turn's reasoning effort and context tier, kept only where the model accepts them, so a stale choice never fails a turn.</summary>
+    private async Task<(string? Effort, ContextTier? Tier)> TuningAsync(AssistantTurn turn, string? model, CancellationToken ct)
+    {
+        if (model is null || turn.Reasoning is null && turn.ContextTier is null) return (null, null);
+        if (!_cards.TryGetValue(model, out var card))
+        {
+            await CopilotModelsAsync(turn.Owner, ct);
+            if (!_cards.TryGetValue(model, out card)) return (null, null);
+        }
+        return (turn.Reasoning is { } effort && card.Reasoning?.Contains(effort) == true ? effort : null,
+            turn.ContextTier is { } tier && card.Tiers?.Any(item => item.Id == tier) == true ? new ContextTier(tier) : null);
+    }
+
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(AssistantTurn turn, AssistantKit? kit, [EnumeratorCancellation] CancellationToken ct)
     {
         var (provider, model) = await providers.ResolveAsync(turn.Owner, turn.Model ?? DefaultModel, ct);
         var token = provider is null ? await github.TokenAsync(turn.Owner, ct) ?? throw GitHubSignIn.NotConnected() : null;
+        var (effort, tier) = provider is null ? await TuningAsync(turn, model, ct) : (null, null);
         var client = await ClientAsync(ct);
         var resume = await client.GetSessionMetadataAsync(turn.SessionKey, ct) is not null;
-        var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, model, token, provider, kit),
+        var copilot = new GitHubCopilotAgent(client, Configure(new SessionConfig { SessionId = turn.SessionKey }, model, token, provider, kit, effort, tier),
             name: "lucia-assistant", loggerFactory: loggers);
         using var agent = new OpenTelemetryAgent(copilot, TelemetryName);
         var session = resume ? await copilot.CreateSessionAsync(turn.SessionKey) : await copilot.CreateSessionAsync(ct);
@@ -186,9 +227,12 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
     }
 
     /// <summary>A provider replaces Copilot's API and its sign-in for the whole session. Only the kit's tools exist, and its broker decides each call.</summary>
-    private T Configure<T>(T config, string? model, string? token, ProviderConfig? provider, AssistantKit? kit) where T : SessionConfigBase
+    private T Configure<T>(T config, string? model, string? token, ProviderConfig? provider, AssistantKit? kit, string? effort = null,
+        ContextTier? tier = null) where T : SessionConfigBase
     {
         config.Provider = provider;
+        config.ReasoningEffort = effort;
+        config.ContextTier = tier;
         config.Tools = kit is null ? null : [.. kit.Tools];
         config.AvailableTools = kit is null ? [] : [.. kit.Tools.Select(tool => tool.Name)];
         config.DisabledMcpServers = ["github-mcp-server"];

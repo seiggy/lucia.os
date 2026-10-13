@@ -13,7 +13,15 @@ using Microsoft.Extensions.Options;
 
 namespace Lucia.Homelab.Server.Assistant;
 
-public sealed record AssistantModel(string Id, string Name);
+/// <summary>A context window the owner can choose for a model, with the prompt size it allows when known.</summary>
+public sealed record AssistantContextTier(string Id, string Name, int? Tokens);
+
+/// <summary>
+/// A model as the picker sees it. <c>Context</c> is its context window in tokens when known (local engines report theirs). Copilot's
+/// models add the reasoning efforts they accept and, for some, a choice of <c>Tiers</c>, a standard and a long context window.
+/// </summary>
+public sealed record AssistantModel(string Id, string Name, int? Context = null, string[]? Reasoning = null, string? DefaultReasoning = null,
+    AssistantContextTier[]? Tiers = null);
 
 /// <summary>One group in the model picker. <c>Reason</c> says why it has no models, or which of its apps can't serve right now.</summary>
 public sealed record AssistantSource(string Id, string Name, AssistantModel[] Models, string? Reason = null);
@@ -118,7 +126,7 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
         if (app is null) return new("litellm", "LiteLLM", [], problem);
         try
         {
-            var models = (await LiteLlmModelsAsync(owner, app, ct)).Models.Select(item => new AssistantModel("litellm:" + item.Id, item.Id)).ToArray();
+            var models = (await LiteLlmModelsAsync(owner, app, ct)).Models.Select(item => new AssistantModel("litellm:" + item.Id, item.Id, item.Context)).ToArray();
             return new("litellm", "LiteLLM", models, models.Length == 0 ? "LiteLLM has no models yet. Add one on its admin page." : null);
         }
         catch (Exception e) when (Unreachable(e, ct)) { return new("litellm", "LiteLLM", [], Failure(app, "LiteLLM", e)); }
@@ -143,12 +151,13 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
         var problems = new List<string>();
         var host = spark();
         if (host.Problem is { } problem) problems.Add(problem);
-        else if (host.Model is { } model && ModelPattern().IsMatch("local:" + model)) models.Add(new("local:" + model, $"{model} · Spark"));
+        else if (host.Model is { } model && ModelPattern().IsMatch("local:" + model))
+            models.Add(new("local:" + model, $"{model} · Spark", host.ContextTokens > 0 ? host.ContextTokens : null));
         var nodes = endpoints.Where(item => item.Template == "local-ai").ToArray();
         var served = await Task.WhenAll(nodes.Select(node => ServedAsync(node, ct)));
         for (var index = 0; index < nodes.Length; index++)
         {
-            models.AddRange(served[index].Models.Select(item => new AssistantModel($"local:{nodes[index].Stack}/{item.Id}", $"{item.Id} · {nodes[index].Node}")));
+            models.AddRange(served[index].Models.Select(item => new AssistantModel($"local:{nodes[index].Stack}/{item.Id}", $"{item.Id} · {nodes[index].Node}", item.Context)));
             if (served[index].Problem is { } reason) problems.Add(reason);
         }
         return new("local", "Local AI", [.. models], problems.Count == 0 ? null : string.Join(" ", problems));

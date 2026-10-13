@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
-import { isDestructiveTool, openAssistantChat, parseModels, parseSettings, toolLabel } from './assistant'
+import { chosenEffort, currentTier, effortLabel, effortShort, findModel, isDestructiveTool, openAssistantChat, parseModels, parseSettings, toolLabel, tokenText } from './assistant'
 import type { AssistantModels, AssistantTool } from './assistant'
 import { cronOf, emptyJob, frequencies, parseJob, parseJobs, parseNext, parseRegistryChoices, parseRun, parseRuns, runStatusText, scheduleOf, scheduleText, scopeText,
   weekdays } from './assistantJobs'
@@ -34,8 +34,8 @@ function RunStatus({ run, waiting }: { run: JobRun; waiting?: string }) {
   return <span className={`status status-${tone}`}><Icon name={icon} />{label}</span>
 }
 
-const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries }: Job): JobDraft =>
-  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries })
+const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, reasoning, contextTier }: Job): JobDraft =>
+  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, reasoning, contextTier })
 
 export function Jobs({ session, refreshSession }: Props) {
   const [jobs, setJobs] = useState<Job[] | null>(null)
@@ -228,6 +228,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
     setBusy(true); setError(null)
     try {
       const body = { ...draft, model: draft.model || null, prompts: draft.prompts.map(prompt => prompt.trim()).filter(Boolean),
+        reasoning: chosenEffort(card, draft.reasoning) ?? null, contextTier: card?.tiers && currentTier(card, draft.contextTier)?.id !== card.tiers[0].id
+          ? currentTier(card, draft.contextTier)?.id ?? null : null,
         hosts: sites.split(/[\s,]+/).filter(Boolean).map(siteName) }
       const saved = parseJob(await (await request(id ? `/${id}` : '', id ? 'PUT' : 'POST', body)).json())
       onDone(saved)
@@ -237,6 +239,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
     }
   }
   const toggle = (name: string) => update({ tools: draft.tools.includes(name) ? draft.tools.filter(tool => tool !== name) : [...draft.tools, name] })
+  // A job with no model of its own runs on the host's default.
+  const card = findModel(models, draft.model || models?.defaultModel)
   const registryOptions = [
     ...registryChoices.common.map(item => ({ host: item.host, label: `${item.name} (${item.host})` })),
     ...registryChoices.added.filter(host => !registryChoices.common.some(item => item.host === host)).map(host => ({ host, label: `${host} (added in Registries)` })),
@@ -281,6 +285,18 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
             {source.models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>)}
           {draft.model && models && !models.models.some(model => model.id === draft.model) && <option value={draft.model}>{draft.model}</option>}
         </select></label>
+        {card && (card.reasoning || card.tiers) && <div className="network-fields job-tuning">
+          {card.reasoning && <label>Reasoning effort<select value={chosenEffort(card, draft.reasoning) ?? ''} disabled={busy}
+            onChange={event => update({ reasoning: event.target.value || undefined })} aria-describedby="job-tuning-hint">
+            <option value="">Model default{card.defaultReasoning ? ` (${effortLabel(card.defaultReasoning)})` : ''}</option>
+            {card.reasoning.map(effort => <option key={effort} value={effort}>{effortLabel(effort)} ({effortShort(effort)})</option>)}
+          </select></label>}
+          {card.tiers && <label>Context window<select value={currentTier(card, draft.contextTier)?.id} disabled={busy}
+            onChange={event => update({ contextTier: event.target.value === card.tiers![0].id ? undefined : event.target.value })} aria-describedby="job-tuning-hint">
+            {card.tiers.map(tier => <option key={tier.id} value={tier.id}>{tier.name}{tier.tokens ? ` (${tokenText(tier.tokens)})` : ''}</option>)}
+          </select></label>}
+        </div>}
+        {card && (card.reasoning || card.tiers) && <p id="job-tuning-hint" className="section-note">Less reasoning finishes faster and uses fewer tokens, which suits simple checks. Raise it for jobs that need to think harder.</p>}
       </section>
       <section className="surface network-section">
         <h2>When it runs</h2>

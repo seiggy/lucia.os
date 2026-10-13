@@ -23,6 +23,16 @@ The assistant runs on Microsoft Agent Framework over the GitHub Copilot runtime,
 
 Only Copilot models need the GitHub sign-in. LiteLLM and Local AI models run through the same runtime as bring-your-own-key providers.
 
+### Reasoning effort and context window
+
+The composer's footer carries three controls beside the model menu:
+
+- **Answer mode** is one button that swaps between **Plan** and **Execute** each time you click it.
+- **A donut** shows how full the context window is. Click it for the numbers (tokens used and the limit, split into system prompt, tools and conversation when the runtime reports it). For Copilot models that offer a standard and a long window, the same popover lets you pick the window from your next message on. Local models have a fixed window, which comes from the model's `/v1/models` card.
+- **A small button** beside the model menu shows the reasoning effort by its short name (`0` none, `S` low, `M` medium, `L` high, `XL` extra high) and opens a menu of the efforts that model accepts. Models without reasoning efforts don't show it. Lower effort answers faster and uses fewer tokens.
+
+Your picks are remembered per model on this browser. Lucia only passes an effort or window to a model that offers it, so a stale choice never fails a turn.
+
 ## Tools
 
 Every tool belongs to a tier, and the tier decides what happens when the assistant calls it.
@@ -55,7 +65,7 @@ Approvals are enforced on the server by a deny-by-default policy (Microsoft's Ag
 | Destructive | **Always asks** | Asks, unless that job's settings allow the tool |
 | Secret | Asks you for the value | Same |
 
-**Plan mode** is the other switch in the composer, next to **Execute**. In Plan mode the assistant can look things up and plan, but every change, destructive and secret tool is denied. "In Plan mode it changes nothing at all."
+**Plan mode** is the other state of the mode button in the composer, opposite **Execute**. In Plan mode the assistant can look things up and plan, but every change, destructive and secret tool is denied. "In Plan mode it changes nothing at all."
 
 ### Settings → Assistant
 
@@ -81,7 +91,7 @@ A chat grant lives in memory on the host, so it ends with the chat or a restart 
 **Local AI → Assistant jobs** schedules saved prompts. "The job runs as you, in a new chat each time." A job has:
 
 - **A name and up to 10 prompts**, each up to 32,768 characters. Prompts run in order in the same chat, each after the last answer ends. If one fails or is stopped, the rest don't run.
-- **A model**, chosen from the same sources as the panel.
+- **A model**, chosen from the same sources as the panel, with its own **reasoning effort** and, for Copilot models that offer one, **context window**. Simple checks often do as well with less reasoning at a fraction of the tokens.
 - **A schedule**: presets for common repeats, or a custom five-field cron expression such as `30 6 * * 1-5`, in a time zone you choose. The editor previews the next run times. Untick "Run on this schedule" to pause the job. You can still use **Run now**.
 - **What it may do without asking**: change tools, a separate **Risky changes** group of destructive tools, extra sites it may read, and a drop-down of **container registries it may query** (Docker Hub, GitHub, GitLab, Quay, Google, Microsoft, plus any you added under Registries). These add to Settings → Assistant, for this job only.
 

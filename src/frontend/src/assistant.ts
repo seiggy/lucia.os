@@ -6,16 +6,19 @@ export type AssistantPart =
   | { type: 'text'; text: string; state?: 'streaming' | 'done' }
   | { type: 'reasoning'; text: string; state?: 'streaming' | 'done' }
   | AssistantToolPart
+export type ContextUse = { used: number; limit?: number; system?: number; conversation?: number; tools?: number }
 export type AssistantMetadata = {
   model?: string
   usage?: { inputTokens?: number; outputTokens?: number }
+  context?: ContextUse
   stopped?: boolean
   error?: string
 }
 export type AssistantMessage = { id: string; role: 'user' | 'assistant'; parts: AssistantPart[]; metadata?: AssistantMetadata }
 export type Transcript = { title: string; messages: AssistantMessage[]; running: boolean; job?: string }
 export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean; job?: string }
-export type AssistantModel = { id: string; name: string }
+export type ContextTier = { id: string; name: string; tokens?: number }
+export type AssistantModel = { id: string; name: string; context?: number; reasoning?: string[]; defaultReasoning?: string; tiers?: ContextTier[] }
 export type AssistantSource = { id: string; name: string; models: AssistantModel[]; reason?: string }
 export type AssistantModels = { connected: boolean; defaultModel?: string; sources: AssistantSource[]; models: AssistantModel[] }
 export type GitHubState = 'connected' | 'pending' | 'disconnected' | 'expired' | 'denied' | 'error'
@@ -119,13 +122,29 @@ export function parseSessions(value: unknown): ChatSummary[] {
 }
 
 const trimmed = (value: unknown) => typeof value === 'string' ? value.trim() : ''
+const tokenCount = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined
+const effortPattern = /^[a-z][a-z0-9_-]{0,15}$/
+const tierIds: readonly string[] = ['default', 'long_context']
+
+function parseModel(model: Record<string, unknown> & { id: string }): AssistantModel {
+  const reasoning = Array.isArray(model.reasoning) ? model.reasoning.filter((item): item is string => typeof item === 'string' && effortPattern.test(item)) : []
+  const defaultReasoning = typeof model.defaultReasoning === 'string' && reasoning.includes(model.defaultReasoning) ? model.defaultReasoning : undefined
+  const tiers = Array.isArray(model.tiers) ? model.tiers.flatMap((tier): ContextTier[] => {
+    if (!record(tier) || typeof tier.id !== 'string' || !tierIds.includes(tier.id)) return []
+    const tokens = tokenCount(tier.tokens)
+    return [{ id: tier.id, name: trimmed(tier.name) || tier.id, ...(tokens ? { tokens } : {}) }]
+  }) : []
+  const context = tokenCount(model.context)
+  return { id: model.id, name: trimmed(model.name) || model.id, ...(context ? { context } : {}),
+    ...(reasoning.length ? { reasoning } : {}), ...(defaultReasoning ? { defaultReasoning } : {}), ...(tiers.length > 1 ? { tiers } : {}) }
+}
 
 export function parseModels(value: unknown): AssistantModels {
   if (!record(value) || typeof value.connected !== 'boolean' || !Array.isArray(value.sources)) throw unexpected()
   const sources = value.sources.flatMap((item): AssistantSource[] => {
     if (!record(item) || !trimmed(item.id)) return []
     const models = Array.isArray(item.models) ? item.models.flatMap(model => record(model) && isModelId(model.id)
-      ? [{ id: model.id, name: trimmed(model.name) || model.id }] : []) : []
+      ? [parseModel({ ...model, id: model.id })] : []) : []
     const reason = trimmed(item.reason).slice(0, 400)
     return [{ id: trimmed(item.id), name: trimmed(item.name) || trimmed(item.id), models, ...(reason ? { reason } : {}) }]
   })
@@ -154,9 +173,15 @@ function parseMetadata(value: unknown): AssistantMetadata | undefined {
   if (!record(value)) return undefined
   const count = (item: unknown) => typeof item === 'number' && Number.isFinite(item) && item >= 0 ? item : undefined
   const usage = record(value.usage) ? { inputTokens: count(value.usage.inputTokens), outputTokens: count(value.usage.outputTokens) } : undefined
+  const fill = record(value.context) ? value.context : undefined
+  const used = fill ? count(fill.used) : undefined
+  const some = (key: string, item: unknown) => count(item) ? { [key]: count(item) } : {}
+  const context: ContextUse | undefined = fill && used !== undefined
+    ? { used, ...some('limit', fill.limit), ...some('system', fill.system), ...some('conversation', fill.conversation), ...some('tools', fill.tools) } : undefined
   const metadata: AssistantMetadata = {
     ...(typeof value.model === 'string' && value.model ? { model: value.model.slice(0, 100) } : {}),
     ...(usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined) ? { usage } : {}),
+    ...(context ? { context } : {}),
     ...(value.stopped === true ? { stopped: true } : {}),
     ...(typeof value.error === 'string' && value.error.trim() ? { error: value.error.trim().slice(0, 400) } : {}),
   }
@@ -185,6 +210,46 @@ export function chooseModel(models: AssistantModels, saved: string | null | unde
   if (models.defaultModel && listed(models.defaultModel)) return models.defaultModel
   return models.models[0]?.id ?? (models.connected ? undefined : signInModel)
 }
+
+// Reasoning efforts with the short name the composer button shows, in order of cost.
+const efforts = new Map([['none', ['0', 'None']], ['minimal', ['XS', 'Minimal']], ['low', ['S', 'Low']], ['medium', ['M', 'Medium']],
+  ['high', ['L', 'High']], ['xhigh', ['XL', 'Extra high']], ['max', ['XXL', 'Max']]])
+export const effortShort = (effort: string) => efforts.get(effort)?.[0] ?? effort.slice(0, 2).toUpperCase()
+export const effortLabel = (effort: string) => efforts.get(effort)?.[1] ?? effort[0].toUpperCase() + effort.slice(1)
+export const findModel = (models: AssistantModels | null | undefined, id?: string) => models?.models.find(model => model.id === id)
+
+// What the owner picked per model is kept on this browser; a choice the model no longer offers is ignored.
+export const reasoningKey = 'lucia.assistant.reasoning.v1'
+export const contextKey = 'lucia.assistant.context.v1'
+export function parseChoices(text: string | null): Record<string, string> {
+  try {
+    const saved: unknown = text ? JSON.parse(text) : {}
+    return record(saved) ? Object.fromEntries(Object.entries(saved).filter(([id, choice]) => isModelId(id) && typeof choice === 'string' && effortPattern.test(choice))) as Record<string, string> : {}
+  } catch { return {} }
+}
+
+// The effort to send: the saved choice when the model still offers it, else none, which leaves it to the model.
+export const chosenEffort = (model: AssistantModel | undefined, saved: string | undefined) =>
+  saved && model?.reasoning?.includes(saved) ? saved : undefined
+
+// The context window in use for a model that offers a choice: the saved tier, else its first (standard).
+export const currentTier = (model: AssistantModel | undefined, saved: string | undefined): ContextTier | undefined =>
+  model?.tiers?.find(tier => tier.id === saved) ?? model?.tiers?.[0]
+
+export function tokenText(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`
+  return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}K` : String(tokens)
+}
+
+// How full the context is. A model with a choice of windows shows the chosen one at once; otherwise the host's own limit leads.
+export function contextFill(model: AssistantModel | undefined, tier: ContextTier | undefined, last: ContextUse | undefined) {
+  const limit = model?.tiers ? tier?.tokens ?? last?.limit : last?.limit ?? model?.context
+  const used = last?.used ?? 0
+  return { used, limit, share: limit ? Math.min(1, used / limit) : undefined, detail: last }
+}
+
+export const lastContext = (messages: readonly { role: string; metadata?: AssistantMetadata }[]): ContextUse | undefined =>
+  [...messages].reverse().find(message => message.role === 'assistant' && message.metadata?.context)?.metadata?.context
 
 export function parseDock(value: unknown, wide: boolean): DockState {
   const saved = record(value) ? value : {}

@@ -127,6 +127,23 @@ try
         "The saved message keeps tool input, output, errors and the model.");
 
     // Failures prefer the runtime's own session error and keep the partial answer.
+    var filling = new AssistantStream("a1c", "gpt-x");
+    var fillChunks = new List<JsonNode>();
+    SessionUsageInfoEvent Fill(long used) => new() { Data = new() { CurrentTokens = used, MessagesLength = 3, TokenLimit = 128_000, SystemTokens = 900, ConversationTokens = 3_000, ToolDefinitionsTokens = 1_100 } };
+    Feed(filling, fillChunks, Fill(5_000));
+    Feed(filling, fillChunks, Fill(5_000));
+    Feed(filling, fillChunks, Fill(6_500));
+    Check(Types(fillChunks) == "message-metadata,message-metadata" && (long)fillChunks[0]["messageMetadata"]!["context"]!["used"]! == 5_000
+        && (long)fillChunks[1]["messageMetadata"]!["context"]!["used"]! == 6_500 && (long)fillChunks[1]["messageMetadata"]!["context"]!["limit"]! == 128_000
+        && (long)fillChunks[1]["messageMetadata"]!["context"]!["system"]! == 900 && (long)fillChunks[1]["messageMetadata"]!["context"]!["tools"]! == 1_100,
+        "The runtime's context fill streams as metadata, once per change, with its limit and where the tokens go.");
+    var lastInput = new AssistantStream("a1d", null);
+    Feed(lastInput, [], new AssistantUsageEvent { Data = new() { Model = "m", InputTokens = 7_000, OutputTokens = 100, MaxPromptTokens = 64_000 } });
+    Check((long)Node(lastInput.Finish()[^1])["messageMetadata"]!["context"]!["used"]! == 7_000
+        && (long)lastInput.Message.Metadata!["context"]!["limit"]! == 64_000,
+        "Without a context report from the runtime, the last call's prompt size shows how full the context is.");
+
+    // Failures prefer the runtime's own session error and keep the partial answer.
     var failing = new AssistantStream("a2", null);
     var failed = new List<JsonNode>();
     Feed(failing, failed, TextDelta("m-1", "Partial"));
@@ -351,6 +368,9 @@ try
     await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: "bad id"), "tester via assistant", null, default), 400, "invalid_request", "Message ids are validated.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi", messageId: null!), "tester via assistant", null, default), 400, "invalid_request", "A missing message id is rejected.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi", model: "gpt 5; rm"), "tester via assistant", null, default), 400, "invalid_request", "Model ids are validated.");
+    foreach (var (effort, tier) in new (string?, string?)[] { ("High; rm", null), ("", null), (null, "huge") })
+        await Reject(() => runs.StartAsync(owner, Ask("Hi") with { Reasoning = effort, ContextTier = tier }, "tester via assistant", null, default), 400, "invalid_request",
+            $"Reasoning effort '{effort}' and context window '{tier}' are validated.");
     await Reject(() => runs.StartAsync(owner, Ask(" \n "), "tester via assistant", null, default), 400, "invalid_message", "Blank messages are rejected.");
     await Reject(() => runs.StartAsync(owner, Ask(new string('x', 32_769)), "tester via assistant", null, default), 400, "invalid_message", "Messages over 32,768 characters are rejected.");
     await Reject(() => runs.StartAsync(owner, Ask("Hi"), "tester via assistant", null, default), 503, "assistant_not_connected", "Until the owner signs in with GitHub, the assistant asks them to.");
@@ -693,6 +713,14 @@ try
         "Jobs may only be granted the assistant's own change tools.");
     await Reject(() => jobs.SaveAsync(owner, null, JobRequest() with { Prompts = [] }, "tester via assistant", "tester", default), 400, "invalid_job",
         "A job needs a prompt.");
+    foreach (var (effort, tier) in new (string?, string?)[] { ("", null), ("High; rm", null), (null, "huge"), (null, "") })
+        await Reject(() => jobs.SaveAsync(owner, null, JobRequest() with { Reasoning = effort, ContextTier = tier }, "tester via assistant", "tester", default),
+            400, "invalid_job", $"A job's reasoning effort '{effort}' and context window '{tier}' must be well formed.");
+    var tuned = JsonSerializer.SerializeToNode(await jobs.SaveAsync(owner, null, JobRequest() with { Reasoning = "low", ContextTier = "long_context" },
+        "tester via assistant", "tester", default), AssistantStream.Json)!;
+    Check((string)tuned["reasoning"]! == "low" && (string)tuned["contextTier"]! == "long_context",
+        "A job keeps the reasoning effort and context window it was saved with.");
+    await jobs.DeleteAsync(owner, (string)tuned["id"]!, default);
     var savedJob = JsonSerializer.SerializeToNode(await jobs.SaveAsync(owner, null, JobRequest(), "tester via assistant", "tester", default), AssistantStream.Json)!;
     var jobId = (string)savedJob["id"]!;
     Check(savedJob["next"] is not null && !(bool)savedJob["running"]! && (string)savedJob["timeZone"]! == "America/Chicago"

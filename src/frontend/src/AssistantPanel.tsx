@@ -17,11 +17,12 @@ import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationTitl
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool'
 import { SelectGroup, SelectLabel } from './components/ui/select'
 import {
-  approvalNote, askEvent, chatKey, chatTitle, chooseModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, takeAsk,
-  parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
+  approvalNote, askEvent, chatKey, chatTitle, chooseModel, chosenEffort, contextKey, currentTier, findModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, lastContext, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, takeAsk,
+  parseChoices, parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, reasoningKey, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
   waitingPart, waitingParts,
 } from './assistant'
 import type { AssistantMetadata, AssistantMode, AssistantModels, AssistantToolPart, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
+import { ContextGauge, ModeButton, ReasoningMenu } from './AssistantTuning'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import { ownerRequest, responseError } from './managementApi'
@@ -425,6 +426,10 @@ type ChatViewProps = {
   models: AssistantModels | null
   model?: string
   onModel: (model: string) => void
+  reasoning?: string
+  onReasoning: (effort: string | undefined) => void
+  tier?: string
+  onTier: (tier: string) => void
   mode: AssistantMode
   onMode: (mode: AssistantMode) => void
   focusKey: number
@@ -436,7 +441,7 @@ type ChatViewProps = {
   prompt?: string
 }
 
-function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed, onWaiting, prompt }: ChatViewProps) {
+function ChatView({ id, fresh, hidden, auth, page, github, models, model, onModel, reasoning, onReasoning, tier, onTier, mode, onMode, focusKey, onStarted, onTitle, onReload, onFailed, onWaiting, prompt }: ChatViewProps) {
   const draft = usePromptInputController()
   const input = useRef<HTMLTextAreaElement>(null)
   const composer = useRef<HTMLDivElement>(null)
@@ -532,8 +537,14 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     onWaiting(waiting.length, next && `${kind}: ${toolTitle(next.toolName, next.input)}`)
   }, [waiting, onWaiting])
   useEffect(() => () => onWaiting(0), [onWaiting])
+  const card = findModel(models, model)
   const request = () => ({
-    body: { mode, model: model === signInModel ? undefined : model, route: pageRoute(location.hash) },
+    body: {
+      mode, model: model === signInModel ? undefined : model, route: pageRoute(location.hash),
+      reasoning: chosenEffort(card, reasoning),
+      // The first window is the standard one, which needs no request.
+      contextTier: card?.tiers && currentTier(card, tier)?.id !== card.tiers[0].id ? currentTier(card, tier)?.id : undefined,
+    },
     headers: { 'X-CSRF-TOKEN': auth.current.session.csrfToken ?? '' },
   })
   function send(text: string) {
@@ -623,10 +634,8 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
         </PromptInputBody>
         <PromptInputFooter className="assistant-footer">
           <PromptInputTools>
-            <div className="assistant-mode" role="group" aria-label="Answer mode">
-              <button type="button" aria-pressed={mode === 'plan'} title="Look things up and plan without changing anything" onClick={() => onMode('plan')}>Plan</button>
-              <button type="button" aria-pressed={mode === 'execute'} title="Carry out changes, asking first unless you’ve allowed them" onClick={() => onMode('execute')}>Execute</button>
-            </div>
+            <ModeButton mode={mode} onMode={onMode} />
+            {model && model !== signInModel && <ContextGauge model={card} tier={tier} last={lastContext(messages)} onTier={onTier} />}
             {model && models && <PromptInputSelect value={model} onValueChange={pick}>
               <PromptInputSelectTrigger className="assistant-model" aria-label="Model" title={models.models.find(item => item.id === model)?.name}>
                 <PromptInputSelectValue /></PromptInputSelectTrigger>
@@ -642,6 +651,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
                 })}
               </PromptInputSelectContent>
             </PromptInputSelect>}
+            <ReasoningMenu model={card} saved={reasoning} onChange={onReasoning} />
           </PromptInputTools>
           <PromptInputSubmit className="assistant-send" status={busy ? 'streaming' : undefined} onStop={stopAnswer}
             disabled={!busy && !(canAsk && draft.textInput.value.trim())} aria-label={busy ? 'Stop answering' : 'Send message'}>
@@ -785,6 +795,8 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
   const [models, setModels] = useState<AssistantModels | null>(null)
   const [model, setModel] = useState<string>()
   const [mode, setMode] = useState<AssistantMode>('execute')
+  const [reasoning, setReasoning] = useState(() => parseChoices(readStored(reasoningKey)))
+  const [tiers, setTiers] = useState(() => parseChoices(readStored(contextKey)))
   const [focusCount, setFocusCount] = useState(0)
   const [modelsRound, setModelsRound] = useState(0)
   const github = useGitHub(auth)
@@ -868,6 +880,21 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
     setModel(id)
     writeStored(modelKey, id)
   }
+  // Each model keeps its own choices, so a cheap effort picked for one never carries over to another.
+  function chooseReasoning(effort: string | undefined) {
+    if (!model) return
+    const next = { ...reasoning }
+    if (effort) next[model] = effort
+    else delete next[model]
+    setReasoning(next)
+    writeStored(reasoningKey, JSON.stringify(next))
+  }
+  function chooseTier(id: string) {
+    if (!model) return
+    const next = { ...tiers, [model]: id }
+    setTiers(next)
+    writeStored(contextKey, JSON.stringify(next))
+  }
   const started = useCallback((text: string) => {
     writeStored(chatKey, chat.id)
     setTitle(chatTitle(text))
@@ -889,6 +916,7 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
       </header>
       <ChatView key={`${chat.id}:${chat.nonce}`} id={chat.id} fresh={chat.fresh} hidden={view === 'history'} auth={auth} page={page}
         github={github} models={models} model={model} onModel={chooseModelId} mode={mode} onMode={setMode}
+        reasoning={model ? reasoning[model] : undefined} onReasoning={chooseReasoning} tier={model ? tiers[model] : undefined} onTier={chooseTier}
         focusKey={focusToken + focusCount} onStarted={started} onTitle={setTitle} onReload={reload} onFailed={failed} onWaiting={onWaiting} prompt={chat.prompt} />
       {view === 'history' && <ChatHistory auth={auth} current={chat.id} focusKey={focusToken} onOpen={openChat}
         onForget={id => { if (id === chat.id) startChat() }} />}

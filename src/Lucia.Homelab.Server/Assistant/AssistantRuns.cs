@@ -6,7 +6,8 @@ using Microsoft.Extensions.Options;
 
 namespace Lucia.Homelab.Server.Assistant;
 
-public sealed record AssistantChatRequest(string SessionId, string MessageId, string Text, string Mode, string? Model, string? Route);
+public sealed record AssistantChatRequest(string SessionId, string MessageId, string Text, string Mode, string? Model, string? Route,
+    string? Reasoning = null, string? ContextTier = null);
 public sealed record AssistantSessionInfo(string Title, DateTimeOffset Updated, string? Model, string? JobId = null);
 public sealed record AssistantTranscript(List<UiMessage> Messages);
 
@@ -46,7 +47,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     {
         var id = SessionId(request.SessionId);
         if (request.MessageId is null || !MessageIdPattern().IsMatch(request.MessageId) || request.Mode is not ("plan" or "execute")
-            || request.Model is { } model && !ModelPattern().IsMatch(model))
+            || request.Model is { } model && !ModelPattern().IsMatch(model) || !ValidTuning(request.Reasoning, request.ContextTier))
             throw new AssistantException(400, "invalid_request", "The request body is invalid.");
         if (string.IsNullOrWhiteSpace(request.Text) || request.Text.Length > 32_768)
             throw new AssistantException(400, "invalid_message", "Messages must be between 1 and 32,768 characters.");
@@ -78,7 +79,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
                 + "notify_owner for anything the owner must know or do.";
             var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}{unattended}\n</lucia-context>\n\n{request.Text}";
             run.Completion = Task.Run(() => ExecuteAsync(key, folder, run,
-                new(owner, key, prompt, request.Model, request.Mode, actor, user), transcript, info));
+                new(owner, key, prompt, request.Model, request.Mode, actor, user, request.Reasoning, request.ContextTier), transcript, info));
             return run;
         }
         finally { _gate.Release(); }
@@ -92,7 +93,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     {
         foreach (var text in job.Prompts)
         {
-            var run = await StartAsync(owner, new(sessionId, "job-" + Guid.NewGuid().ToString("N"), text, "execute", job.Model, null),
+            var run = await StartAsync(owner, new(sessionId, "job-" + Guid.NewGuid().ToString("N"), text, "execute", job.Model, null, job.Reasoning, job.ContextTier),
                 job.Actor, job.User, ct, job);
             await run.Ended.WaitAsync(ct);
             if (run.Outcome != "succeeded") return (run.Outcome, run.Error);
@@ -248,6 +249,14 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
 
     [GeneratedRegex("^[A-Za-z0-9._:/-]{1,100}$")]
     internal static partial Regex ModelPattern();
+
+    /// <summary>A reasoning effort such as low or xhigh.</summary>
+    [GeneratedRegex("^[a-z][a-z0-9_-]{0,15}$")]
+    internal static partial Regex ReasoningPattern();
+
+    /// <summary>Whether a reasoning effort and context tier are well formed; either may be left out.</summary>
+    internal static bool ValidTuning(string? reasoning, string? contextTier) =>
+        (reasoning is null || ReasoningPattern().IsMatch(reasoning)) && (contextTier is null or "default" or "long_context");
 
     [GeneratedRegex("^/[A-Za-z0-9/_.-]{0,200}$")]
     private static partial Regex RoutePattern();

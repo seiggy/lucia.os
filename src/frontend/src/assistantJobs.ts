@@ -2,9 +2,9 @@ export type JobStatus = 'running' | 'succeeded' | 'stopped' | 'failed' | 'unansw
 export type JobRun = { id: string; sessionId: string; trigger: 'schedule' | 'manual'; started: string; finished?: string; status: JobStatus; error?: string }
 export type Job = {
   id: string; name: string; prompts: string[]; cron: string; timeZone: string; model?: string; enabled: boolean
-  tools: string[]; hosts: string[]; registries: string[]; next?: string; last?: JobRun; running: boolean; waiting?: string
+  tools: string[]; hosts: string[]; registries: string[]; reasoning?: string; contextTier?: string; next?: string; last?: JobRun; running: boolean; waiting?: string
 }
-export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts' | 'registries'>
+export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts' | 'registries' | 'reasoning' | 'contextTier'>
 export type PushDevice = { id: string; name: string; endpoint: string; added: string; lastUsed?: string }
 
 const idPattern = /^[a-f0-9]{32}$/
@@ -76,8 +76,10 @@ export function parseJob(value: unknown): Job {
     || typeof value.cron !== 'string' || typeof value.timeZone !== 'string' || typeof value.enabled !== 'boolean'
     || !strings(value.tools) || !strings(value.hosts) || !strings(value.registries) || typeof value.running !== 'boolean') throw unexpected()
   const model = text(value.model), next = text(value.next), waiting = text(value.waiting)
+  const reasoning = text(value.reasoning), contextTier = text(value.contextTier)
   return { id: value.id, name: value.name, prompts: value.prompts, cron: value.cron, timeZone: value.timeZone, enabled: value.enabled,
     tools: value.tools, hosts: value.hosts, registries: value.registries, running: value.running, ...(model ? { model } : {}), ...(next ? { next } : {}),
+    ...(reasoning ? { reasoning } : {}), ...(contextTier ? { contextTier } : {}),
     ...(waiting ? { waiting } : {}), ...(value.last ? { last: parseRun(value.last) } : {}) }
 }
 
