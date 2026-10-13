@@ -165,6 +165,15 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         return result;
     }
 
+    private async Task<object?> SparkInstall(string[]? packages, bool includePlatform, string restart, CancellationToken ct)
+    {
+        if (sparkPackages is null) throw new AssistantException(503, "spark_unavailable", "Spark updates aren't available.");
+        if (restart is not ("none" or "services"))
+            throw new AssistantException(400, "invalid_restart", "Use none or services. Restart the Spark itself from the Spark page.");
+        try { return await sparkPackages.InstallAsync(new(packages, includePlatform, restart), ct); }
+        catch (PackageUpdatesException e) { throw new AssistantException(e.StatusCode, e.Code, e.Message); }
+    }
+
     private async Task<object?> SparkCheck(CancellationToken ct)
     {
         if (sparkPackages is null) throw new AssistantException(503, "spark_unavailable", "Spark updates aren't available.");
@@ -502,7 +511,16 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     [Description("The public name to publish it as; leave it out to take it off the internet.")] string? publicName = null,
                     CancellationToken ct = default) =>
                     await stacks.SaveStackPublic(App(app), new StackPublicRequest(host, publicName), actor, ct)),
-            Tool(ToolTier.Destructive, "node_action", "Installs a server's OS updates, restarts it, or updates its Lucia agent.",
+            Tool(ToolTier.Destructive, "install_spark_updates",
+                "Installs OS package updates on the DGX Spark that runs Lucia, as the Spark page's Install does. Leave packages out for every "
+                + "available update; platform updates (kernel, driver, CUDA) are included only with includePlatform, and pause local AI while they install. "
+                + "It never restarts the Spark: get_spark_updates says whether a restart is needed, which the owner does from the Spark page.",
+                async Task<object?> ([Description("Package names from get_spark_updates; all available updates when left out.")] string[]? packages = null,
+                    [Description("Also install platform updates, which pause local AI while they install.")] bool includePlatform = false,
+                    [Description("none, or services to restart the services the updates affect.")] string restart = "none",
+                    CancellationToken ct = default) =>
+                    await SparkInstall(packages, includePlatform, restart, ct)),
+            Tool(ToolTier.Destructive, "node_action", "Installs a server's OS updates, restarts it, or updates its Lucia agent. Not for the Spark: use install_spark_updates.",
                 async Task<object?> ([Description(NodeHelp)] string node, [Description("install-updates, restart or update-agent.")] string action,
                     CancellationToken ct) =>
                 {
@@ -616,6 +634,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
             ("node_action", "restart") => $"Every app on {node} is offline for a few minutes while it restarts.",
             ("node_action", "update-agent") => $"Lucia loses touch with {node} for about a minute while its agent updates.",
             ("run_command", _) => $"This runs the command below as root on {node}. It can change anything there.",
+            ("install_spark_updates", _) => "Updates install on the Spark that runs Lucia. Platform updates pause local AI while they install.",
             _ => "This can remove data or interrupt your lab.",
         };
     }
@@ -887,8 +906,12 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         throw Unknown(text ?? "");
     }
 
-    private static AssistantException Unknown(string text) =>
-        new(404, "unknown_node", $"No managed server is called \"{Short(text)}\". Use list_nodes to see them.");
+    internal static AssistantException Unknown(string text) =>
+        new(404, "unknown_node", Spark().IsMatch(text) ? "The Spark isn't a managed server. Use get_spark_health, get_spark_updates, check_spark_updates and install_spark_updates for it."
+            : $"No managed server is called \"{Short(text)}\". Use list_nodes to see them.");
+
+    [GeneratedRegex(@"spark|dgx", RegexOptions.IgnoreCase)]
+    private static partial Regex Spark();
 
     private async Task<JsonArray> NodeRows(CancellationToken ct)
     {

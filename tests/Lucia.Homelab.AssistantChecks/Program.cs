@@ -277,10 +277,10 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}:{pair.Value}")) == "change:9,destructive:5,read:16,registry:1,secret:1,web:1"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}:{pair.Value}")) == "change:9,destructive:6,read:16,registry:1,secret:1,web:1"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
-        "The assistant has 16 read, 1 web, 1 registry, 1 secret, 9 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
+        "The assistant has 16 read, 1 web, 1 registry, 1 secret, 9 change and 6 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolRegistry = ToolSchema("query_registry");
     var imageRows = AssistantTools.ParseImages("""
         {"Repository":"ghcr.io/home-operations/jackett","Tag":"0.24.2668","Digest":"sha256:abc","ID":"sha256:111","CreatedAt":"2026-10-01 10:00:00 +0000 UTC"}
@@ -832,6 +832,9 @@ try
     var sparkMissing = await Reject(() => sparkTools.Single(tool => tool.Name == "get_spark_updates").InvokeAsync(new AIFunctionArguments()).AsTask(), 400, "tool_error",
         "Spark updates say so when the update service isn't there.");
     Check(sparkMissing.Message == "Spark updates aren't available.", "The assistant is told plainly that Spark updates aren't available.");
+    Check(AssistantTools.Unknown("spark").Message.Contains("install_spark_updates") && AssistantTools.Unknown("lucialab9").Message.Contains("list_nodes")
+        && toolSet.Single(tool => tool.Name == "install_spark_updates").Tier == ToolTier.Destructive,
+        "Asking a node tool for the Spark points to the Spark's own tools, and installing its updates is a risky tool.");
     AIFunctionArguments InChat(string callId, Dictionary<string, object?> values) => new(values)
     {
         Context = new Dictionary<object, object?> { [typeof(ToolInvocation)] = new ToolInvocation { SessionId = govKey, ToolCallId = callId, ToolName = "tool" } },

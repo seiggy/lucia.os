@@ -260,7 +260,7 @@ const toolStates: readonly string[] = ['input-streaming', 'input-available', 'ap
   'output-available', 'output-error', 'output-denied']
 const questionTools: readonly string[] = ['ask_owner', 'request_secret']
 // Mirrors the host's destructive tier, which always asks and can't be allowed for a whole chat.
-const destructiveTools: readonly string[] = ['delete_app', 'restore_backup', 'set_public_route', 'node_action', 'run_command']
+const destructiveTools: readonly string[] = ['delete_app', 'restore_backup', 'set_public_route', 'node_action', 'run_command', 'install_spark_updates']
 // The host gives these reasons for denials of its own, in the field that otherwise carries the owner's reason for declining.
 const systemDenials: readonly string[] = ['No answer within 30 minutes.', 'The run stopped before you answered.']
 // The host fails calls still running when their turn ends with this; the call itself didn't fail.
@@ -342,6 +342,7 @@ const toolTitles = new Map([
   ['node_action:restart', 'Restart server {node}'],
   ['node_action:update-agent', 'Update Lucia’s agent on {node}'],
   ['run_command', 'Run a command on {node}'],
+  ['install_spark_updates', 'Install updates on the Spark'],
 ])
 
 export function urlHost(url: unknown): string | undefined {
@@ -442,6 +443,7 @@ const changeLabels = new Map([
   ['restore_backup', 'Restore app backups'],
   ['set_public_route', 'Put apps on the internet or take them off'],
   ['node_action', 'Update or restart servers'],
+  ['install_spark_updates', 'Install updates on the Spark'],
   ['run_command', 'Run commands on servers'],
 ])
 
