@@ -260,11 +260,21 @@ try
     JsonNode ToolSchema(string name) => JsonNode.Parse(toolSet.Single(tool => tool.Name == name).JsonSchema.GetRawText())!;
     static string[] Required(JsonNode schema) => [.. schema["required"]!.AsArray().Select(item => (string)item!)];
     Check(toolSet.Select(tool => tool.Name).Distinct().Count() == toolSet.Count && toolSet.All(tool => !string.IsNullOrWhiteSpace(tool.Description))
-        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:14,web:1,registry:1,secret:1,change:7,destructive:5"
+        && string.Join(",", toolSet.CountBy(tool => tool.Tier).Select(pair => $"{pair.Key}:{pair.Value}")) == "read:15,web:1,registry:1,secret:1,change:7,destructive:5"
         && toolSet.All(tool => !tool.JsonSchema.GetRawText().Contains("\"ct\"") && !tool.JsonSchema.GetRawText().Contains("CancellationToken")
             && !tool.JsonSchema.GetRawText().Contains("\"args\"")),
         "The assistant has 14 read, 1 web, 1 registry, 1 secret, 7 change and 5 destructive tools, each described, with no cancellation token or call context in their schemas.");
     var toolRegistry = ToolSchema("query_registry");
+    var imageRows = AssistantTools.ParseImages("""
+        {"Repository":"ghcr.io/home-operations/jackett","Tag":"0.24.2668","Digest":"sha256:abc","ID":"sha256:111","CreatedAt":"2026-10-01 10:00:00 +0000 UTC"}
+        {"Repository":"local/app","Tag":"dev","Digest":"<none>","ID":"sha256:222","CreatedAt":"x"}
+        not json
+        {"Repository":"<none>","Tag":"<none>","Digest":"<none>","ID":"sha256:333"}
+        """, null);
+    Check(Required(ToolSchema("list_node_images")).SequenceEqual(["node"]) && imageRows.Length == 2
+        && AssistantTools.ParseImages("{\"Repository\":\"a/b\",\"Tag\":\"1\",\"Digest\":\"sha256:z\"}\n{\"Repository\":\"c/d\",\"Tag\":\"2\"}", "A/B").Length == 1
+        && JsonSerializer.Serialize(imageRows[1]).Contains("\"Digest\":null", StringComparison.Ordinal),
+        "list_node_images needs a node, reads Docker's image lines, skips junk and untagged images, filters by name, and gives locally built images no digest.");
     Check(Required(toolRegistry).SequenceEqual(["image"])
         && AssistantTools.RegistryImage("nginx") is ("docker.io", "registry-1.docker.io", "library/nginx")
         && AssistantTools.RegistryImage("ghcr.io/home-operations/jackett") is ("ghcr.io", "ghcr.io", "home-operations/jackett")

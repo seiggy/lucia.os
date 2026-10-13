@@ -122,6 +122,12 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
             Tool(ToolTier.Read, "list_containers",
                 "Lists every container and listening port a server last reported, including ones Lucia doesn't manage.",
                 async Task<object?> ([Description(NodeHelp)] string node, CancellationToken ct) => stacks.Inventory((await Node(node, ct)).Id)),
+            Tool(ToolTier.Read, "list_node_images",
+                "Lists the container images a server has pulled, with the registry digest each came from, so you can compare them with "
+                + "query_registry to see whether an image has an update. Leave image out for all of them.",
+                async Task<object?> ([Description(NodeHelp)] string node,
+                    [Description("Only images whose name contains this text, such as jackett.")] string? image = null,
+                    CancellationToken ct = default) => await NodeImages(node, image, ct)),
             Tool(ToolTier.Read, "read_logs", "Reads the newest lines of a container's logs. Container names come from list_containers or get_app.",
                 async Task<object?> ([Description(NodeHelp)] string node, [Description("The container's name.")] string container,
                     [Description("How many of the newest lines to read, 1 to 1000.")] int tail = 200, CancellationToken ct = default) =>
@@ -689,6 +695,52 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
 
     private async Task<object?> RunCommand(string node, string command, string interpreter, int seconds, CancellationToken ct)
     {
+        var (hostname, result) = await ExecOnNode(node, command, interpreter, seconds, ct);
+        return new
+        {
+            Node = hostname,
+            result.ExitCode,
+            Running = result.Running ? true : (bool?)null,
+            Note = result.Running ? $"{hostname} stopped answering, so Lucia stopped waiting. The command stops by itself at its time limit."
+                : result.Message,
+            Output = string.IsNullOrEmpty(result.Output) ? "(no output)" : result.Output,
+        };
+    }
+
+    /// <summary>The images a server has pulled, with the registry digest each was pulled as, from a fixed read-only Docker command.</summary>
+    private async Task<object?> NodeImages(string node, string? image, CancellationToken ct)
+    {
+        var (hostname, result) = await ExecOnNode(node, "docker image ls --digests --no-trunc --format '{{json .}}' 2>&1", "sh", 60, ct);
+        var images = ParseImages(result.Output ?? "", image);
+        return new
+        {
+            Node = hostname,
+            Images = images,
+            Note = images.Length == 0 ? (result.Output?.Contains('{') == true ? "No image matches." : "Docker gave no image list: " + result.Output?.Trim()) : null,
+        };
+    }
+
+    /// <summary>Reads <c>docker image ls --format json</c> lines into image, digest, id and creation time; images built locally have no digest.</summary>
+    internal static object[] ParseImages(string output, string? image)
+    {
+        var list = new List<object>();
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            JsonElement row;
+            try { row = JsonSerializer.Deserialize<JsonElement>(line); }
+            catch (JsonException) { continue; }
+            if (row.ValueKind != JsonValueKind.Object) continue;
+            string? Field(string name) => row.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                && value.GetString() is { Length: > 0 } text && text != "<none>" ? text : null;
+            var name = Field("Repository") is { } repository ? repository + ":" + (Field("Tag") ?? "<none>") : null;
+            if (name is null || image is { Length: > 0 } && !name.Contains(image.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+            list.Add(new { Image = name, Digest = Field("Digest"), Id = Field("ID"), Created = Field("CreatedAt") });
+        }
+        return [.. list.Take(200)];
+    }
+
+    private async Task<(string Hostname, NodeRequestResult Result)> ExecOnNode(string node, string command, string interpreter, int seconds, CancellationToken ct)
+    {
         var (id, hostname) = await Node(node, ct);
         if ((await nodes.Facts(ct)).FirstOrDefault(item => item.NodeId == id)?.Status?.Features?.Contains("exec") != true)
             throw new AssistantException(409, "exec_unsupported",
@@ -705,15 +757,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                 catch (HardwareOnboardingException ex) when (ex.StatusCode == 504) { await Task.Delay(TimeSpan.FromSeconds(5), ct); }
             }
             if (!result.Success) throw new AssistantException(409, "command_refused", result.Message ?? $"{hostname} refused the command.");
-            return new
-            {
-                Node = hostname,
-                result.ExitCode,
-                Running = result.Running ? true : (bool?)null,
-                Note = result.Running ? $"{hostname} stopped answering, so Lucia stopped waiting. The command stops by itself at its time limit."
-                    : result.Message,
-                Output = string.IsNullOrEmpty(result.Output) ? "(no output)" : result.Output,
-            };
+            return (hostname, result);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
