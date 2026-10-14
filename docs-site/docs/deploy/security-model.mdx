@@ -60,7 +60,7 @@ Human and machine identities are kept apart. None can stand in for another.
 | The owner API key | `HostPlatform:ApiKey`, a bearer key of 32+ characters | Role `Owner` on the host API, for automation. It carries no username, so it can't manage people or SSH keys. |
 | Inference API keys | The fixed inference key, or managed keys (`lucia_inf_…`) from **Local AI → API keys** | Role `Inference`: the `/v1` model API only. Managed keys are stored as hashes and shown once. |
 | An Authentik access token | A JWT with the `lucia_api` scope and `azp` equal to Lucia's client | Same roles as the browser session, for API clients |
-| A node agent | A P-256 key generated on the node and a 24-hour private-CA certificate | Its own heartbeats, stack sync, requests and agent download. Every call signs a fresh challenge. |
+| A node agent | A P-256 key generated on the node and a 7-day private-CA certificate | Its own heartbeats, stack sync, requests and agent download. Every call signs a fresh challenge. |
 | A booting machine | A per-device key and a one-time capability, valid 30 minutes | Registering, reporting progress and requesting one grant. No erase authority until an owner approves. |
 | `lucia-recovery` | A local account on each server, password locked | SSH with the single recovery key chosen at approval |
 | `akadmin` | Authentik's break-glass administrator | Authentik administration. Its password is in `secrets/authentik-admin-password`. |
@@ -122,7 +122,7 @@ Classic PXE and TFTP don't authenticate the boot configuration or the initrd. Tr
 Each install has its own Smallstep CA. Its private keys stay on the Spark and are never copied to nodes, desktops or other containers. You distribute only the public root, and `install-node-trust.sh` refuses to replace a different Lucia root.
 
 :::note
-The CA publishes no CRL or OCSP endpoint. Short node certificates (24 hours) limit how long a stolen one is useful. They don't replace revocation, so **Remove from Lucia** also deletes the node's identity on the controller, which refuses every later call. Lucia's own TLS clients skip the revocation check for the private CA and still verify the chain, validity, key usage and hostname.
+The CA publishes no CRL or OCSP endpoint. Short node certificates (7 days, renewed daily) limit how long a stolen one is useful. They don't replace revocation, so **Remove from Lucia** also deletes the node's identity on the controller, which refuses every later call. Lucia's own TLS clients skip the revocation check for the private CA and still verify the chain, validity, key usage and hostname.
 :::
 
 ## Secrets at rest

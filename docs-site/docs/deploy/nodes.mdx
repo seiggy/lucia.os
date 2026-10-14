@@ -172,7 +172,7 @@ Build the tarball with `dotnet publish src/Lucia.NodeAgent -c Release -r linux-x
 |---|---|---|
 | Node stays `AwaitingHeartbeat` | First-boot enrollment is pending or failed | `journalctl -u lucia-node-agent` on the node. Check `enrollment-worker.json` freshness and the worker unit on the Spark. |
 | Enrollment returns 503 `node_worker_unavailable` | Worker not running or its record is over 45 seconds old | Restart `lucia-node-enrollment.service`. |
-| Heartbeats refused after a long outage | The 24-hour certificate lapsed | The agent recovers through `/renew` on its own. If it can't, check the clock and the CA. |
+| Heartbeats refused after a long outage | The 7-day certificate lapsed | The agent recovers through `/renew` on its own. If it can't, check the clock and the CA. |
 | Node's `sshd` rejects every owner | LDAP unreachable or `lucia-owners` empty | Use `lucia-recovery` with the recovery key and `systemctl status sssd`. |
 | `This agent is too old to update itself` | Agent predates release reporting | One manual upgrade, as above. |
 | Node reports from the wrong address range | It's outside `Boot__AllowedNetworks` | Add its subnet to the boot settings and redeploy the identity AppHost. |

@@ -174,7 +174,7 @@ internal static class ManagedRunner
     }
 
     internal static bool NeedsRenewal(DateTimeOffset notAfter, DateTimeOffset now) =>
-        notAfter > now && notAfter - now < TimeSpan.FromHours(6);
+        notAfter > now && notAfter - now < TimeSpan.FromDays(6);
 
     internal static async Task<ManagedConfiguration?> RecoverExpiredAsync(DiscoveryClient client, ManagedConfiguration cached,
         InstallPlan plan, string csr, ECDsa key, X509Certificate2 pinnedAuthority, CancellationToken token)

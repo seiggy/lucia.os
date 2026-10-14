@@ -54,7 +54,7 @@ if (signature.Length != 64 || !key.VerifyData(payload, signature, HashAlgorithmN
     throw new CryptographicException();
 ```
 
-The key's SHA-256 fingerprint is the node's identity. For a managed node the request also carries its current certificate, and `ManagedNodeEnrollment.ValidateCertificate` checks that the certificate's public key matches the recorded fingerprint, the subject is `CN=<nodeId>`, the one DNS name is the approved hostname, it isn't a CA, its lifetime is at most 25 hours, and it chains to the private root. Removing a node deletes its record, so its next call gets the same refusal as any unknown identity.
+The key's SHA-256 fingerprint is the node's identity. For a managed node the request also carries its current certificate, and `ManagedNodeEnrollment.ValidateCertificate` checks that the certificate's public key matches the recorded fingerprint, the subject is `CN=<nodeId>`, the one DNS name is the approved hostname, it isn't a CA, its lifetime is at most 7 days and 1 hour, and it chains to the private root. Removing a node deletes its record, so its next call gets the same refusal as any unknown identity.
 
 Large bodies, such as stack reports and exec scripts, don't fit the 32 KiB signed-report limit. `NodeApi.BoundAsync` signs a small proof of `{nodeId, purpose, bodySha256}` and sends the body next to it. The server recomputes the hash.
 
@@ -76,7 +76,7 @@ sequenceDiagram
   C->>Q: enrollment-requests/nodeId.json
   C-->>A: 202 Pending
   W->>Q: Read request, check it against the journal
-  W->>CA: Sign 24 h leaf, create node LDAP reader
+  W->>CA: Sign 7-day leaf, create node LDAP reader
   W->>Q: enrollment-responses/nodeId.json
   A->>C: Retry enroll every 30 s
   C-->>A: 200 certificate, CA, LDAP settings
@@ -90,7 +90,7 @@ The controller can't mint certificates, since it holds no CA key. It writes a re
 - A request has exact keys. The CSR's CN is the node ID, and the only extension is one DNS SAN equal to the hostname.
 - The worker also checks `onboarding/state.json`. The same node, task, fingerprint and hostname must be in the journal in the `AwaitingEnrollment` or `Managed` phase with a grant. A queue file alone is never authority.
 - A response acknowledges the SHA-256 of the exact request bytes it answers.
-- Leaves last 24 hours and are reused until under 6 hours remain. The worker changes no CA policy.
+- Leaves last 7 days and are reused until under 6 days remain, so a node renews about once a day. A failed renewal leaves 6 days of slack. The worker changes no CA policy beyond the `maxTLSCertDuration` claim of `168h` that `start-ca.sh` sets (`defaultTLSCertDuration` stays 24h).
 - The LDAP reader is `uid=node-<32 hex>,ou=Services,dc=lucia,dc=home,dc=arpa`. `prepare_directory.py` adds two leading ACL rules that deny every `userPassword` read and limit these readers to read access. It runs once, by a maintainer, and never rolls back on its own.
 
 On the controller side, `ManagedNodeEnrollment.Prepare` is idempotent. It compares a pending request with the new one, refuses any difference in node, task, hostname, key or CSR bytes, and expires an unanswered request after 10 minutes. `WorkerReady` reads `enrollment-worker.json`, which the worker refreshes. If it's older than 45 seconds, enrollment returns `503 node_worker_unavailable`.
@@ -99,7 +99,7 @@ On the node, `ManagedIdentity.ValidateConfiguration` accepts a response only whe
 
 ### Renewal and lapsed certificates
 
-Under 6 hours left, `ManagedRunner` renews with the same key and the persisted CSR. A pending or failed renewal backs off from 30 seconds to 15 minutes while heartbeats continue on the valid certificate. If a node was off long enough for the leaf to expire, it sends no heartbeats. It signs a renewal proof with the expired leaf, and the controller accepts that only on `/renew`. It builds the chain at the leaf's `NotBefore` plus one minute, so a lapsed node can recover but never act.
+Under 6 days left, `ManagedRunner` renews with the same key and the persisted CSR. A pending or failed renewal backs off from 30 seconds to 15 minutes while heartbeats continue on the valid certificate. If a node was off long enough for the leaf to expire, it sends no heartbeats. It signs a renewal proof with the expired leaf, and the controller accepts that only on `/renew`. It builds the chain at the leaf's `NotBefore` plus one minute, so a lapsed node can recover but never act.
 
 ## States
 

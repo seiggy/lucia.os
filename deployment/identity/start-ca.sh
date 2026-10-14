@@ -17,4 +17,10 @@ if [ ! -f "$STEPPATH/config/ca.json" ]; then
     --password-file /run/secrets/ca-password
 fi
 
+# Node leaves live 7 days (renewed daily), so the CA must allow them. The default
+# issued lifetime stays 24h for every other certificate.
+if ! grep -q '"maxTLSCertDuration"' "$STEPPATH/config/ca.json"; then
+  sed -i 's/"authority": {/"authority": {\n\t\t"claims": {"maxTLSCertDuration": "168h", "defaultTLSCertDuration": "24h"},/' "$STEPPATH/config/ca.json"
+fi
+
 exec step-ca "$STEPPATH/config/ca.json" --password-file /run/secrets/ca-password

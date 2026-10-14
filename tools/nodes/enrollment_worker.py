@@ -18,14 +18,14 @@ byte hash. configuration contains certificatePem (leaf + intermediate), caPem,
 hostname, ldapUri, ldapBaseDn, ldapBindDn, ldapBindPassword, ownerGroupDn. These
 are PRIVATE node-delivery artifacts, never public assets or UI payloads.
 Fresh renewal requests must retain taskId, hostname, key and identical CSR bytes.
-Certificates are issued for 24h and reused until <6h remain. Receipts survive partial operations;
+Certificates are issued for 7 days and reused until <6 days remain (so a node renews about once a day). Receipts survive partial operations;
 there is no automatic deletion, password reset, trust rotation or migration.
 
 Prerequisites: existing owned identity stack, approved user linger, default
-lucia-installer JWK leaf template and its existing default 24h maximum lifetime.
+lucia-installer JWK leaf template and a 168h maxTLSCertDuration claim (start-ca.sh sets it).
 step's default leaf template supplies digitalSignature and clientAuth/serverAuth:
 github.com/smallstep/crypto/blob/master/x509util/templates.go (DefaultLeafTemplate).
-No CA policy is changed here. LDAP ACLs must permit authenticated directory reads
+No CA policy is changed here beyond that claim. LDAP ACLs must permit authenticated directory reads
 but not userPassword reads. Unsupported policy fails closed without relaxing it.
 """
 
@@ -56,10 +56,16 @@ from provision import BASE_DN, Provisioner, authority, validate_host
 import owner
 
 UTC = datetime.timezone.utc
+# Node leaves live 7 days and renew once fewer than 6 remain, about once a day,
+# leaving 6 days of slack if the controller is down. Keep in sync with
+# ManagedNodeEnrollment.cs and ManagedRunner.NeedsRenewal.
+LIFETIME = datetime.timedelta(days=7)
+RENEW_BELOW = datetime.timedelta(days=6)
+MAX_LIFETIME = datetime.timedelta(days=7, hours=1)
 GUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 SUCCESS = "Node certificate and directory reader verified."
 FAILURE = "Node enrollment failed verification. Native state was preserved; review the scoped worker before retrying."
-UNSUPPORTED = "Native CA trust, 24-hour leaf policy, or read-only LDAP policy is unavailable. Review native identity configuration."
+UNSUPPORTED = "Native CA trust, 7-day leaf policy, or read-only LDAP policy is unavailable. Review native identity configuration."
 FIELDS = {"schemaVersion", "nodeId", "taskId", "hostname", "publicKeyFingerprint", "csrPem", "expiresAt"}
 
 
@@ -230,7 +236,7 @@ def inspect_certificate(chain, value):
     validity = tlvs(single(fields[4][2], 0x30))
     require(len(validity) == 2)
     starts, ends = map(cert_time, validity)
-    require(starts <= now() and ends - starts <= datetime.timedelta(hours=25))
+    require(starts <= now() and ends - starts <= MAX_LIFETIME)
     exts = extensions(fields[7][1])
     require({"551d11", "551d0f", "551d25"} <= set(exts))
     san(exts["551d11"], value["hostname"])
@@ -320,14 +326,14 @@ class Native(Provisioner):
         if not isinstance(duration, str) or not re.fullmatch(r"(?:\d+h)?(?:\d+m)?(?:\d+s)?", duration) or not duration:
             raise Unsupported(UNSUPPORTED)
         seconds = sum(int(n) * {"h": 3600, "m": 60, "s": 1}[unit] for n, unit in re.findall(r"(\d+)([hms])", duration))
-        if seconds < 24 * 3600:
+        if seconds < LIFETIME.total_seconds():
             raise Unsupported(UNSUPPORTED)
 
     def verify_chain(self, chain, value, workspace, ca_pem, fresh=False):
         ends = inspect_certificate(chain, value)
         require(pem_blocks(chain, "CERTIFICATE")[1] != pem_blocks(ca_pem, "CERTIFICATE")[0])
         if fresh:
-            require(now() + datetime.timedelta(hours=12) < ends <= now() + datetime.timedelta(hours=25))
+            require(now() + RENEW_BELOW < ends <= now() + MAX_LIFETIME)
         write_file(workspace / "verify.crt", chain)
         write_file(workspace / "root.crt", ca_pem)
         # Historical receipts may have expired; structural validation is still
@@ -350,7 +356,7 @@ class Native(Provisioner):
             staged = ""
         if staged:
             ends = self.verify_chain(staged, value, workspace, ca_pem)
-            if ends - now() >= datetime.timedelta(hours=6):
+            if ends - now() >= RENEW_BELOW:
                 return staged
         write_file(csr_path, value["csrPem"])
         # Never let --force follow a stale output link in a native directory.
@@ -360,7 +366,7 @@ class Native(Provisioner):
                   relative + ".csr", relative + ".crt", "--provisioner", "lucia-installer",
                   "--provisioner-password-file", "/run/secrets/ca-password",
                   "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt",
-                  "--not-after", "24h", "--force"])
+                  "--not-after", "168h", "--force"])
         chain = regular(certificate, 65536).decode("ascii")
         self.verify_chain(chain, value, workspace, ca_pem, fresh=True)
         return chain
@@ -509,11 +515,11 @@ def process(p, value, request_hash):
     private_directory(workspace)
     chain = receipt["certificatePem"]
     ends = p.verify_chain(chain, value, workspace, ca_pem) if chain else None
-    if ends is None or ends - now() < datetime.timedelta(hours=6):
+    if ends is None or ends - now() < RENEW_BELOW:
         # Policy unsupported? Fail BEFORE creating the reader.
         p.signing_policy()
     dn = ldap_reader(p, receipt, save)
-    if ends is None or ends - now() < datetime.timedelta(hours=6):
+    if ends is None or ends - now() < RENEW_BELOW:
         chain = p.sign(value, workspace, csr_hash, ca_pem)
         receipt["certificatePem"] = chain
         save()

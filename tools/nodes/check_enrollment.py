@@ -149,7 +149,7 @@ def fixture(folder):
     put(folder / "leaf.ext", "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
         "extendedKeyUsage=clientAuth,serverAuth\nsubjectAltName=DNS:node-one\n")
     openssl("x509", "-req", "-in", folder / "node.csr", "-CA", folder / "int.crt",
-            "-CAkey", folder / "int.key", "-set_serial", "3", "-days", "1",
+            "-CAkey", folder / "int.key", "-set_serial", "3", "-days", "7",
             "-extfile", folder / "leaf.ext", "-out", folder / "leaf.crt")
     value = {"schemaVersion": 1, "nodeId": NODE, "taskId": TASK, "hostname": "node-one",
              "publicKeyFingerprint": hashlib.sha256(public).hexdigest(),
@@ -227,7 +227,7 @@ def checks(folder):
     journal_bytes = journal_path.read_bytes()
     assert w.request(value, NODE) == value
     w.validate_csr(p, value)
-    assert w.inspect_certificate(chain, value) > w.now() + datetime.timedelta(hours=23)
+    assert w.inspect_certificate(chain, value) > w.now() + datetime.timedelta(days=6, hours=23)
     for changes in (
         {"schemaVersion": True}, {"schemaVersion": 2}, {"nodeId": str(uuid.UUID(int=0))},
         {"nodeId": "../escape"}, {"taskId": str(uuid.UUID(int=0))}, {"taskId": NODE.upper()},
@@ -278,7 +278,7 @@ def checks(folder):
         rejected(lambda: w.inspect_certificate(bad, value))
     rejected(lambda: w.inspect_certificate((folder / "leaf.crt").read_text(), value))
     overlong = openssl("x509", "-req", "-in", folder / "node.csr", "-CA", folder / "int.crt",
-                       "-CAkey", folder / "int.key", "-set_serial", "6", "-days", "2",
+                       "-CAkey", folder / "int.key", "-set_serial", "6", "-days", "9",
                        "-extfile", folder / "leaf.ext").stdout + (folder / "int.crt").read_text()
     rejected(lambda: w.inspect_certificate(overlong, value))
 
@@ -340,7 +340,7 @@ def checks(folder):
     assert partial.adds == partial.signs == 1
     assert journal_path.read_bytes() == journal_bytes
 
-    # Real 24h test certificates with explicit start/end dates exercise the 6h threshold.
+    # Real 7-day test certificates with explicit start/end dates exercise the 6-day renewal threshold.
     receipt_path = state / "node-enrollment" / (NODE + ".json")
     saved = w.read_json(receipt_path)
     put(folder / "offline-ca.cnf",
@@ -351,7 +351,7 @@ def checks(folder):
     put(folder / "offline-index", "")
     put(folder / "offline-serial", "10\n")
     def remaining(hours):
-        start = (w.now() - datetime.timedelta(hours=24 - hours)).strftime("%Y%m%d%H%M%SZ")
+        start = (w.now() - (w.LIFETIME - datetime.timedelta(hours=hours))).strftime("%Y%m%d%H%M%SZ")
         end = (w.now() + datetime.timedelta(hours=hours)).strftime("%Y%m%d%H%M%SZ")
         issued = subprocess.run(
             ["openssl", "ca", "-batch", "-notext", "-config", "offline-ca.cnf", "-in", "node.csr",
@@ -360,11 +360,11 @@ def checks(folder):
         assert issued.returncode == 0, "Offline dated certificate fixture failed."
         put(folder / "offline-index", "")
         return issued.stdout + (folder / "int.crt").read_text()
-    six = remaining(6.5)
+    six = remaining(6 * 24 + 0.5)
     saved["certificatePem"] = six
     w.write_file(receipt_path, json.dumps(saved))
     assert w.process(p, value, "e" * 64)["certificatePem"] == six and p.signs == 1
-    short = remaining(5.5)
+    short = remaining(6 * 24 - 0.5)
     workspace = state / "certificates" / "node-enrollment" / NODE
     rejected(lambda: p.verify_chain(short, value, workspace, root_pem, fresh=True))
     saved["certificatePem"] = short
@@ -380,11 +380,11 @@ def checks(folder):
     managed["devices"][0]["scope"] = 2
     managed["tasks"][0]["task"]["phase"] = "Managed"
     put(journal_path, json.dumps(managed))
-    future = w.now() + datetime.timedelta(hours=26)
+    future = w.now() + datetime.timedelta(days=8)
     with patch.object(w, "now", return_value=future):
         renewal = {**value, "expiresAt": (future + datetime.timedelta(minutes=10)).isoformat()}
         w.request(renewal, NODE)
-        renewed_chain = remaining(24)
+        renewed_chain = remaining(7 * 24)
         p.chain = renewed_chain
         renewal_hash = hashlib.sha256(json.dumps(renewal).encode()).hexdigest()
         expired = p.verify_chain(chain, renewal, workspace, root_pem)
@@ -405,7 +405,7 @@ def checks(folder):
         w.write_file(receipt_path, json.dumps(before_expiry_test))
         renewed = w.process(p, renewal, renewal_hash)
         assert renewed["certificatePem"] == renewed_chain and p.signs == 3 and p.adds == 1
-        assert future + datetime.timedelta(hours=12) < w.inspect_certificate(renewed_chain, renewal) <= future + datetime.timedelta(hours=25)
+        assert future + w.RENEW_BELOW < w.inspect_certificate(renewed_chain, renewal) <= future + w.MAX_LIFETIME
         assert w.process(p, renewal, renewal_hash) == renewed and p.signs == 3
     p.chain = chain
     w.write_file(receipt_path, json.dumps(before_expiry_test))
@@ -415,7 +415,7 @@ def checks(folder):
     workspace = state / "certificates" / "node-enrollment" / NODE
     native = w.Native(argparse.Namespace(state=str(state)))
     native.signing_policy = Mock()
-    native.verify_chain = Mock(return_value=w.now() + datetime.timedelta(hours=24))
+    native.verify_chain = Mock(return_value=w.now() + w.LIFETIME)
     csr_hash = hashlib.sha256(value["csrPem"].encode()).hexdigest()
     def sign_command(command, **kwargs):
         assert command == ["docker", "exec", "lucia-identity-ca", "step", "ca", "sign",
@@ -423,25 +423,28 @@ def checks(folder):
                            "/certificates/node-enrollment/" + NODE + "/" + csr_hash + ".crt",
                            "--provisioner", "lucia-installer", "--provisioner-password-file",
                            "/run/secrets/ca-password", "--ca-url", "https://localhost:9000",
-                           "--root", "/home/step/certs/root_ca.crt", "--not-after", "24h", "--force"]
+                           "--root", "/home/step/certs/root_ca.crt", "--not-after", "168h", "--force"]
         w.write_file(workspace / (csr_hash + ".crt"), chain)
         return result()
     native.run = Mock(side_effect=sign_command)
     assert native.sign(value, workspace, csr_hash, root_pem) == chain
     assert native.sign(value, workspace, csr_hash, root_pem) == chain and native.run.call_count == 1
 
-    # Existing default 24h claims are sufficient; narrower limits and custom templates are refused.
+    # A 168h claim is required; the 24h default, narrower limits and custom templates are refused.
     native.signing_policy = w.Native.signing_policy.__get__(native)
     config = {"authority": {"provisioners": [{"type": "JWK", "name": "lucia-installer"}]}}
     with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
-        native.signing_policy()
-    config["authority"]["claims"] = {"maxTLSCertDuration": "24h"}
-    with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
-        native.signing_policy()
-    config["authority"]["claims"] = {"maxTLSCertDuration": "23h"}
-    with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
         rejected(native.signing_policy)
     config["authority"]["claims"] = {"maxTLSCertDuration": "24h"}
+    with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
+        rejected(native.signing_policy)
+    config["authority"]["claims"] = {"maxTLSCertDuration": "168h"}
+    with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
+        native.signing_policy()
+    config["authority"]["claims"] = {"maxTLSCertDuration": "167h"}
+    with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
+        rejected(native.signing_policy)
+    config["authority"]["claims"] = {"maxTLSCertDuration": "168h"}
     config["authority"]["provisioners"][0]["options"] = {"x509": {"template": "unsafe"}}
     with patch.object(w, "safe_bytes", return_value=json.dumps(config).encode()):
         rejected(native.signing_policy)

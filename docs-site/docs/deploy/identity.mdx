@@ -117,7 +117,7 @@ If the People page sits on **Waiting for the identity service**, look at the fir
 
 ## Certificates
 
-Each install gets its own Smallstep CA at first provisioning. The root certificate lives in `trust/lucia-root-ca.crt`, and its SHA-256 fingerprint in `trust/fingerprint.txt`. The CA issues the gateway's certificate for the portal, Authentik, LDAPS and the CA itself, and it issues node certificates (24 hours, renewed with 6 hours left). The renewer container watches the gateway certificate with `step ca renew --daemon` and rewrites `identity.crt` and `ready.sha256` when it renews. The gateway waits for that checksum at start-up, so it never starts with a half-written file.
+Each install gets its own Smallstep CA at first provisioning. The root certificate lives in `trust/lucia-root-ca.crt`, and its SHA-256 fingerprint in `trust/fingerprint.txt`. The CA issues the gateway's certificate for the portal, Authentik, LDAPS and the CA itself, and it issues node certificates (7 days, renewed daily once under 6 days remain). The renewer container watches the gateway certificate with `step ca renew --daemon` and rewrites `identity.crt` and `ready.sha256` when it renews. The gateway waits for that checksum at start-up, so it never starts with a half-written file.
 
 The CA's private keys stay in `ca/`. Only the root certificate is for distribution. To trust it on another Debian-family machine:
 

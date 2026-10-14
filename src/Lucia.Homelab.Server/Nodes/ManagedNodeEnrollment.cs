@@ -252,7 +252,7 @@ public sealed class ManagedNodeEnrollment(
                     }
                     var configuration = response.Configuration ?? throw new InvalidDataException("Enrollment response is empty.");
                     var expiry = ValidateConfiguration(payload.NodeId, hostname, fingerprint, configuration);
-                    if (!renewal || expiry > DateTimeOffset.UtcNow.AddHours(6))
+                    if (!renewal || expiry > DateTimeOffset.UtcNow.AddDays(6))
                     {
                         var existing = File.Exists(NodePath(payload.NodeId)) ? Read<ManagedNodeRecord>(NodePath(payload.NodeId)) : null;
                         if (existing is not null && (existing.TaskId != payload.TaskId || existing.Hostname != hostname
@@ -342,7 +342,7 @@ public sealed class ManagedNodeEnrollment(
                 || certificate.SubjectName.Name != "CN=" + id.ToString("D")
                 || certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority)
                 || names is null || !names.EnumerateDnsNames().SequenceEqual([hostname]) || names.EnumerateIPAddresses().Any()
-                || certificate.NotAfter.ToUniversalTime() - certificate.NotBefore.ToUniversalTime() > TimeSpan.FromHours(25)
+                || certificate.NotAfter.ToUniversalTime() - certificate.NotBefore.ToUniversalTime() > TimeSpan.FromDays(7) + TimeSpan.FromHours(1)
                 || certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow) throw Denied();
             using var root = authentication.ReadCertificateAuthority();
             using var chain = new X509Chain();

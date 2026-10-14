@@ -175,11 +175,11 @@ internal static class InstallationChecks
         Check(leafExpiry - DateTimeOffset.UtcNow is var remainingValidity
             && remainingValidity > TimeSpan.FromHours(23) && remainingValidity <= TimeSpan.FromHours(24),
             "Node certificate fixture is not governed by the existing 24-hour policy.");
-        Check(!ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddHours(-24))
-            && !ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddHours(-6))
-            && ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddHours(-6).AddSeconds(1))
+        Check(!ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddDays(-7))
+            && !ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddDays(-6))
+            && ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry.AddDays(-6).AddSeconds(1))
             && !ManagedRunner.NeedsRenewal(leafExpiry, leafExpiry),
-            "Renewal does not begin strictly below six hours of remaining valid lifetime.");
+            "Renewal does not begin strictly below six days of remaining valid lifetime.");
         using var intermediateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var intermediate = MakeIntermediate(authority, intermediateKey);
         using var chainedLeaf = MakeLeaf(intermediate, identity, plan);
