@@ -18,7 +18,7 @@ public sealed record NodeHeartbeat(Guid NodeId, string Hostname, string OsVersio
     double? LoadAverage, long MemoryTotalBytes, long MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
     NodeRuntime? Runtime = null, NodeUpdateStatus? Updates = null, string? AgentRelease = null,
     double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null,
-    string[]? Features = null);
+    string[]? Features = null, Dictionary<string, string>? Skills = null);
 /// <summary>One heartbeat's utilization, kept for the node's last hour. Percents are 0–100; temperatures are °C.</summary>
 public sealed record NodeUsageSample(DateTimeOffset At, double? Cpu, double Memory, double? Gpu, double? CpuTemperature, double? GpuTemperature);
 /// <summary>A pending Debian package upgrade, from <c>apt-get -s upgrade</c>.</summary>
@@ -420,6 +420,10 @@ public sealed class ManagedNodeEnrollment(
         HardwareInventoryValidation.Require(report.Features is null || report.Features.Length <= 16 && report.Features.All(feature =>
             feature is not null && System.Text.RegularExpressions.Regex.IsMatch(feature, @"\A[a-z][a-z0-9-]{0,31}\z")),
             "Managed-node features are invalid.");
+        // Skill packages the node holds: name to the first 12 characters of the content hash.
+        HardwareInventoryValidation.Require(report.Skills is null || report.Skills.Count <= 200 && report.Skills.All(item =>
+            System.Text.RegularExpressions.Regex.IsMatch(item.Key, @"\A[a-z0-9]+(?:-[a-z0-9]+)*\z") && item.Key.Length <= 64
+            && System.Text.RegularExpressions.Regex.IsMatch(item.Value ?? "", @"\A[0-9a-f]{12}\z")), "Managed-node skills are invalid.");
     }
 
     /// <summary>

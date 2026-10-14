@@ -61,6 +61,7 @@ HardwareInspector AddressInspector(string[] addresses) => new(roots, Architectur
 try
 {
     checks += await InstallationChecks.RunAsync(fixture);
+    checks += SkillSyncChecks.Run(Path.Combine(fixture, "skill-sync"));
 
     var plan = NodeUpdates.ParsePlan("Reading package lists...\nInst libc6 [2.41-12] (2.41-12+deb13u1 Debian:13.1/stable, Debian-Security:13/stable-security [amd64]) []\r\n"
         + "Inst zlib1g [1:1.3] (1:1.3.1 Debian:13.1/stable [amd64])\nInst linux-image-6.12.48 (6.12.48-1 Debian:13.1/stable [amd64])\nConf libc6 (2.41-12+deb13u1)\n");

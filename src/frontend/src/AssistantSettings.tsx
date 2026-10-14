@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
+import { Icon } from './Icon'
 import { effortLabel, parseModels, parseSettings, reasoningEfforts, toolLabel } from './assistant'
 import type { AssistantModel, AssistantTool } from './assistant'
 import './NetworkSettings.css'
@@ -92,7 +93,7 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
   if (!session.isOwner) return <div className="page-intro"><h1>Owner access is needed.</h1><p>Only lab owners can choose what the assistant may do.</p></div>
   const changes = tools.filter(tool => tool.tier === 'change')
   return <>
-    <div className="page-intro"><h1>Assistant</h1><p>The assistant checks your servers, apps and logs on its own, and asks in the chat before it changes anything. Choose what it may do without asking.</p></div>
+    <div className="page-intro"><h1>Assistant</h1><p>The assistant checks your servers, apps and logs on its own, and asks in the chat before it changes anything. Choose what it may do without asking.</p><p><a className="text-link" href="#/settings/assistant/skills">Manage skills <Icon name="arrow" /></a></p></div>
     {error && <p className="network-error" role="alert">{error}</p>}
     <p className="network-notice" role="status">{loading ? 'Reading your settings…' : ''}</p>
     <form onSubmit={event => void save(event)}>

@@ -4,10 +4,10 @@ import { Icon } from './Icon'
 import './MultiSelect.css'
 
 export type MultiOption = { value: string; label: string }
-type Props = { options: MultiOption[]; selected: string[]; onChange: (selected: string[]) => void; labelledBy: string; placeholder?: string; disabled?: boolean }
+type Props = { options: MultiOption[]; selected: string[]; onChange: (selected: string[]) => void; labelledBy: string; placeholder?: string; disabled?: boolean; pillLabels?: Record<string, string> }
 
 // A box that shows what's chosen as removable pills, with a list to pick from that narrows as you type.
-export function MultiSelect({ options, selected, onChange, labelledBy, placeholder = 'Select…', disabled }: Props) {
+export function MultiSelect({ options, selected, onChange, labelledBy, placeholder = 'Select…', disabled, pillLabels }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -36,8 +36,8 @@ export function MultiSelect({ options, selected, onChange, labelledBy, placehold
 
   return <div className="multi-select" ref={root} onBlur={event => { if (!root.current?.contains(event.relatedTarget)) setOpen(false) }}>
     <div className={`multi-control${disabled ? ' disabled' : ''}`} onClick={() => { if (!disabled) { input.current?.focus(); setOpen(true) } }}>
-      {selected.map(value => <span key={value} className="multi-pill">{value}
-        <button type="button" disabled={disabled} aria-label={`Remove ${value}`}
+      {selected.map(value => <span key={value}       className="multi-pill">{pillLabels?.[value] ?? value}
+              <button type="button" disabled={disabled} aria-label={`Remove ${pillLabels?.[value] ?? value}`}
           onClick={event => { event.stopPropagation(); toggle(value); input.current?.focus() }}><Icon name="close" /></button></span>)}
       <input ref={input} className="multi-input" role="combobox" aria-expanded={open} aria-controls={listId} aria-labelledby={labelledBy} aria-autocomplete="list"
         aria-activedescendant={open && shown[active] ? optionId(active) : undefined} value={query} disabled={disabled} autoComplete="off" spellCheck={false}

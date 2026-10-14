@@ -350,6 +350,20 @@ is persisted/configured and then used for heartbeats. HTTPS certificate
 validation is never relaxed; unknown roots, changed keys and expired renewal
 responses are rejected.
 
+### Skill packages
+
+`SkillSync` keeps `/var/lib/lucia-agent/skills/<name>/<hash>/` equal to the controller's
+list of enabled node and sandbox skills. It signs a `skills` request every minute (and on a
+`sync-skills` request the controller sends before a run), then downloads each missing
+`name@hash` as a tar.gz over `GET /api/nodes/{id}/skills/{name}/{hash}`, authenticated with
+the same signed challenge as the stack sync. The bytes must match the SHA-256 in the
+manifest before anything is unpacked. `SkillCache` accepts regular files only, with plain
+relative names and bounded counts and sizes. Folders are 0700 and files 0600 with no execute
+bit (runners call interpreters explicitly), the staged copy is renamed into place in one
+step, and hashes or skills no longer listed are removed. The heartbeat reports the
+`skills` feature, `kvm` when `/dev/kvm` and Docker are present, and a `skills` map of name
+to the first 12 characters of the hash held.
+
 ## API contract
 
 The public types live in `Models.cs`; `AgentJson.Options` applies camelCase.

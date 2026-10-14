@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Cronos;
+using Lucia.Homelab.Server.Assistant.Skills;
 using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.Onboarding;
 using Lucia.Homelab.Server.Stacks;
@@ -14,10 +16,10 @@ namespace Lucia.Homelab.Server.Assistant;
 /// </summary>
 public sealed record AssistantJob(string Id, string Name, string[] Prompts, string Cron, string TimeZone, string? Model, bool Enabled,
     string[] Tools, string[] Hosts, string Actor, string? User, DateTimeOffset Created, DateTimeOffset Updated, string[]? Registries = null,
-    string? Reasoning = null, string? ContextTier = null);
+    string? Reasoning = null, string? ContextTier = null, string[]? Skills = null);
 
 public sealed record AssistantJobRequest(string? Name, string[]? Prompts, string? Cron, string? TimeZone, string? Model, bool Enabled,
-    string[]? Tools, string[]? Hosts, string[]? Registries = null, string? Reasoning = null, string? ContextTier = null);
+    string[]? Tools, string[]? Hosts, string[]? Registries = null, string? Reasoning = null, string? ContextTier = null, string[]? Skills = null);
 
 /// <summary>One run of a job: its chat, what started it, and how it ended.</summary>
 public sealed record AssistantJobRun(string Id, string SessionId, string Trigger, DateTimeOffset Started, DateTimeOffset? Finished,
@@ -25,7 +27,7 @@ public sealed record AssistantJobRun(string Id, string SessionId, string Trigger
 
 public sealed record AssistantSchedule(string? Cron, string? TimeZone);
 
-public sealed class AssistantJobs : BackgroundService
+public sealed partial class AssistantJobs : BackgroundService
 {
     private const int MaxJobs = 50, MaxPrompts = 10, KeptRuns = 50;
     private readonly ConcurrentDictionary<string, AssistantJobRun> _active = new();
@@ -83,7 +85,11 @@ public sealed class AssistantJobs : BackgroundService
         var allowed = _tools?.Create("owner", null).Where(tool => tool.Tier is ToolTier.Change or ToolTier.Destructive)
             .Select(tool => tool.Name).ToHashSet() ?? [];
         var tools = (request.Tools ?? []).Distinct().ToArray();
-        if (tools.Any(tool => !allowed.Contains(tool))) throw Invalid("Permissions must be the assistant's change or destructive tools.");
+        if (tools.Any(tool => !allowed.Contains(tool) && !SkillGrant().IsMatch(tool))) throw Invalid("Permissions must be the assistant's change or destructive tools.");
+        var skills = (request.Skills ?? []).Select(skill => skill?.Trim() ?? "").Distinct().ToArray();
+        if (skills.Length > 200 || skills.Any(skill => skill != "*" && !SkillStore.ValidName(skill)))
+            throw Invalid("Skills are \"*\" for every enabled skill, or skill names.");
+        if (skills.Contains("*")) skills = ["*"];
         var hosts = (request.Hosts ?? []).Select(AssistantBroker.Host).ToArray();
         if (hosts.Length > AssistantBroker.MaxHosts || hosts.Any(host => host is null))
             throw Invalid($"Give up to {AssistantBroker.MaxHosts} valid site names.");
@@ -101,7 +107,8 @@ public sealed class AssistantJobs : BackgroundService
             if (existing is null && (await JobsAsync(owner, ct)).Count >= MaxJobs) throw Invalid($"Lucia keeps at most {MaxJobs} jobs.");
             var now = _time.GetUtcNow();
             var job = new AssistantJob(existing?.Id ?? Guid.NewGuid().ToString("N"), name, prompts, cron, zone.Id, request.Model,
-                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now, [.. registries.Distinct()], request.Reasoning, request.ContextTier);
+                request.Enabled, tools, [.. hosts.OfType<string>().Distinct()], actor, user, existing?.Created ?? now, now, [.. registries.Distinct()], request.Reasoning, request.ContextTier,
+                skills);
             await DomainOnboardingStore.WriteJson(JobPath(owner, job.Id), job, ct, AssistantStream.Json);
             return View(owner, job, (await RunsAsync(owner, job.Id, ct)).FirstOrDefault());
         }
@@ -155,12 +162,16 @@ public sealed class AssistantJobs : BackgroundService
         return [.. CronExpression.Parse(cron, CronFormat.Standard).GetOccurrences(from, from.AddYears(5), zone, fromInclusive: false).Take(count)];
     }
 
+    /// <summary>The skills a job's chat may use: null or empty for none, "*" for every enabled skill, else names.</summary>
+    internal async Task<string[]> SkillsAsync(string owner, string id, CancellationToken ct) => (await ReadAsync(owner, id, ct))?.Skills ?? [];
+
     /// <summary>The job's permissions for its chat; "always" adds to them, and a call left waiting during a run notifies the owner.</summary>
     internal async Task<AssistantJobGrants?> GrantsAsync(string owner, string id, string sessionId, CancellationToken ct)
     {
         if (await ReadAsync(owner, id, ct) is not { } job) return null;
         var active = _active.GetValueOrDefault(Key(owner, id)) is { } run && run.SessionId == sessionId ? run : null;
-        return new AssistantJobGrants(job.Name, [.. job.Tools.Select(tool => "tool:" + tool), .. job.Hosts.Select(host => "host:" + host),
+        return new AssistantJobGrants(job.Name, [.. job.Tools.Select(tool => tool.StartsWith("skill:", StringComparison.Ordinal) ? tool : "tool:" + tool),
+                .. job.Hosts.Select(host => "host:" + host),
                 .. job.Registries!.Select(registry => "registry:" + registry)],
             grant => AddGrantAsync(owner, id, grant),
             async tool =>
@@ -278,6 +289,7 @@ public sealed class AssistantJobs : BackgroundService
             {
                 "host" => job with { Hosts = [.. job.Hosts.Append(name).Distinct()] },
                 "registry" => job with { Registries = [.. job.Registries!.Append(name).Distinct()] },
+                "skill" => job with { Tools = [.. job.Tools.Append(grant).Distinct()] },
                 _ => job with { Tools = [.. job.Tools.Append(name).Distinct()] },
             };
             await DomainOnboardingStore.WriteJson(JobPath(owner, id), job with { Updated = _time.GetUtcNow() }, json: AssistantStream.Json);
@@ -325,7 +337,7 @@ public sealed class AssistantJobs : BackgroundService
         var waiting = active is not null && _waits.TryGetValue(active.Id, out var waits) && !waits.Open.IsEmpty ? waits.Open.Values.Min() : (DateTimeOffset?)null;
         return new
         {
-            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Registries, job.Reasoning, job.ContextTier, job.Created, job.Updated,
+            job.Id, job.Name, job.Prompts, job.Cron, job.TimeZone, job.Model, job.Enabled, job.Tools, job.Hosts, job.Registries, job.Reasoning, job.ContextTier, job.Skills, job.Created, job.Updated,
             next, last, running = active is not null, waiting,
         };
     }
@@ -346,5 +358,9 @@ public sealed class AssistantJobs : BackgroundService
         Guid.TryParseExact(id, "N", out var guid) && guid.ToString("N") == id ? id : throw NotFound();
 
     private static AssistantException Invalid(string message) => new(400, "invalid_job", message);
+
+    /// <summary>A saved "always allow" for one skill's script: the skill's name and the first 8 hex digits of its content hash.</summary>
+    [GeneratedRegex(@"\Askill:[a-z0-9]+(?:-[a-z0-9]+)*@[0-9a-f]{8}\z")]
+    private static partial Regex SkillGrant();
     private static AssistantException NotFound() => new(404, "job_not_found", "That job doesn't exist.");
 }

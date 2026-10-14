@@ -85,10 +85,27 @@ def file_mode(name):
         if len(relative) == 2 and re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z]{2,4})?", relative[0]) and lower.endswith(".resources.dll"):
             return 0o644
         return None
+    if parts[:2] == ("boot", "skill-sandbox-linux-x64"):
+        # The Hyperlight sandbox runtime nodes download and run in a container: its launcher, the .NET runtime and the guest modules.
+        if len(parts) == 3:
+            if path.name in ("Lucia.SkillSandbox", "createdump") or re.fullmatch(r"lib[A-Za-z0-9_+.-]+\.so(?:\.[0-9]+)*", path.name):
+                return 0o755
+            if path.suffix in (".dll", ".aot") or path.name in ("Lucia.SkillSandbox.deps.json", "Lucia.SkillSandbox.runtimeconfig.json"):
+                return 0o644
+            if lower.startswith(("license", "notice", "third-party-notices", "thirdpartynotices")) and path.suffix.lower() == ".txt":
+                return 0o644
+        return None
     if lower.startswith(("license", "notice", "third-party-notices", "thirdpartynotices")):
         return 0o644 if (len(parts) == 1 or parts[0].lower() == "licenses") and path.suffix.lower() in ("", ".txt", ".md", ".html") else None
     if parts[0] == "licenses" and path.suffix.lower() in (".txt", ".md"):
         return 0o644
+    if parts[:3] == ("Assistant", "Skills", "BuiltIn"):
+        # Built-in assistant skills: SKILL.md and Markdown references, one folder per skill.
+        if len(parts) == 5 and parts[4] == "SKILL.md":
+            return 0o644
+        if len(parts) == 6 and parts[4] == "references" and path.suffix.lower() == ".md":
+            return 0o644
+        return None
     if parts[0] == "wwwroot":
         return 0o644 if path.suffix.lower() in WEB_EXTENSIONS else None
     if len(parts) == 1:

@@ -1,0 +1,50 @@
+.skills-header-actions { display: flex; flex-wrap: wrap; gap: 12px; flex-shrink: 0; }
+.skills-table th:first-child { width: 44%; }
+.skills-name { padding: 0; min-height: 0; font-size: 16px; justify-content: flex-start; overflow-wrap: anywhere; }
+.skills-hash { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; }
+.skills-pill { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 14px; font-weight: 650; background: var(--accent-soft); color: var(--accent-ink); }
+.skills-pill-spark { background: var(--green-bg); color: var(--green-ink); }
+.skills-pill-sandbox { background: var(--plum-bg); color: var(--plum-ink); }
+.skills-pill-builtin { padding: 2px 9px; background: transparent; box-shadow: inset 0 0 0 1px currentColor; vertical-align: middle; }
+.skills-problem { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; color: var(--amber-ink); font-size: 14px; font-weight: 400; }
+.skills-problem svg { width: 16px; height: 16px; margin-top: 2px; }
+.skills-bad { color: var(--failed-ink); }
+.skills-warning { color: var(--amber-ink); }
+.skills-switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 650; cursor: pointer; }
+.skills-switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+.skills-confirm { justify-content: flex-start; text-align: left; }
+.skills-confirm p { text-align: left; }
+.skills-script-list { flex-basis: 100%; margin: 0; padding-left: 20px; font-size: 14px; }
+.skills-back { margin-bottom: 8px; padding-left: 0; }
+.skills-subhead { margin-top: 32px; }
+.skills-subhead code { font-size: 15px; font-weight: 500; color: var(--muted); }
+.skills-tight { margin-top: 8px; margin-bottom: 12px; }
+.skills-editor-frame { position: relative; margin-top: 12px; }
+.skills-editor-loading { display: grid; place-items: center; height: 100%; margin: 0; color: var(--muted); font-size: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.skills-files { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 28px; margin-top: 16px; align-items: start; }
+.skills-group h3 { font-size: 14px; color: var(--muted); margin: 16px 0 6px; }
+.skills-group:first-child h3 { margin-top: 0; }
+.skills-group ul { list-style: none; margin: 0; padding: 0; }
+.skills-group li { padding: 6px 8px; border-radius: 10px; }
+.skills-group li.skills-open { background: var(--accent-soft); }
+.skills-file { display: block; width: 100%; padding: 0; text-align: left; background: none; border: 0; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.skills-file[aria-current="true"] { color: var(--accent-ink); }
+.skills-file .network-cell-note { margin-top: 2px; font-size: 14px; font-weight: 400; }
+.skills-file-actions { display: flex; gap: 14px; }
+.skills-file-actions .text-link { min-height: 32px; font-size: 14px; }
+.skills-rename { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.skills-rename input { flex: 1 1 8rem; min-width: 0; min-height: 40px; padding: 6px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 14px; }
+.skills-add { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.skills-add h3 { font-size: 14px; margin-bottom: 4px; }
+.skills-add label { display: block; margin-top: 14px; font-size: 14px; font-weight: 650; }
+.skills-add select, .skills-add input { display: block; width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; margin-top: 6px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 14px; font-weight: 400; }
+.skills-add .button { margin-top: 16px; }
+.skills-pane { min-width: 0; }
+.skills-pane-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+.skills-pane-bar strong { overflow-wrap: anywhere; }
+.skills-pane-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.skills-inline-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+.skills-inline-check input { accent-color: var(--accent); }
+.skills-empty { display: grid; place-items: center; min-height: 220px; margin: 0; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
+.skills-diagnostics { margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; }
+@media (max-width: 900px) { .skills-files { grid-template-columns: 1fr; } }

@@ -8,6 +8,7 @@ import { cronOf, emptyJob, frequencies, parseJob, parseJobs, parseNext, parseReg
   weekdays } from './assistantJobs'
 import type { Job, JobDraft, JobRun, Schedule } from './assistantJobs'
 import { Icon } from './Icon'
+import { allSkills, parseSkillList, pickSkills } from './skills'
 import { MultiSelect } from './MultiSelect'
 import type { IconName } from './Icon'
 import './NetworkSettings.css'
@@ -34,8 +35,8 @@ function RunStatus({ run, waiting }: { run: JobRun; waiting?: string }) {
   return <span className={`status status-${tone}`}><Icon name={icon} />{label}</span>
 }
 
-const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, reasoning, contextTier }: Job): JobDraft =>
-  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, reasoning, contextTier })
+const toDraft = ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, skills, reasoning, contextTier }: Job): JobDraft =>
+  ({ name, prompts, cron, timeZone, model, enabled, tools, hosts, registries, skills, reasoning, contextTier })
 
 export function Jobs({ session, refreshSession }: Props) {
   const [jobs, setJobs] = useState<Job[] | null>(null)
@@ -185,6 +186,7 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
   const [inherited, setInherited] = useState<string[]>([])
   const [registryChoices, setRegistryChoices] = useState<{ common: { host: string; name: string }[]; added: string[] }>({ common: [], added: [] })
   const [models, setModels] = useState<AssistantModels | null>(null)
+  const [skillNames, setSkillNames] = useState<string[]>([])
   const [next, setNext] = useState<{ times?: string[]; error?: string }>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -207,6 +209,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
       .catch(failure => { if (!controller.signal.aborted) setError(failureText(failure, 'Lucia could not read the assistant’s tools.')) })
     get('/api/assistant/registries').then(parseRegistryChoices).then(value => { if (!controller.signal.aborted) setRegistryChoices(value) })
       .catch(() => { /* the picker still lists the common registries and the job's own */ })
+    get('/api/assistant/skills').then(parseSkillList).then(value => { if (!controller.signal.aborted) setSkillNames(value.skills.filter(skill => skill.enabled).map(skill => skill.name)) })
+      .catch(() => { /* the picker still lists the job's own skills */ })
     get('/api/assistant/models').then(parseModels).then(value => { if (!controller.signal.aborted) setModels(value) })
       .catch(() => { if (!controller.signal.aborted) setModels({ connected: false, sources: [], models: [] }) })
     return () => controller.abort()
@@ -247,6 +251,8 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
   ]
   for (const host of draft.registries) if (!registryOptions.some(item => item.host === host)) registryOptions.push({ host, label: host })
   const setPrompt = (index: number, text: string) => update({ prompts: draft.prompts.map((prompt, at) => at === index ? text : prompt) })
+  const skillChoices = [{ value: allSkills, label: 'All enabled skills' },
+    ...[...new Set([...skillNames, ...draft.skills.filter(name => name !== allSkills)])].map(name => ({ value: name, label: name }))]
   const changes = tools.filter(tool => tool.tier === 'change')
   const dangers = tools.filter(tool => tool.tier === 'destructive')
   const granted = dangers.filter(tool => draft.tools.includes(tool.name))
@@ -337,6 +343,12 @@ function JobEditor({ id, initial, request, session, refreshSession, onDone }: Ed
             selected={draft.registries} onChange={registries => update({ registries })} disabled={busy} placeholder="Select registries…" />
           <span className="ssh-key-hint">Lets it look up image tags and digests there, to see whether an image has an update. Add private registries in Settings → Registries.</span>
         </div>}
+        <div className="job-field" role="group" aria-labelledby="job-skills-label">
+          <span id="job-skills-label">Skills it may use</span>
+          <MultiSelect labelledBy="job-skills-label" options={skillChoices} pillLabels={{ [allSkills]: 'All enabled skills' }}
+            selected={draft.skills} onChange={skills => update({ skills: pickSkills(draft.skills, skills) })} disabled={busy} placeholder="No skills" />
+          <span className="ssh-key-hint">Skills are saved instructions and scripts. Only enabled skills are offered, and their scripts still follow the approval rules above. Manage them in Settings → Assistant → Skills.</span>
+        </div>
       </section>
       <div className="network-actions">
         <button className="button primary" disabled={busy || !tools.length}>{busy ? 'Saving…' : id ? 'Save job' : 'Create job'}</button>

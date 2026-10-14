@@ -36,7 +36,10 @@ internal sealed record NodeMetrics(Guid NodeId, string Hostname, string? OsVersi
     double? LoadAverage, long? MemoryTotalBytes, long? MemoryAvailableBytes, long? StorageTotalBytes, long? StorageAvailableBytes,
     RuntimeReport? Runtime = null, UpdatesReport? Updates = null, string? AgentRelease = null,
     double? CpuPercent = null, double? CpuTemperatureCelsius = null, double? GpuPercent = null, double? GpuTemperatureCelsius = null,
-    string[]? Features = null);
+    string[]? Features = null,
+    // Omitted when null: a controller older than skills rejects unknown heartbeat fields.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string>? Skills = null);
 
 public sealed class NodeAgentException(string message) : Exception(message);
 

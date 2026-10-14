@@ -12,7 +12,12 @@
       "docs": ["guide/assistant", "code/assistant", "deploy/assistant"]
     },
     {
-      "name": "Apps, stacks and the catalog",
+     "name": "Assistant skills",
+     "paths": ["src/Lucia.Homelab.Server/Assistant/Skills/**", "src/Lucia.SkillSandbox/**", "src/frontend/src/AssistantSkills*.tsx", "src/frontend/src/SkillScriptEditor*.tsx", "src/frontend/src/skills.ts", "src/Lucia.NodeAgent/Skill*.cs", "tools/skills/**", "deployment/skill-runner/**"],
+     "docs": ["guide/assistant-skills", "code/assistant-skills", "deploy/assistant-skills"]
+    },
+    {
+     "name": "Apps, stacks and the catalog",
       "paths": ["src/Lucia.Homelab.Server/Stacks/**", "src/frontend/src/Stacks.tsx", "src/frontend/src/stackManagement.ts", "src/frontend/src/RegistrySettings.tsx", "tests/Lucia.Homelab.DomainChecks/StackChecks.cs"],
       "docs": ["guide/apps", "code/apps-and-stacks", "deploy/apps"]
     },

@@ -112,6 +112,30 @@ public sealed partial class DiscoveryClient
         await BoundAsync(node, certificate, "request-result", $"/api/nodes/{node:D}/requests/{result.RequestId:D}", result, key,
             TimeSpan.FromSeconds(30), ResponseLimit, token);
 
+    internal async Task<SkillManifest> SkillManifestAsync(Guid node, string certificate, ECDsa key, CancellationToken token) =>
+        Deserialize<SkillManifest>(await BoundAsync(node, certificate, "skills", $"/api/nodes/{node:D}/skills", new { }, key,
+            TimeSpan.FromSeconds(30), 1024 * 1024, token));
+
+    /// <summary>Downloads one skill package (or the sandbox runtime) by name and content hash, refusing more than <paramref name="limit"/> bytes.</summary>
+    internal async Task<byte[]> DownloadSkillAsync(Guid node, string certificate, ECDsa key, string name, string hash, long limit,
+        CancellationToken token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/nodes/{node:D}/skills/{name}/{hash}");
+        request.Headers.Add("X-Lucia-Node-Proof", await ProofHeaderAsync(node, certificate, "skill-download", $"skill:{name}@{hash}", key, token));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(10));
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new NodeAgentException($"The server answered the skill download with HTTP {(int)response.StatusCode}.");
+        if (response.Content.Headers.ContentLength is not { } length || length > limit)
+            throw new NodeAgentException("The skill download is missing its size or is larger than allowed.");
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        var bytes = new byte[length];
+        await stream.ReadExactlyAsync(bytes, timeout.Token);
+        if (await stream.ReadAsync(new byte[1], timeout.Token) != 0) throw new NodeAgentException("The skill download is longer than it said.");
+        return bytes;
+    }
+
     /// <summary>
     /// Signs a small proof that binds a larger body by its SHA-256, so the body isn't held to the 32 KiB report limit.
     /// </summary>

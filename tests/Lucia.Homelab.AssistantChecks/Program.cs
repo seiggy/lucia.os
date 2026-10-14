@@ -10,6 +10,7 @@ using System.Threading.Channels;
 using System.Web;
 using GitHub.Copilot;
 using Lucia.Homelab.Server.Assistant;
+using Lucia.Homelab.Server.Assistant.Skills;
 using Lucia.Homelab.Server.Stacks;
 using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.DataProtection;
@@ -1054,6 +1055,617 @@ try
         await webSite.StopAsync();
     }
 
+    // Skills: the store keeps packages safely, the Agent Framework loads them, and each turn folds the enabled ones into the kit.
+    var skillOptions = Options.Create(new AssistantOptions { Directory = Path.Combine(storage, "skill-data") });
+    var skillStore = new SkillStore(skillOptions, NullLogger<SkillStore>.Instance, null, Path.Combine(storage, "no-built-in-skills"));
+    var skillRouter = new SkillScriptRouter(skillStore, new NodeSkillRunner(new NodeExec(null!, null!), skillStore), new SparkSkillRunner(skillOptions, skillStore),
+    new SandboxSkillRunner(new NodeExec(null!, null!), skillStore, new SkillSandboxRuntime()));
+    using var skillProvider = new AssistantSkills(skillStore, skillRouter, NullLoggerFactory.Instance);
+    foreach (var bad in new[] { "../x.py", "/etc/passwd", "scripts\\x.py", "other/x.py", "scripts/x.exe", "scripts/../x.py", "SKILL.md", "references/run.sh",
+        "scripts", "scripts/.hidden.py", "scripts//x.py", "C:/x.py", "scripts/a b.py", "" })
+        await Reject(() => Task.FromResult(SkillStore.Normalize(bad)), 400, "invalid_path", $"'{bad}' isn't a path a skill accepts.");
+    Check(SkillStore.Normalize("scripts/check.py") == "scripts/check.py" && SkillStore.Normalize("references/notes.md") == "references/notes.md"
+        && SkillStore.Normalize("assets/data/table.csv") == "assets/data/table.csv", "Scripts, references and assets are accepted.");
+    Check(!SkillStore.ValidName("Bad_Name") && !SkillStore.ValidName("-a") && !SkillStore.ValidName("a--b") && !SkillStore.ValidName(new string('a', 65))
+        && SkillStore.ValidName("check-zfs-health"), "Skill names are agentskills.io names.");
+
+    var alpha = await skillStore.CreateAsync(new("alpha", "Checks the alpha service.", "node", "read", null, null), default);
+    Check(alpha is { Enabled: false, Execution: "node", Tier: "read", Source: "created", Problem: null, Scripts: 0 } && alpha.Hash.Length == 64
+        && alpha.Body.Contains("# alpha"), "A new skill starts disabled and loads through the Agent Framework.");
+    await Reject(() => skillStore.CreateAsync(new("alpha", "Again.", "node", "read", null, null), default), 409, "skill_exists", "A skill name is unique.");
+    await Reject(() => skillStore.CreateAsync(new("beta", "Bad tier.", "node", "root", null, null), default), 400, "invalid_skill", "A tier is read, change or destructive.");
+    await Reject(() => skillStore.CreateAsync(new("beta", "Bad mode.", "cloud", "read", null, null), default), 400, "invalid_skill", "An execution mode is node, spark or sandbox.");
+    await Reject(() => skillStore.CreateAsync(new("beta", "Bad domain.", "sandbox", "read", ["not a domain"], null), default), 400, "invalid_domain", "Allowed domains are host names.");
+    var markdownPath = Path.Combine(skillStore.Root, "alpha", "SKILL.md");
+    var markdownText = await File.ReadAllTextAsync(markdownPath);
+    Check(markdownText.Contains("lucia.execution: node") && markdownText.Contains("lucia.tier: read") && markdownText.StartsWith("---"),
+        "Lucia's settings are written in the frontmatter metadata map.");
+    var sandboxed = await skillStore.CreateAsync(new("boxed", "Runs in the sandbox.", "sandbox", "destructive", ["API.Example.com", "*.example.org"], "# Boxed\n"), default);
+    var boxedSettings = skillStore.SettingsOf("boxed");
+    Check(sandboxed.Execution == "sandbox" && sandboxed.Tier == "destructive" && sandboxed.AllowedDomains.SequenceEqual(["api.example.com", "*.example.org"])
+        && boxedSettings.Execution == "sandbox" && boxedSettings.Tier == "destructive" && boxedSettings.AllowedDomains.SequenceEqual(["api.example.com", "*.example.org"]),
+        "Execution, tier and allowed domains round-trip through the frontmatter.");
+    Check(SkillSettings.From(new Dictionary<string, object?> { ["lucia.execution"] = "bogus", ["lucia.tier"] = "bogus" }) is { Execution: "node", Tier: "change", AllowedDomains: [] }
+        && SkillSettings.From(null) is { Execution: "node", Tier: "change" }, "Unknown or missing settings fall back to node and change.");
+
+    var hashBefore = alpha.Hash;
+    var script = await skillStore.WriteFileAsync("alpha", "scripts/check.py", "print('hi')\n", default);
+    var hashAfter = (await skillStore.GetAsync("alpha", default)).Hash;
+    Check(script is { Kind: "script", Language: "python", Editable: true } && hashAfter != hashBefore && hashAfter.Length == 64, "Writing a script re-hashes the skill.");
+    await skillStore.WriteFileAsync("alpha", "scripts/check.py", "print('hello')\n", default);
+    Check((await skillStore.GetAsync("alpha", default)).Hash != hashAfter && skillStore.ReadFile("alpha", "scripts/check.py").Content == "print('hello')\n",
+        "Editing a script changes the hash and the content is read back.");
+    var updated = await skillStore.UpdateAsync("alpha", new("Checks alpha.", "node", "change", [], "# New body\n"), default);
+    Check(updated.Hash != hashAfter && updated.Tier == "change" && updated.Description == "Checks alpha." && updated.Body.StartsWith("# New body"), "Saving the skill rewrites its frontmatter and body.");
+
+    await skillStore.WriteFileAsync("alpha", "scripts/run.sh", "echo hi\n", default);
+    await Reject(() => skillStore.UpdateAsync("alpha", new("Checks alpha.", "sandbox", "change", [], "# Body\n"), default), 409, "sandbox_languages",
+        "A skill with a shell script can't move to the sandbox.");
+    await skillStore.WriteFileAsync("boxed", "scripts/ok.js", "console.log(1)\n", default);
+    await skillStore.WriteFileAsync("boxed", "scripts/ok.py", "print(1)\n", default);
+    foreach (var offending in new[] { "scripts/x.sh", "scripts/x.ts", "scripts/x.cs" })
+        await Reject(() => skillStore.WriteFileAsync("boxed", offending, "x", default), 409, "sandbox_languages", $"A sandboxed skill refuses {offending}.");
+    await Reject(() => skillStore.RenameFileAsync("boxed", "scripts/ok.py", "scripts/ok.sh", default), 409, "sandbox_languages", "Renaming can't dodge the language lock.");
+    await skillStore.WriteFileAsync("boxed", "references/guide.md", "# Guide\n", default);
+    await skillStore.DeleteFileAsync("alpha", "scripts/run.sh", default);
+
+    await Reject(() => skillStore.WriteFileAsync("alpha", "scripts/big.py", new string('x', 1024 * 1024 + 1), default), 413, "file_too_large", "Files are at most 1 MiB.");
+    await Reject(() => skillStore.WriteFileAsync("alpha", "scripts/../../evil.py", "x", default), 400, "invalid_path", "A write can't climb out of the skill.");
+    await Reject(() => skillStore.WriteFileAsync("alpha", "SKILL.md", "x", default), 400, "invalid_path", "SKILL.md is written through the skill, not as a file.");
+    await skillStore.CreateAsync(new("many", "Many files.", "node", "read", null, null), default);
+    for (var i = 0; i < 200; i++) await skillStore.WriteFileAsync("many", $"references/f{i}.md", "x", default);
+    await Reject(() => skillStore.WriteFileAsync("many", "references/one-more.md", "x", default), 409, "too_many_files", "A skill holds at most 200 files.");
+    await skillStore.CreateAsync(new("heavy", "Heavy files.", "node", "read", null, null), default);
+    for (var i = 0; i < 4; i++) await skillStore.WriteFileAsync("heavy", $"references/b{i}.md", new string('x', 1024 * 1024), default);
+    await Reject(() => skillStore.WriteFileAsync("heavy", "references/b4.md", new string('x', 1024 * 1024), default), 413, "skill_too_large", "A skill is at most 5 MiB.");
+    await skillStore.DeleteAsync("many", default);
+    await skillStore.DeleteAsync("heavy", default);
+
+    try
+    {
+        var outside = Path.Combine(storage, "skill-outside");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(Path.Combine(skillStore.Root, "alpha", "references", "link"), outside);
+        var linked = await skillStore.GetAsync("alpha", default);
+        Check(linked.Problem is { } linkProblem && linkProblem.Contains("link") && (await skillStore.OfferedAsync(default)).Count == 0,
+            "A skill containing a link is never offered.");
+        Directory.Delete(Path.Combine(skillStore.Root, "alpha", "references", "link"));
+    }
+    catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
+
+    // Zip import: zip-slip is refused, and a good package is unpacked as a disabled skill.
+    static byte[] Zip(params (string Path, string Text)[] entries)
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+            foreach (var (path, text) in entries)
+            {
+                using var writer = new StreamWriter(archive.CreateEntry(path).Open());
+                writer.Write(text);
+            }
+        return stream.ToArray();
+    }
+    const string zipSkill = "---\nname: from-zip\ndescription: Imported from a zip.\nmetadata:\n  lucia.execution: sandbox\n---\n\n# Zip\n";
+    foreach (var evil in new[] { "../evil.py", "from-zip/../../evil.py", "/abs/evil.py", "from-zip\\evil.py", "C:/evil.py" })
+        await Reject(() => skillStore.ImportZipAsync(new MemoryStream(Zip(("from-zip/SKILL.md", zipSkill), (evil, "x"))), default), 400, "invalid_path",
+            $"A zip entry '{evil}' can't write outside the skill.");
+    await Reject(() => skillStore.ImportZipAsync(new MemoryStream([1, 2, 3]), default), 400, "invalid_zip", "A non-zip is refused.");
+    await Reject(() => skillStore.ImportZipAsync(new MemoryStream(Zip(("from-zip/README.md", "x"))), default), 400, "invalid_skill", "A package needs a SKILL.md.");
+    await Reject(() => skillStore.ImportZipAsync(new MemoryStream(Zip(("from-zip/SKILL.md", zipSkill), ("from-zip/scripts/a.sh", "echo"))), default), 409, "sandbox_languages",
+        "A sandboxed package can't carry a shell script.");
+    var imported = await skillStore.ImportZipAsync(new MemoryStream(Zip(("from-zip/SKILL.md", zipSkill), ("from-zip/scripts/a.py", "print(1)"),
+        ("from-zip/references/r.md", "# R"), ("from-zip/LICENSE", "MIT"), ("from-zip/docs/x.bin", "x"))), default);
+    Check(imported is { Name: "from-zip", Enabled: false, Source: "zip", Problem: null, Scripts: 1 } && imported.Files.Length == 2 && !File.Exists(Path.Combine(skillStore.Root, "evil.py")),
+        "A good zip is unpacked disabled, skipping files Lucia doesn't keep.");
+    await Reject(() => skillStore.ImportZipAsync(new MemoryStream(Zip(("SKILL.md", zipSkill))), default), 409, "skill_exists", "An import can't replace a skill.");
+    using (var export = new MemoryStream())
+    {
+        await skillStore.ExportAsync("from-zip", export, default);
+        using var archive = new System.IO.Compression.ZipArchive(new MemoryStream(export.ToArray()));
+        Check(archive.Entries.Select(entry => entry.FullName).Order(StringComparer.Ordinal).SequenceEqual(["from-zip/SKILL.md", "from-zip/references/r.md", "from-zip/scripts/a.py"]), "An export holds the skill under its name.");
+    }
+    var rootZip = await skillStore.ImportZipAsync(new MemoryStream(Zip(("SKILL.md", zipSkill.Replace("from-zip", "root-zip").Replace("sandbox", "node")))), default);
+    Check(rootZip.Name == "root-zip", "A zip may hold the skill at its top.");
+    await Reject(() => skillStore.ImportZipAsync(new MemoryStream(new byte[6 * 1024 * 1024]), default), 413, "zip_too_large", "Zips are at most 5 MiB.");
+    await skillStore.DeleteAsync("root-zip", default);
+    await skillStore.DeleteAsync("from-zip", default);
+
+    // A broken SKILL.md is reported as a problem and never offered.
+    Directory.CreateDirectory(Path.Combine(skillStore.Root, "broken"));
+    await File.WriteAllTextAsync(Path.Combine(skillStore.Root, "broken", "SKILL.md"), "no frontmatter here");
+    var brokenSummary = (await skillStore.ListAsync(default)).Single(skill => skill.Name == "broken");
+    Check(brokenSummary.Problem is not null && brokenSummary.Description == "", "The Agent Framework's refusal shows as the skill's problem.");
+    await Reject(() => skillStore.SetEnabledAsync("broken", true, default), 409, "skill_invalid", "A skill with a problem can't be enabled.");
+    Directory.Delete(Path.Combine(skillStore.Root, "broken"), recursive: true);
+
+    // Context folding: only enabled skills reach the turn, as the provider's instructions and tools.
+    Task<string> NoRedact(string text, CancellationToken _) => Task.FromResult(text);
+    var emptyContext = await skillProvider.ContextAsync(null, NoRedact, NullLogger.Instance, default);
+    Check(emptyContext.Instructions == "" && emptyContext.Tools.Select(tool => tool.Name).SequenceEqual(["refresh_skills"]),
+        "With nothing enabled a turn gets only refresh_skills.");
+    await skillStore.SetEnabledAsync("alpha", true, default);
+    await skillStore.WriteFileAsync("boxed", "references/more.md", "x", default);
+    var context = await skillProvider.ContextAsync(null, NoRedact, NullLogger.Instance, default);
+    Check(context.Instructions.Contains("alpha") && context.Instructions.Contains("Checks alpha.") && !context.Instructions.Contains("boxed")
+        && context.Tools.Select(tool => tool.Name).Order().SequenceEqual(["load_skill", "read_skill_resource", "refresh_skills", "run_skill_script"]),
+        "An enabled skill is listed with its description, with the framework's three tools and refresh_skills; a disabled one isn't there.");
+    Check(context.Instructions.Contains("\"node\"") && context.Tools.All(tool => tool.Tier == (tool.Name == "run_skill_script" ? ToolTier.Change : ToolTier.Read)),
+        "The prompt says node-mode scripts need a node argument, and only the script tool is above read.");
+
+    await skillStore.SetEnabledAsync("boxed", true, default);
+    var everything = await skillProvider.ContextAsync(["*"], NoRedact, NullLogger.Instance, default);
+    var selected = await skillProvider.ContextAsync(["boxed", "missing"], NoRedact, NullLogger.Instance, default);
+    var nothing = await skillProvider.ContextAsync([], NoRedact, NullLogger.Instance, default);
+    Check(everything.Instructions.Contains("alpha") && everything.Instructions.Contains("boxed") && selected.Instructions.Contains("boxed") && !selected.Instructions.Contains("alpha")
+        && nothing.Tools.Count == 0 && nothing.Instructions == "", "A job's skills filter what a turn is offered: all enabled, the named ones, or none.");
+    await skillStore.SetEnabledAsync("boxed", false, default);
+    Check(!(await skillProvider.ContextAsync(["*"], NoRedact, NullLogger.Instance, default)).Instructions.Contains("boxed"), "A job is never offered a disabled skill, even by name.");
+
+    // The tools run through the framework with Lucia's runner: a Spark skill goes to the Spark runner, a sandbox skill goes to the sandbox runner.
+    var sparky = await skillStore.CreateAsync(new("sparky", "Pinned to the Spark.", "spark", "read", null, null), default);
+    await skillStore.WriteFileAsync("sparky", "scripts/go.py", "print(1)\n", default);
+    await skillStore.SetEnabledAsync("sparky", true, default);
+    var sparkContext = await skillProvider.ContextAsync(null, NoRedact, NullLogger.Instance, default);
+    var runTool = sparkContext.Tools.First(tool => tool.Name == "run_skill_script");
+    var sparkRun = (await runTool.InvokeAsync(new AIFunctionArguments { ["skillName"] = "sparky", ["scriptName"] = "scripts/go.py" }, default))?.ToString();
+    Check(sparkRun is not null && sparkRun.Contains("skill runner service isn't running"), "A Spark-mode script says so when the Spark's runner service isn't answering: " + sparkRun);
+    var loaded = (await sparkContext.Tools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "sparky" }, default))?.ToString();
+    Check(loaded is not null && loaded.Contains("Pinned to the Spark."), "load_skill reads the skill through the framework.");
+    // A skill added during the turn can be loaded by the live tool without waiting for the next message.
+    await skillStore.CreateAsync(new("late", "Added mid-turn.", "node", "read", null, null), default);
+    await skillStore.SetEnabledAsync("late", true, default);
+    var lateLoaded = (await sparkContext.Tools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "late" }, default))?.ToString();
+    Check(lateLoaded is not null && lateLoaded.Contains("Added mid-turn."), "load_skill sees a skill enabled after the turn began.");
+    var refreshed = JsonSerializer.Serialize(await sparkContext.Tools.First(tool => tool.Name == "refresh_skills").InvokeAsync(new AIFunctionArguments(), default), AssistantStream.Json);
+    Check(refreshed.Contains("late") && refreshed.Contains("added", StringComparison.OrdinalIgnoreCase), "refresh_skills reports what was added: " + refreshed);
+
+    // Built-in skills ship with Lucia: always offered to chats and jobs, read-only, with their names reserved.
+    var builtInRoot = Path.Combine(AppContext.BaseDirectory, "Assistant", "Skills", "BuiltIn");
+    var sourceRoot = AppContext.BaseDirectory;
+    while (!File.Exists(Path.Combine(sourceRoot, "src", "Lucia.Homelab.Server", "Lucia.Homelab.Server.csproj")) && Path.GetDirectoryName(sourceRoot) is { } up) sourceRoot = up;
+    var serverProject = Path.Combine(sourceRoot, "src", "Lucia.Homelab.Server");
+    if (!Directory.Exists(builtInRoot)) builtInRoot = Path.Combine(serverProject, "Assistant", "Skills", "BuiltIn");
+    var builtOptions = Options.Create(new AssistantOptions { Directory = Path.Combine(storage, "builtin-data") });
+    var builtStore = new SkillStore(builtOptions, NullLogger<SkillStore>.Instance, null, builtInRoot);
+    var builtRouter = new SkillScriptRouter(builtStore, new NodeSkillRunner(new NodeExec(null!, null!), builtStore), new SparkSkillRunner(builtOptions, builtStore),
+        new SandboxSkillRunner(new NodeExec(null!, null!), builtStore, new SkillSandboxRuntime()));
+    using var builtProvider = new AssistantSkills(builtStore, builtRouter, NullLoggerFactory.Instance);
+    string[] builtNames = ["app-troubleshooting", "container-image-updates", "custom-app-authoring", "os-security-patching"];
+    var builtList = await builtStore.ListAsync(default);
+    Check(builtList.Select(skill => skill.Name).SequenceEqual(builtNames) && builtList.All(skill => skill is { BuiltIn: true, Enabled: true, Execution: "node", Tier: "read", Source: "built-in", Problem: null, Scripts: 0 }
+        && skill.Hash.Length == 64 && skill.Description.Length > 0), "Built-in skills are listed, enabled and read-only, with their source and tier.");
+    Check(builtList.All(skill => builtStore.HashOf(skill.Name) == skill.Hash) && builtStore.IsBuiltIn("app-troubleshooting") && !builtStore.IsBuiltIn("alpha"),
+        "A built-in skill's hash is computed like any other.");
+    foreach (var (label, selection) in new (string, string[]?)[] { ("A chat", null), ("A job with all skills", ["*"]), ("A job with no skills", []), ("A job with others", ["unrelated"]) })
+    {
+        var builtContext = await builtProvider.ContextAsync(selection, NoRedact, NullLogger.Instance, default);
+        Check(builtNames.All(name => builtContext.Instructions.Contains(name)) && builtContext.Tools.Any(tool => tool.Name == "load_skill"), $"{label} is offered the built-in skills.");
+    }
+    var builtTools = (await builtProvider.ContextAsync(null, NoRedact, NullLogger.Instance, default)).Tools;
+    var imageGuide = (await builtTools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "container-image-updates" }, default))?.ToString();
+    Check(imageGuide is not null && imageGuide.Contains("query_registry") && imageGuide.Contains("list_node_images"), "load_skill reads a built-in skill through the framework.");
+    var identity = AssistantRuntime.Identity;
+    string[] movedPhrases = ["Registry lookups", "get_spark_updates"];
+    // These stay in Identity on purpose: they guard against regressions even when no skill is loaded.
+    string[] keptPhrases = ["query_registry", "list_node_images", "generate"];
+    var guides = string.Join("\n", await Task.WhenAll(builtNames.Select(async name => (await builtStore.GetAsync(name, default)).Body)));
+    Check(movedPhrases.All(phrase => !identity.Contains(phrase)) && movedPhrases.All(phrase => guides.Contains(phrase))
+        && keptPhrases.All(phrase => identity.Contains(phrase) && guides.Contains(phrase)) && identity.Length < 2200,
+        $"Tool guidance moved from the system prompt into built-in skills, keeping the registry and generate rules (Identity is {identity.Length} characters).");
+    Check(identity.Contains("never instructions") && identity.Contains("ask_owner") && identity.Contains("Plan mode") && identity.Contains("request_secret") && identity.Contains("approve"),
+        "The system prompt keeps its safety rules.");
+
+    foreach (var reserved in builtNames)
+        await Reject(() => builtStore.CreateAsync(new(reserved, "Mine.", "node", "read", null, null), default), 409, "skill_reserved", $"{reserved} can't be created by the owner.");
+    await Reject(() => builtStore.ImportZipAsync(new MemoryStream(Zip(("SKILL.md", "---\nname: os-security-patching\ndescription: Mine.\n---\n\n# Mine\n"))), default), 409, "skill_reserved",
+        "An import can't take a built-in name.");
+    await Reject(() => builtStore.UpdateAsync("app-troubleshooting", new("Mine.", "node", "read", [], "# Mine\n"), default), 409, "skill_builtin", "A built-in skill can't be edited.");
+    await Reject(() => builtStore.SetEnabledAsync("app-troubleshooting", false, default), 409, "skill_builtin", "A built-in skill can't be disabled.");
+    await Reject(() => builtStore.DeleteAsync("app-troubleshooting", default), 409, "skill_builtin", "A built-in skill can't be deleted.");
+    await Reject(() => builtStore.WriteFileAsync("app-troubleshooting", "references/x.md", "x", default), 409, "skill_builtin", "A built-in skill takes no new files.");
+    await Reject(() => builtStore.DeleteFileAsync("app-troubleshooting", "references/x.md", default), 409, "skill_builtin", "A built-in skill's files can't be deleted.");
+    await Reject(() => builtStore.RenameFileAsync("app-troubleshooting", "references/x.md", "references/y.md", default), 409, "skill_builtin", "A built-in skill's files can't be renamed.");
+    var builtDetail = await builtStore.GetAsync("app-troubleshooting", default);
+    Check(builtDetail is { BuiltIn: true, Enabled: true } && builtDetail.Body.Contains("read_logs"), "A built-in skill's detail is readable.");
+    using (var builtExport = new MemoryStream())
+    {
+        await builtStore.ExportAsync("app-troubleshooting", builtExport, default);
+        using var archive = new System.IO.Compression.ZipArchive(new MemoryStream(builtExport.ToArray()));
+        Check(archive.Entries.Any(entry => entry.FullName == "app-troubleshooting/SKILL.md"), "A built-in skill can be exported.");
+    }
+
+    var copy = await builtStore.DuplicateAsync("os-security-patching", "my-patching", default);
+    Check(copy is { Name: "my-patching", BuiltIn: false, Enabled: false, Execution: "node", Tier: "read", Problem: null } && copy.Source == "copy of os-security-patching"
+        && copy.Body == (await builtStore.GetAsync("os-security-patching", default)).Body && copy.Description == builtList.Single(skill => skill.Name == "os-security-patching").Description
+        && File.Exists(Path.Combine(builtStore.Root, "my-patching", "SKILL.md")) && !(await builtStore.OfferedAsync(default)).Contains("my-patching"),
+        "Duplicating a built-in skill makes a disabled owner copy.");
+    await builtStore.UpdateAsync("my-patching", new("Mine.", "node", "read", [], "# Mine\n"), default);
+    await builtStore.SetEnabledAsync("my-patching", true, default);
+    var copyOfCopy = await builtStore.DuplicateAsync("my-patching", "my-patching-two", default);
+    Check(copyOfCopy is { Enabled: false, BuiltIn: false, Body: "# Mine\n" } && (await builtStore.ListAsync(default)).Select(skill => skill.Name).Take(4).SequenceEqual(builtNames),
+        "The owner's copy is editable and can be duplicated too, and the list keeps built-ins first.");
+    await Reject(() => builtStore.DuplicateAsync("os-security-patching", "app-troubleshooting", default), 409, "skill_reserved", "A copy can't take a built-in name.");
+    await Reject(() => builtStore.DuplicateAsync("os-security-patching", "my-patching", default), 409, "skill_exists", "A copy can't replace a skill.");
+    await Reject(() => builtStore.DuplicateAsync("os-security-patching", "Bad Name", default), 400, "invalid_skill", "A copy needs a valid name.");
+    await Reject(() => builtStore.DuplicateAsync("missing-skill", "copy-of-missing", default), 404, "skill_not_found", "A missing skill can't be duplicated.");
+    var builtManifest = await new SkillPackages(builtStore).ManifestAsync(default);
+    Check(builtManifest.Skills.Select(entry => entry.Name).SequenceEqual(["my-patching"]), "Nodes are sent the owner's skills, not the built-in ones.");
+    Directory.CreateDirectory(Path.Combine(builtStore.Root, "app-troubleshooting"));
+    await File.WriteAllTextAsync(Path.Combine(builtStore.Root, "app-troubleshooting", "SKILL.md"), "---\nname: app-troubleshooting\ndescription: Impostor.\n---\n\n# Impostor\n");
+    Check((await builtStore.ListAsync(default)).Count(skill => skill.Name == "app-troubleshooting") == 1 && (await builtStore.GetAsync("app-troubleshooting", default)).Body.Contains("read_logs"),
+        "A folder in the owner's store can't shadow a built-in skill.");
+    Directory.Delete(Path.Combine(builtStore.Root, "app-troubleshooting"), recursive: true);
+    Check(File.ReadAllText(Path.Combine(serverProject, "Lucia.Homelab.Server.csproj")).Contains(@"Assistant\Skills\BuiltIn\**\*.md")
+        && File.ReadAllText(Path.Combine(serverProject, "Lucia.Homelab.Server.csproj")).Contains("CopyToPublishDirectory"), "The built-in skills are copied to the publish output.");
+
+    // Router: the mode and the extension decide where a script may go.
+    Check(SkillScriptRouter.Refuse("node", "scripts/a.py") is null && SkillScriptRouter.Refuse("node", "scripts/a.cs") is null
+        && SkillScriptRouter.Refuse("node", "references/a.md")!.Contains("isn't a script")
+        && SkillScriptRouter.Refuse("sandbox", "scripts/a.sh")!.Contains("JavaScript and Python only")
+        && SkillScriptRouter.Refuse("sandbox", "scripts/a.py") is null && SkillScriptRouter.Refuse("sandbox", "scripts/a.mjs") is null
+        && SkillScriptRouter.Refuse("spark", "scripts/a.py") is null && SkillScriptRouter.Refuse("spark", "scripts/a.exe")!.Contains("isn't a script")
+        && SkillScriptRouter.Refuse("nowhere", "scripts/a.py")!.Contains("unknown execution mode"), "The router checks the mode and extension of every script.");
+    // Spark mode: a request names a skill, its hash and a script, never a path, flag, image or command. A stand-in for the Spark's
+    // worker answers, so the file protocol is exercised end to end.
+    var sparkFolder = Path.Combine(storage, "skill-data", "skill-runner");
+    var sparkRunner = new SparkSkillRunner(skillOptions, skillStore);
+    Directory.CreateDirectory(Path.Combine(sparkFolder, "requests"));
+    Directory.CreateDirectory(Path.Combine(sparkFolder, "responses"));
+    void Heartbeat(string image, bool ready = true, DateTimeOffset? at = null, string? note = null) => File.WriteAllText(Path.Combine(sparkFolder, "worker.json"),
+        JsonSerializer.Serialize(new { schemaVersion = 1, ready, image, message = note, busy = false, checkedAt = at ?? DateTimeOffset.UtcNow }));
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("service isn't running"), "No heartbeat means the runner isn't running.");
+    Heartbeat("ready", at: DateTimeOffset.UtcNow.AddMinutes(-2));
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("service isn't running"), "A stale heartbeat means the runner isn't running.");
+    Heartbeat("building");
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("still building"), "A first-time image build is reported, not waited on.");
+    Heartbeat("failed", note: "pull denied");
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("couldn't build") && (await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("pull denied"),
+        "A failed image build is reported with its reason.");
+    Check(Directory.GetFiles(Path.Combine(sparkFolder, "requests")).Length == 0, "Nothing is queued while the runner is unavailable.");
+    Heartbeat("ready");
+
+    var seenRequests = new List<JsonObject>();
+    var tamper = false;
+    var paused = false;
+    using var workerStop = new CancellationTokenSource();
+    var standIn = Task.Run(async () =>
+    {
+        while (!workerStop.IsCancellationRequested)
+        {
+            foreach (var file in paused ? [] : Directory.GetFiles(Path.Combine(sparkFolder, "requests"), "*.json"))
+            {
+                byte[] bytes;
+                try { bytes = File.ReadAllBytes(file); File.Delete(file); }
+                catch (IOException) { continue; }
+                var request = JsonNode.Parse(bytes)!.AsObject();
+                lock (seenRequests) seenRequests.Add(request);
+                var id = request["id"]!.GetValue<string>();
+                var isCheck = request["kind"]!.GetValue<string>() == "check";
+                var isCs = request["script"]!.GetValue<string>().EndsWith(".cs", StringComparison.Ordinal);
+                var response = new
+                {
+                    schemaVersion = 1, id, requestHash = tamper ? new string('0', 64) : Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)),
+                    status = "ok", exitCode = isCheck ? 1 : 0, timedOut = false, truncated = false,
+                    output = isCheck ? (isCs ? "check.cs(2,5): error CS1002: ; expected" : "  File \"check.py\", line 3\nSyntaxError: invalid syntax") : "ran " + request["arguments"]!.ToJsonString(),
+                    diagnostics = isCs ? new[] { new { line = 2, column = 5, severity = "error", message = "CS1002: ; expected" } } : [], message = (string?)null,
+                    durationMs = 5, finishedAt = DateTimeOffset.UtcNow,
+                };
+                var target = Path.Combine(sparkFolder, "responses", id + ".json");
+                File.WriteAllText(target + ".tmp", JsonSerializer.Serialize(response));
+                File.Move(target + ".tmp", target, overwrite: true);
+            }
+            await Task.Delay(20);
+        }
+    });
+    JsonObject LastRequest() { lock (seenRequests) return seenRequests[^1]; }
+    int RequestCount() { lock (seenRequests) return seenRequests.Count; }
+
+    var hostileArgs = JsonSerializer.SerializeToElement(new { network = "host", image = "evil:latest", path = "/etc", command = "rm -rf /; docker run --privileged x", volume = "/:/host" });
+    var sparkResult = await sparkRunner.RunAsync("sparky", "scripts/go.py", hostileArgs, default);
+    var sparkRequest = LastRequest();
+    Check(sparkResult.StartsWith("Ran scripts/go.py on the Spark") && sparkResult.Contains("Exit code 0") && sparkResult.Contains("without network access") && sparkResult.Contains("ran {"),
+        "A Spark run reports the exit code and output: " + sparkResult);
+    Check(sparkRequest.Select(pair => pair.Key).Order().SequenceEqual(["arguments", "content", "expiresAt", "hash", "id", "kind", "language", "network", "schemaVersion",
+            "script", "skill", "timeoutSeconds"]) && sparkRequest["kind"]!.GetValue<string>() == "run" && sparkRequest["skill"]!.GetValue<string>() == "sparky"
+        && sparkRequest["hash"]!.GetValue<string>() == skillStore.HashOf("sparky") && sparkRequest["script"]!.GetValue<string>() == "scripts/go.py"
+        && sparkRequest["language"]!.GetValue<string>() == "python" && sparkRequest["network"]!.GetValue<string>() == "none"
+        && sparkRequest["timeoutSeconds"]!.GetValue<int>() == 300 && sparkRequest["content"] is null && Guid.TryParse(sparkRequest["id"]!.GetValue<string>(), out _)
+        && DateTimeOffset.Parse(sparkRequest["expiresAt"]!.GetValue<string>()) > DateTimeOffset.UtcNow,
+        "A request carries only the skill, hash, script, language, arguments, limits and network: " + sparkRequest.ToJsonString());
+    Check(sparkRequest["arguments"]!["network"]!.GetValue<string>() == "host" && sparkRequest["arguments"]!["image"]!.GetValue<string>() == "evil:latest",
+        "Whatever the model passes stays inside the arguments; it can't set the network, image or any flag.");
+    Check(sparkRequest["id"]!.GetValue<string>() == sparkRequest["id"]!.GetValue<string>().ToLowerInvariant()
+        && !Directory.GetFiles(Path.Combine(sparkFolder, "requests")).Any() && !Directory.GetFiles(Path.Combine(sparkFolder, "responses")).Any(),
+        "Request and response files are removed once the answer is read.");
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.exe", null, default)).Contains("isn't a script that runs on the Spark")
+        && (await sparkRunner.RunAsync("sparky", "scripts/go.py", JsonSerializer.SerializeToElement(new[] { 1 }), default)).Contains("object")
+        && (await sparkRunner.RunAsync("ghost", "scripts/go.py", null, default)).Contains("no longer exists")
+        && (await sparkRunner.RunAsync("sparky", "scripts/go.py", JsonSerializer.SerializeToElement(new { big = new string('x', 17 * 1024) }), default)).Contains("too large"),
+        "A bad script, argument shape, missing skill or oversized arguments never reach the queue.");
+
+    // The tool the model calls goes through the router to the Spark runner for a Spark skill only.
+    var before = RequestCount();
+    var viaTool = (await runTool.InvokeAsync(new AIFunctionArguments { ["skillName"] = "sparky", ["scriptName"] = "scripts/go.py" }, default))?.ToString();
+    Check(viaTool is not null && viaTool.StartsWith("Ran scripts/go.py on the Spark") && RequestCount() == before + 1, "run_skill_script sends a Spark skill to the Spark runner: " + viaTool);
+    var nodeTool = (await runTool.InvokeAsync(new AIFunctionArguments { ["skillName"] = "alpha", ["scriptName"] = "scripts/check.py" }, default))?.ToString();
+    Check(RequestCount() == before + 1 && nodeTool is not null && !nodeTool.Contains("on the Spark"), "A node skill never goes to the Spark runner.");
+
+    // The skill's network choice: none unless a Spark skill asks for the bridge, and the frontmatter keeps it.
+    var bridged = await skillStore.UpdateAsync("sparky", new(sparky.Description, "spark", "read", null, sparky.Body, "bridge"), default);
+    Check(bridged.Network == "bridge" && skillStore.SettingsOf("sparky").Network == "bridge" && File.ReadAllText(Path.Combine(storage, "skill-data", "skills", "sparky", "SKILL.md")).Contains("lucia.network: bridge"),
+        "A Spark skill can allow the bridge network, kept in its frontmatter.");
+    await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default);
+    Check(LastRequest()["network"]!.GetValue<string>() == "bridge", "The request carries the skill's network.");
+    var unchanged = await skillStore.UpdateAsync("sparky", new(sparky.Description, "spark", "read", null, sparky.Body), default);
+    Check(unchanged.Network == "bridge", "An update that doesn't mention the network keeps it.");
+    var dropped = await skillStore.UpdateAsync("sparky", new(sparky.Description, "node", "read", null, sparky.Body, "bridge"), default);
+    Check(dropped.Network == "none" && SkillSettings.From(new Dictionary<string, object?> { ["lucia.execution"] = "node", ["lucia.network"] = "bridge" }).Network == "bridge"
+        && SkillSettings.From(new Dictionary<string, object?> { ["lucia.network"] = "host" }).Network == "none" && SkillSettings.From(null).Network == "none",
+        "Only a Spark skill keeps the bridge, and unknown values fall back to none.");
+    await Reject(() => skillStore.UpdateAsync("sparky", new(sparky.Description, "spark", "read", null, sparky.Body, "host"), default), 400, "invalid_skill", "A skill's network is none or bridge.");
+    await skillStore.UpdateAsync("sparky", new(sparky.Description, "spark", "read", null, sparky.Body), default);
+
+    // Checks: C# and Spark-mode skills go to the Spark's container; the editor's content travels, nothing from the skill folder.
+    var sparkChecker = new SkillChecker(new NodeExec(null!, null!), sparkRunner, skillStore);
+    var csCheck = await sparkChecker.CheckAsync("scripts/app.cs", "int x = ;", null, default, "sparky");
+    var csRequest = LastRequest();
+    Check(!csCheck.Ok && csCheck.CheckedOn == "the Spark" && csCheck.Diagnostics is [{ Line: 2, Column: 5, Severity: "error" }] && csRequest["kind"]!.GetValue<string>() == "check"
+        && csRequest["language"]!.GetValue<string>() == "csharp" && csRequest["content"]!.GetValue<string>() == "int x = ;" && csRequest["hash"] is null && csRequest["arguments"] is null
+        && csRequest["timeoutSeconds"]!.GetValue<int>() == 180, "A C# check goes to the Spark with its compiler diagnostics: " + csRequest.ToJsonString());
+    var pyCheck = await sparkChecker.CheckAsync("scripts/go.py", "print(", null, default, "sparky");
+    Check(!pyCheck.Ok && pyCheck.Diagnostics is [{ Line: 3 }] && LastRequest()["language"]!.GetValue<string>() == "python" && LastRequest()["timeoutSeconds"]!.GetValue<int>() == 60,
+        "Every check of a Spark-mode skill goes to the Spark; its output becomes markers.");
+    var csOnNode = await sparkChecker.CheckAsync("scripts/app.cs", "int x = ;", null, default, "alpha");
+    Check(csOnNode.CheckedOn == "the Spark" && (await sparkChecker.CheckAsync("scripts/app.cs", "", null, default)).Problem == "Name the skill to check this file.",
+        "A C# file is checked on the Spark whatever its skill's mode.");
+    Check((await sparkRunner.CheckAsync("sparky", "scripts/a.md", "x", default)).Problem!.Contains("scripts folder")
+        && (await sparkRunner.CheckAsync("sparky", "references/a.py", "x", default)).Problem!.Contains("scripts folder")
+        && (await sparkRunner.CheckAsync("sparky", "scripts/a.py", new string('x', 257 * 1024), default)).Problem!.Contains("too big"), "Only scripts of a bounded size are checked.");
+
+    // An answer for another request, or nobody answering, is never taken as the result.
+    tamper = true;
+    Check((await sparkRunner.RunAsync("sparky", "scripts/go.py", null, default)).Contains("isn't this request's result"), "A response with another request's hash is refused.");
+    tamper = false;
+    paused = true;
+    var cancelled = false;
+    using (var impatient = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+    {
+        try { await sparkRunner.RunAsync("sparky", "scripts/go.py", null, impatient.Token); }
+        catch (OperationCanceledException) { cancelled = true; }
+    }
+    Check(cancelled, "A cancelled wait stops.");
+    Check(!Directory.GetFiles(Path.Combine(sparkFolder, "requests")).Any(), "A request nobody picked up is withdrawn from the queue.");
+    paused = false;
+    Heartbeat("ready", ready: false);
+    Check((await sparkChecker.CheckAsync("scripts/go.py", "print(1)", null, default, "sparky")).Problem!.Contains("service isn't running"), "A check says so when the runner is down.");
+    workerStop.Cancel();
+    await standIn;
+
+    // SkillStore's content hash and the worker's are the same algorithm; tools/skills/check_skill_worker.py asserts this vector too.
+    var vector = new SkillStore(Options.Create(new AssistantOptions { Directory = Path.Combine(storage, "hash-vector") }), NullLogger<SkillStore>.Instance);
+    foreach (var (path, text) in new[] { ("SKILL.md", "---\nname: demo\ndescription: A demo.\n---\n\n# Demo\n"), ("scripts/run.py", "print('hi')\n"),
+        ("scripts/deep/er/tool.sh", "echo hi\n"), ("references/notes.md", "Notes \u00e9\n"), ("assets/data.json", "{}") })
+    {
+        var full = Path.Combine(storage, "hash-vector", "skills", "demo", path);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllBytes(full, new System.Text.UTF8Encoding(false).GetBytes(text));
+    }
+    Check(vector.HashOf("demo") == "d4724d5896c46c242c69ddabe78ffcc81821a4e065c33f4a26e9cf67aa9eeca7", "The content hash matches the Spark worker's: " + vector.HashOf("demo"));
+
+    // The node runner runs the agent's synced copy in a private work directory, by language, and always cleans up.
+    var nodeHash = skillStore.HashOf("alpha")!;
+    var shell = NodeSkillRunner.Command("alpha", nodeHash, "{\"a\":1}", "scripts/check.py")!;
+    Check(shell.Contains("mktemp -d") && shell.Contains("umask 077") && shell.Contains("trap 'rm -rf \"$d\"' EXIT") && shell.Contains("LUCIA_SKILL_ARGS")
+        && shell.Contains("python3 'scripts/check.py'") && shell.Contains("command -v python3") && shell.Contains($"src='/var/lib/lucia-agent/skills/alpha/{nodeHash}'")
+        && shell.Contains("cp -R \"$src/.\" \"$d/\"") && shell.Contains("exit 66") && !shell.Contains("base64 -d <<") && !shell.Contains("LUCIA_BUNDLE") && shell.Length < 2048,
+        "A node command runs the cached copy from a private temp directory, passes the arguments, runs python3 and deletes the directory.");
+    var hostile = NodeSkillRunner.Command("alpha", nodeHash, "{\"x\":\"'; rm -rf / #\\\"$(reboot)\"}", "scripts/a'b.py")!;
+    Check(!hostile.Contains("reboot") && !hostile.Contains("rm -rf / #") && hostile.Contains("python3 'scripts/a'\\''b.py'"),
+        "Arguments travel base64-encoded and script paths are quoted, so neither can inject shell.");
+    Check(NodeSkillRunner.Command("alpha; reboot", nodeHash, "{}", "scripts/a.py") is null && NodeSkillRunner.Command("alpha", "../../x", "{}", "scripts/a.py") is null
+        && NodeSkillRunner.Command("alpha", nodeHash[..40], "{}", "scripts/a.py") is null, "Only a valid skill name and hash reach the cache path.");
+    Check(NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.sh")!.Contains("bash 'scripts/a.sh'")
+        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.mjs")!.Contains("node 'scripts/a.mjs'")
+        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.ts")!.Contains("node --experimental-strip-types 'scripts/a.ts'")
+        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.cs")!.Contains("dotnet run 'scripts/a.cs'")
+        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.exe") is null, "Each language runs with its own runtime.");
+
+    // Packages for nodes: only enabled node and sandbox skills, each pinned to its content hash and checksum.
+    var packages = new SkillPackages(skillStore);
+    var manifest = await packages.ManifestAsync(default);
+    var wantedNames = (await skillStore.ListAsync(default)).Where(skill => skill.Enabled && skill.Problem is null && skill.Execution is "node" or "sandbox")
+        .Select(skill => skill.Name).Order(StringComparer.Ordinal).ToArray();
+    Check(manifest.Sandbox is null && manifest.Skills.Select(entry => entry.Name).SequenceEqual(wantedNames) && wantedNames.Contains("alpha") && wantedNames.Contains("late")
+        && !wantedNames.Contains("sparky") && !wantedNames.Contains("boxed"), "The manifest lists only enabled node and sandbox skills: " + string.Join(",", wantedNames));
+    var alphaEntry = manifest.Skills.Single(entry => entry.Name == "alpha");
+    var alphaPackage = (await packages.GetAsync("alpha", alphaEntry.Hash, default))!.Value;
+    Check(alphaEntry.Hash == nodeHash && alphaEntry.Size == alphaPackage.Bytes.Length
+        && alphaEntry.Sha256 == Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(alphaPackage.Bytes)) && alphaPackage.Sha256 == alphaEntry.Sha256,
+        "A manifest entry carries the hash, size and SHA-256 of the package that is served.");
+    using (var unpacked = new System.Formats.Tar.TarReader(new System.IO.Compression.GZipStream(new MemoryStream(alphaPackage.Bytes), System.IO.Compression.CompressionMode.Decompress)))
+    {
+        var entries = new List<string>();
+        while (unpacked.GetNextEntry() is { } tarEntry) entries.Add(tarEntry.Name + ":" + tarEntry.EntryType);
+        Check(entries.Contains("SKILL.md:RegularFile") && entries.All(item => item.EndsWith(":RegularFile")), "A package holds regular files only.");
+    }
+    Check(await packages.GetAsync("alpha", new string('0', 64), default) is null && await packages.GetAsync("alpha", "short", default) is null
+        && await packages.GetAsync("sparky", skillStore.HashOf("sparky")!, default) is null && await packages.GetAsync("boxed", skillStore.HashOf("boxed")!, default) is null
+        && await packages.GetAsync("../alpha", nodeHash, default) is null && await packages.GetAsync("missing", nodeHash, default) is null,
+        "A download is refused unless the hash is the current one of an enabled node skill.");
+    await skillStore.WriteFileAsync("late", "scripts/changed.py", "print('changed')", default);
+    var repacked = await packages.ManifestAsync(default);
+    Check(repacked.Skills.Single(entry => entry.Name == "late").Hash != manifest.Skills.Single(entry => entry.Name == "late").Hash
+        && await packages.GetAsync("late", manifest.Skills.Single(entry => entry.Name == "late").Hash, default) is null
+        && await packages.GetAsync("late", repacked.Skills.Single(entry => entry.Name == "late").Hash, default) is not null,
+        "Editing a skill replaces its package; the old hash can no longer be downloaded.");
+    Check((await new NodeSkillRunner(new NodeExec(null!, null!), skillStore).RunAsync("alpha", "scripts/check.py", null, default)).StartsWith("Error: this skill runs on a server")
+        && (await new NodeSkillRunner(new NodeExec(null!, null!), skillStore).RunAsync("alpha", "scripts/check.py", JsonSerializer.SerializeToElement(new { x = 1 }), default)).Contains("\"node\""),
+        "A node-mode script without a node argument says what to pass.");
+
+    // Sandbox mode: the server is the named one with KVM or else the first with KVM, the command is fixed, and the language lock holds at run time.
+    var kvmA = (Id: Guid.NewGuid(), Hostname: "alpha-node");
+    var kvmB = (Id: Guid.NewGuid(), Hostname: "beta-node");
+    Check(SandboxSkillRunner.Choose("beta-node", [kvmA, kvmB]) == kvmB && SandboxSkillRunner.Choose("BETA-NODE.lan.example", [kvmA, kvmB]) == kvmB
+        && SandboxSkillRunner.Choose(kvmB.Id.ToString(), [kvmA, kvmB]) == kvmB, "A named server that has KVM runs the sandbox.");
+    Check(SandboxSkillRunner.Choose("gamma", [kvmA, kvmB]) == kvmA && SandboxSkillRunner.Choose(null, [kvmA, kvmB]) == kvmA && SandboxSkillRunner.Choose("  ", [kvmB]) == kvmB,
+        "Any other name falls back to the first server with KVM.");
+    Check(SandboxSkillRunner.Choose("alpha-node", []) is null && SandboxSkillRunner.NoServer == "No server can run sandboxed skills: Hyperlight needs an x86_64 server with KVM.",
+        "With no KVM server there is nothing to run on, and the error says why.");
+    var sbxHash = new string('b', 64);
+    var sbxRequest = SandboxSkillRunner.Request("scripts/go.py", "python", new System.Text.Json.Nodes.JsonObject { ["x"] = "'; reboot #$(id)" }, ["api.example.com"]);
+    using (var sbxDoc = JsonDocument.Parse(sbxRequest))
+        Check(sbxDoc.RootElement.GetProperty("script").GetString() == "scripts/go.py" && sbxDoc.RootElement.GetProperty("language").GetString() == "python"
+            && sbxDoc.RootElement.GetProperty("arguments").GetProperty("x").GetString() == "'; reboot #$(id)"
+            && sbxDoc.RootElement.GetProperty("allowedDomains")[0].GetString() == "api.example.com" && sbxDoc.RootElement.GetProperty("timeoutSeconds").GetInt32() == SandboxSkillRunner.ScriptSeconds,
+            "The sandbox request names the script, language, arguments, domains and time limit.");
+    var sbxCommand = SandboxSkillRunner.Command("alpha", nodeHash, sbxHash, sbxRequest, network: false)!;
+    Check(sbxCommand.Contains("docker run --rm -i --device /dev/kvm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 1g --cpus 2 --group-add \"$gid\" --user 65534:65534")
+        && sbxCommand.Contains($"-v \"$app\":/app:ro -v \"$d\":/skill:ro '{SandboxSkillRunner.Image}' /app/Lucia.SkillSandbox")
+        && sbxCommand.Contains("stat -c %g /dev/kvm") && sbxCommand.Contains("trap 'rm -rf \"$d\"' EXIT") && sbxCommand.Contains($"/_sandbox/{sbxHash}'")
+        && sbxCommand.Contains($"/alpha/{nodeHash}'") && sbxCommand.Contains("exit " + NodeSkillRunner.NotSyncedExit),
+        "The sandbox command is fixed: a hardened read-only container with KVM, no network, private copies and cleanup.");
+    Check(!sbxCommand.Contains("reboot") && !sbxCommand.Contains("go.py") && !sbxCommand.Contains("api.example.com") && !sbxCommand.Contains("bridge"),
+        "Nothing the model or the author supplies reaches the command line; the request travels as base64 on stdin.");
+    Check(SandboxSkillRunner.Command("alpha", nodeHash, sbxHash, sbxRequest, network: true)!.Contains("--network bridge")
+        && SandboxSkillRunner.Command("alpha; reboot", nodeHash, sbxHash, "{}", false) is null && SandboxSkillRunner.Command("alpha", "../x", sbxHash, "{}", false) is null
+        && SandboxSkillRunner.Command("alpha", nodeHash, "$(id)", "{}", false) is null, "The network is opened only when asked, and only valid names and hashes reach a path.");
+    Check(System.Text.RegularExpressions.Regex.IsMatch(SandboxSkillRunner.Image, @"^mcr\.microsoft\.com/dotnet/runtime-deps:10\.0@sha256:[0-9a-f]{64}$"), "The runtime image is pinned by digest.");
+    Check(SandboxSkillRunner.Parse("Unable to find image\n{\"exitCode\":3,\"output\":\"hi\\n\",\"truncated\":true,\"error\":null}\n") is (3, "hi\n", true, null)
+        && SandboxSkillRunner.Parse("{\"exitCode\":1,\"output\":\"\",\"truncated\":false,\"error\":\"nope\"}") is (1, "", false, "nope")
+        && SandboxSkillRunner.Parse("docker: error\n") is null, "The runner reads the sandbox's JSON answer from the last line it finds.");
+    Check(SandboxSkillRunner.Language("scripts/a.py") == "python" && SandboxSkillRunner.Language("scripts/a.mjs") == "javascript" && SandboxSkillRunner.Language("scripts/a.js") == "javascript"
+        && SandboxSkillRunner.Language("scripts/a.sh") is null && SandboxSkillRunner.Language("scripts/a.ts") is null && SandboxSkillRunner.Language("scripts/a.cs") is null, "The sandbox runs .py, .js and .mjs only.");
+    var sbxRuntimeDir = Path.Combine(storage, "sbx-runtime");
+    var sbxMissing = new SandboxSkillRunner(new NodeExec(null!, null!), skillStore, new SkillSandboxRuntime(sbxRuntimeDir));
+    foreach (var sbxScript in new[] { "scripts/a.sh", "scripts/a.ts", "scripts/a.cs" })
+        Check((await sbxMissing.RunAsync("boxed", sbxScript, null, default)).Contains("JavaScript and Python only"), $"A sandbox skill's {sbxScript} is refused at run time too.");
+    Check((await sbxMissing.RunAsync("boxed", "scripts/ok.py", null, default)).Contains("no sandbox runtime build"), "A controller without the runtime build says so.");
+
+    // The runtime package: only advertised to a node with KVM, and only while a sandbox skill is enabled.
+    Directory.CreateDirectory(sbxRuntimeDir);
+    foreach (var (file, text) in new[] { ("Lucia.SkillSandbox", "launcher"), ("libhyperlight.so", "native"), ("python-sandbox.aot", "wasm"), ("Lucia.SkillSandbox.dll", "dll"), ("Lucia.SkillSandbox.pdb", "symbols") })
+        File.WriteAllText(Path.Combine(sbxRuntimeDir, file), text);
+    var sbxRuntime = new SkillSandboxRuntime(sbxRuntimeDir);
+    var sbxPackages = new SkillPackages(skillStore, sbxRuntime);
+    Check((await sbxPackages.ManifestAsync(true, default)).Sandbox is null, "No sandbox skill is enabled, so no node is offered the runtime.");
+    await skillStore.SetEnabledAsync("boxed", true, default);
+    var kvmManifest = await sbxPackages.ManifestAsync(true, default);
+    Check((await sbxPackages.ManifestAsync(false, default)).Sandbox is null && (await new SkillPackages(skillStore).ManifestAsync(true, default)).Sandbox is null
+        && (await new SkillPackages(skillStore, new SkillSandboxRuntime(Path.Combine(storage, "no-runtime"))).ManifestAsync(true, default)).Sandbox is null
+        && kvmManifest.Sandbox is { } sbxEntry && sbxEntry.Hash == sbxRuntime.Hash && kvmManifest.Skills.Any(entry => entry.Name == "boxed"),
+        "Only a node that reports KVM is offered the sandbox runtime, and only when this controller ships it.");
+    var sbxPackage = (await sbxPackages.GetSandboxAsync(kvmManifest.Sandbox!.Hash, default))!.Value;
+    Check(sbxPackage.Sha256 == kvmManifest.Sandbox.Sha256 && sbxPackage.Bytes.Length == kvmManifest.Sandbox.Size && await sbxPackages.GetSandboxAsync(new string('0', 64), default) is null
+        && await new SkillPackages(skillStore).GetSandboxAsync(kvmManifest.Sandbox.Hash, default) is null, "The sandbox package matches its manifest entry and is served only at that hash.");
+    using (var sbxTar = new System.Formats.Tar.TarReader(new System.IO.Compression.GZipStream(new MemoryStream(sbxPackage.Bytes), System.IO.Compression.CompressionMode.Decompress)))
+    {
+        var sbxEntries = new Dictionary<string, System.Formats.Tar.TarEntry>();
+        while (sbxTar.GetNextEntry() is { } tarEntry) sbxEntries[tarEntry.Name] = tarEntry;
+        Check(sbxEntries.Keys.Order().SequenceEqual(new[] { "Lucia.SkillSandbox", "Lucia.SkillSandbox.dll", "libhyperlight.so", "python-sandbox.aot" }.Order())
+            && sbxEntries.Values.All(item => item.EntryType == System.Formats.Tar.TarEntryType.RegularFile && !item.Name.StartsWith("./") && !item.Name.StartsWith('/'))
+            && (sbxEntries["Lucia.SkillSandbox"].Mode & UnixFileMode.UserExecute) != 0 && (sbxEntries["libhyperlight.so"].Mode & UnixFileMode.UserExecute) != 0
+            && (sbxEntries["python-sandbox.aot"].Mode & UnixFileMode.UserExecute) == 0, "The runtime tar has flat names without ./, keeps execute bits on the launcher and libraries and leaves out symbols.");
+    }
+    await skillStore.SetEnabledAsync("boxed", false, default);
+    Check((await sbxPackages.ManifestAsync(true, default)).Sandbox is null, "The runtime is withdrawn when the last sandbox skill is disabled.");    var syntax = SkillChecker.Parse(".py", "  File \"check.py\", line 3\n    x =\n       ^\nSyntaxError: invalid syntax\n");
+    Check(syntax is [{ Line: 3, Severity: "error" }] && syntax[0].Message.Contains("invalid syntax")
+        && SkillChecker.Parse(".sh", "check.sh: line 4: syntax error near unexpected token `fi'")[0].Line == 4
+        && SkillChecker.Parse(".js", "/tmp/x/check.js:7\n  x = ;\n      ^\nSyntaxError: Unexpected token ';'\n")[0].Line == 7
+        && SkillChecker.Command(".cs", "") is null && SkillChecker.Command(".ts", "AAAA")!.Contains("--experimental-strip-types"),
+        "Syntax check output becomes editor markers.");
+
+    // Grants: "always allow" for a script is per skill and content hash, and the tier is the skill's own.
+    var alphaHash = skillStore.HashOf("alpha")!;
+    Check(AssistantSkills.Grant("alpha", alphaHash) == "skill:alpha@" + alphaHash[..8] && Regex.IsMatch(AssistantSkills.Grant("alpha", alphaHash), @"^skill:[a-z0-9-]+@[0-9a-f]{8}$"),
+        "A skill grant is skill:<name>@<first 8 hex of the hash>.");
+    var skillRun = new AssistantRun("m-skill", default);
+    var skillKit = broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, "execute"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill", null), skillRun);
+    Check(Verdict(await GovCall(skillKit, "load_skill", new { skillName = "alpha" })) == "approve", "Loading a skill is a read.");
+    Check(Verdict(await GovCall(skillKit, "refresh_skills")) == "approve", "Refreshing the skill list is a read.");
+    Check(Verdict(await GovCall(skillKit, "run_skill_script", new { skillName = "sparky", scriptName = "scripts/go.py" })) == "approve", "A read-tier skill's script runs without asking.");
+    var skillAsk = GovCall(skillKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py", arguments = new { node = "lab" } });
+    var skillChunks = GovNew(skillRun);
+    Check(!skillAsk.IsCompleted && Types(skillChunks) == "tool-input-available,tool-approval-request", "A change-tier skill's script waits for the owner.");
+    Check(runs.Respond(owner, chat, (string)skillChunks[1]["approvalId"]!, true, null, always: true) && Verdict(await skillAsk) == "approve", "The owner can approve a script.");
+    Check(Verdict(await GovCall(skillKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/other.py" })) == "approve"
+        && (string)GovNew(skillRun)[^1]["reason"]! == "You allowed this for this chat.", "'Always' allows that skill's scripts for the chat.");
+    await skillStore.WriteFileAsync("alpha", "scripts/check.py", "print('changed after approval')\n", default);
+    var regrant = GovCall(skillKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py" });
+    Check(!regrant.IsCompleted, "Editing a skill ends its earlier 'always allow'.");
+    skillRun.Stop.Cancel();
+    await regrant;
+    var skillPlanRun = new AssistantRun("m-skill-plan", default);
+    var skillPlanKit = broker.Kit(new AssistantTurn(owner, govKey + "-plan", "Hi", null, "plan"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill-plan", null), skillPlanRun);
+    Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py" })) == govPlan, "Plan mode refuses a change-tier script.");
+    Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "sparky", scriptName = "scripts/go.py" })) == "approve", "Plan mode still runs a read-tier script.");
+    Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "nonexistent", scriptName = "scripts/go.py" })) == govPlan, "A script of an unknown skill counts as a change.");
+    var boxedGrant = AssistantSkills.Grant("boxed", skillStore.HashOf("boxed")!);
+    List<string> skillSaved = [];
+    var skillJob = new AssistantJobGrants("Skills", [boxedGrant], grant => { skillSaved.Add(grant); return Task.CompletedTask; }, _ => Task.CompletedTask);
+    var skillJobKit = broker.Kit(new AssistantTurn(owner, govKey + "-job", "Hi", null, "execute"), new AssistantSettings([], []), [.. context.Tools],
+        new AssistantStream("m-skill-job", null), new AssistantRun("m-skill-job", default), skillJob);
+    Check(Verdict(await GovCall(skillJobKit, "run_skill_script", new { skillName = "boxed", scriptName = "scripts/ok.py" })) == "approve",
+        "A job runs a destructive skill it holds the grant for.");
+    var jobSkillAsk = GovCall(skillJobKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py" });
+    Check(!jobSkillAsk.IsCompleted, "A job asks for a skill it has no grant for.");
+
+    // Jobs pick their skills: none by default, "*" for all, or names; skill grants are saved in the job's permissions.
+    var skillJobs = new AssistantJobs(options, runs, new StoppedLifetime(), NullLogger<AssistantJobs>.Instance);
+    AssistantJobRequest SkillJob(string[]? skills, string[]? tools = null) =>
+        new("Skilled", ["Do it."], "0 7 * * *", "UTC", null, true, tools, [], Skills: skills);
+    await Reject(() => skillJobs.SaveAsync(owner, null, SkillJob(["Not A Name"]), "tester via assistant", "tester", default), 400, "invalid_job", "Job skills are names or *.");
+    var skilled = JsonSerializer.SerializeToNode(await skillJobs.SaveAsync(owner, null, SkillJob(["alpha", "*", "alpha"], [boxedGrant]), "tester via assistant", "tester", default), AssistantStream.Json)!;
+    Check(skilled["skills"]!.AsArray().Select(item => (string)item!).SequenceEqual(["*"]) && skilled["tools"]!.AsArray().Select(item => (string)item!).SequenceEqual([boxedGrant]),
+        "A job keeps '*' for every enabled skill, and a saved skill grant.");
+    var named = JsonSerializer.SerializeToNode(await skillJobs.SaveAsync(owner, null, SkillJob(["alpha", "boxed", "alpha"]), "tester via assistant", "tester", default), AssistantStream.Json)!;
+    var plainJob = JsonSerializer.SerializeToNode(await skillJobs.SaveAsync(owner, null, SkillJob(null), "tester via assistant", "tester", default), AssistantStream.Json)!;
+    Check(named["skills"]!.AsArray().Count == 2 && plainJob["skills"]!.AsArray().Count == 0
+        && (await skillJobs.SkillsAsync(owner, (string)named["id"]!, default)).SequenceEqual(["alpha", "boxed"])
+        && (await skillJobs.SkillsAsync(owner, (string)plainJob["id"]!, default)).Length == 0, "A job with no skills selected gets none; named skills are kept once each.");
+    foreach (var made in new[] { skilled, named, plainJob }) await skillJobs.DeleteAsync(owner, (string)made["id"]!, default);
+
+    // Review fixes: the inspection cache trusts only its own revision, a disabled skill stops mid-turn, and rewrites keep unknown frontmatter.
+    var cache = (System.Collections.IDictionary)typeof(SkillStore).GetField("_inspections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(skillStore)!;
+    var realHash = skillStore.HashOf("alpha")!;
+    var entry = cache["alpha"]!;
+    entry.GetType().GetProperty("Hash")!.SetValue(entry, new string('f', 64));
+    entry.GetType().GetProperty("Revision")!.SetValue(entry, skillStore.Revision - 1);
+    Check(skillStore.HashOf("alpha") == realHash, "An inspection built at an older revision is never served, so a racing reader can't leave a stale hash.");
+
+    await skillStore.SetEnabledAsync("alpha", true, default);
+    foreach (var gone in new[] { "sparky", "late" }) await skillStore.SetEnabledAsync(gone, false, default);
+    var stillLoads = (await sparkContext.Tools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "sparky" }, default))?.ToString();
+    Check(stillLoads is not null && !stillLoads.Contains("Pinned to the Spark."), "A skill disabled mid-turn can't be loaded while others stay enabled.");
+    var stillRuns = (await sparkContext.Tools.First(tool => tool.Name == "run_skill_script").InvokeAsync(new AIFunctionArguments { ["skillName"] = "sparky", ["scriptName"] = "scripts/go.py" }, default))?.ToString();
+    Check(stillRuns is not null && !stillRuns.Contains("isn't available yet"), "A skill disabled mid-turn can't run its scripts: " + stillRuns);
+    await skillStore.SetEnabledAsync("alpha", false, default);
+    var lastGone = (await sparkContext.Tools.First(tool => tool.Name == "run_skill_script").InvokeAsync(new AIFunctionArguments { ["skillName"] = "alpha", ["scriptName"] = "scripts/check.py" }, default))?.ToString();
+    Check(lastGone == "Error: that skill is no longer enabled.", "Disabling the last enabled skill stops an in-flight turn from running it.");
+
+    await skillStore.CreateAsync(new("rich", "Has extra frontmatter.", "node", "read", null, null), default);
+    var richPath = Path.Combine(skillStore.Root, "rich", "SKILL.md");
+    await File.WriteAllTextAsync(richPath, "---\nname: rich\ndescription: Has extra frontmatter.\nlicense: MIT\nversion: 1.2\nauthor: someone\nallowed-tools:\n  - Bash\n  - Read\nmetadata:\n  team: ops\n  tags:\n    - a\n    - b\n  lucia.execution: node\n  lucia.tier: read\n---\n\n# Rich\n");
+    await skillStore.UpdateAsync("rich", new("Still rich.", "node", "change", [], "# Rich again\n"), default);
+    var rewritten = SkillMarkdown.Parse(await File.ReadAllTextAsync(richPath))!;
+    Check(rewritten.Text("description") == "Still rich." && rewritten.Text("license") == "MIT" && rewritten.Text("version") == "1.2" && rewritten.Text("author") == "someone"
+        && rewritten.Map["allowed-tools"] is IList<object> { Count: 2 } && rewritten.Map["metadata"] is IDictionary<object, object> { } nested
+        && nested["tags"] is IList<object> { Count: 2 } && (string)nested["team"] == "ops" && (string)nested["lucia.tier"] == "change" && rewritten.Body.StartsWith("# Rich again"),
+        "Saving a skill keeps unknown frontmatter keys, list values and nested metadata, changing only name, description and lucia.* settings.");
+    await skillStore.DeleteAsync("rich", default);
+
+    // Every skill service the app registers must have its Skills-namespace constructor dependencies registered too,
+    // so a missing AddSingleton can't break the container (and with it chats and the node routes) at runtime.
+    var skillServices = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+    skillServices.AddSkills();
+    var registered = skillServices.Select(service => service.ServiceType).ToHashSet();
+    var skillNamespace = typeof(SkillStore).Namespace;
+    var missing = registered.Where(type => type.Namespace == skillNamespace)
+        .SelectMany(type => type.GetConstructors().SelectMany(ctor => ctor.GetParameters()))
+        .Select(parameter => parameter.ParameterType)
+        .Where(type => type.Namespace == skillNamespace && !registered.Contains(type)).Distinct().ToArray();
+    Check(missing.Length == 0, "Skill services depend on unregistered types: " + string.Join(", ", missing.Select(type => type.Name)));
+    var routeServices = new[] { typeof(SkillPackages), typeof(SandboxSkillRunner), typeof(SparkSkillRunner), typeof(NodeSkillRunner), typeof(AssistantSkills) };
+    Check(routeServices.All(registered.Contains), "AddSkills registers every service the skill routes and runners take.");
     Console.WriteLine($"Assistant checks passed ({checks} assertions). No Copilot runtime, GitHub token or network used.");
 }
 finally

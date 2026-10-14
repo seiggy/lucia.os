@@ -2,9 +2,9 @@ export type JobStatus = 'running' | 'succeeded' | 'stopped' | 'failed' | 'unansw
 export type JobRun = { id: string; sessionId: string; trigger: 'schedule' | 'manual'; started: string; finished?: string; status: JobStatus; error?: string }
 export type Job = {
   id: string; name: string; prompts: string[]; cron: string; timeZone: string; model?: string; enabled: boolean
-  tools: string[]; hosts: string[]; registries: string[]; reasoning?: string; contextTier?: string; next?: string; last?: JobRun; running: boolean; waiting?: string
+  tools: string[]; hosts: string[]; registries: string[]; skills: string[]; reasoning?: string; contextTier?: string; next?: string; last?: JobRun; running: boolean; waiting?: string
 }
-export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts' | 'registries' | 'reasoning' | 'contextTier'>
+export type JobDraft = Pick<Job, 'name' | 'prompts' | 'cron' | 'timeZone' | 'model' | 'enabled' | 'tools' | 'hosts' | 'registries' | 'skills' | 'reasoning' | 'contextTier'>
 export type PushDevice = { id: string; name: string; endpoint: string; added: string; lastUsed?: string }
 
 const idPattern = /^[a-f0-9]{32}$/
@@ -61,7 +61,7 @@ export function scopeText(job: Pick<Job, 'tools' | 'hosts' | 'registries'>, isRi
 }
 
 export const emptyJob = (timeZone: string): JobDraft =>
-  ({ name: '', prompts: [''], cron: '0 7 * * *', timeZone, enabled: true, tools: [], hosts: [], registries: [] })
+  ({ name: '', prompts: [''], cron: '0 7 * * *', timeZone, enabled: true, tools: [], hosts: [], registries: [], skills: [] })
 
 export function parseRun(value: unknown): JobRun {
   if (!record(value) || typeof value.id !== 'string' || typeof value.sessionId !== 'string' || !idPattern.test(value.sessionId)
@@ -78,7 +78,7 @@ export function parseJob(value: unknown): Job {
   const model = text(value.model), next = text(value.next), waiting = text(value.waiting)
   const reasoning = text(value.reasoning), contextTier = text(value.contextTier)
   return { id: value.id, name: value.name, prompts: value.prompts, cron: value.cron, timeZone: value.timeZone, enabled: value.enabled,
-    tools: value.tools, hosts: value.hosts, registries: value.registries, running: value.running, ...(model ? { model } : {}), ...(next ? { next } : {}),
+    tools: value.tools, hosts: value.hosts, registries: value.registries, skills: strings(value.skills) ? value.skills : [], running: value.running, ...(model ? { model } : {}), ...(next ? { next } : {}),
     ...(reasoning ? { reasoning } : {}), ...(contextTier ? { contextTier } : {}),
     ...(waiting ? { waiting } : {}), ...(value.last ? { last: parseRun(value.last) } : {}) }
 }

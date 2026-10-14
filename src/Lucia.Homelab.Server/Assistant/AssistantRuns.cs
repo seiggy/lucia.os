@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Lucia.Homelab.Server.Assistant.Skills;
 using Lucia.Homelab.Server.Domains;
 using Microsoft.Extensions.Options;
 
@@ -13,7 +14,8 @@ public sealed record AssistantTranscript(List<UiMessage> Messages);
 
 /// <summary>Runs chat turns in the background so they survive disconnects, and keeps each owner's chats as JSON files.</summary>
 public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<AssistantOptions> options,
-    IHostApplicationLifetime lifetime, ILogger<AssistantRuns> logger, AssistantBroker broker, AssistantTools? tools = null) : IAsyncDisposable
+    IHostApplicationLifetime lifetime, ILogger<AssistantRuns> logger, AssistantBroker broker, AssistantTools? tools = null,
+    AssistantSkills? skills = null) : IAsyncDisposable
 {
     private const long TranscriptLimit = 16 * 1024 * 1024;
     private readonly ConcurrentDictionary<string, AssistantRun> _runs = new();
@@ -152,6 +154,31 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         await runtime.DeleteAsync(key, ct);
     }
 
+    /// <summary>
+    /// The turn's tools and permission handler. Skills join it: a chat gets every enabled skill, a job only those it selects, and a
+    /// skills failure never stops the turn.
+    /// </summary>
+    private async Task<AssistantKit> BuildKitAsync(AssistantTurn turn, AssistantSettings settings, AssistantStream stream, AssistantRun run,
+        AssistantJobGrants? job, string? jobId, string folder)
+    {
+        var all = tools!.Create(turn.Actor, turn.User);
+        var context = SkillContext.Empty;
+        if (skills is not null)
+        {
+            try
+            {
+                var selection = jobId is null ? null : Jobs is { } jobs ? await jobs.SkillsAsync(turn.Owner, jobId, run.Stop.Token) : [];
+                context = await skills.ContextAsync(selection, tools.RedactResult, logger, run.Stop.Token);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                logger.LogWarning("Adding skills to a turn failed ({ErrorType}).", e.GetType().Name);
+            }
+        }
+        var kit = broker.Kit(turn, settings, [.. all, .. context.Tools], stream, run, job);
+        return context.Instructions.Length > 0 ? kit with { Instructions = context.Instructions } : kit;
+    }
+
     private async Task ExecuteAsync(string key, string folder, AssistantRun run, AssistantTurn turn,
         AssistantTranscript transcript, AssistantSessionInfo info)
     {
@@ -163,8 +190,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
                 ? await jobs.GrantsAsync(turn.Owner, jobId, Path.GetFileName(folder), run.Stop.Token) : null;
             var settings = await broker.SettingsAsync(turn.Owner, run.Stop.Token);
             turn = turn with { ModelEfforts = settings.ModelEfforts };
-            var kit = tools is null ? null
-                : broker.Kit(turn, settings, tools.Create(turn.Actor, turn.User), stream, run, job);
+            var kit = tools is null ? null : await BuildKitAsync(turn, settings, stream, run, job, info.JobId, folder);
             await foreach (var update in runtime.RunAsync(turn, kit, run.Stop.Token))
                 lock (stream) run.Publish(stream.Map(update));
             lock (stream) run.Publish(stream.Finish());

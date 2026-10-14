@@ -28,5 +28,10 @@
     <PackageReference Include="TensorSharp.Models" Version="2.8.6-gb10.20260921.1" />
     <PackageReference Include="TensorSharp.Native.Cuda" Version="2.8.6-gb10.20260921.1" />
     <PackageReference Include="TensorSharp.Server" Version="2.8.6-gb10.20260921.1" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assistant\Skills\BuiltIn\**\*.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

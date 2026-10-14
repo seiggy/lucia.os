@@ -29,12 +29,16 @@ public sealed record AppRoute(string Host, int Port, int? GrpcPort = null);
 /// One Lucia tool. Its tier decides whether the owner approves the call; its result is redacted and capped before the
 /// model sees it, and only Lucia's own errors reach the model, never an unexpected exception's text.
 /// </summary>
-public sealed class AssistantTool(AIFunction inner, string tier, Func<string, CancellationToken, Task<string>> redact, ILogger logger)
+public sealed class AssistantTool(AIFunction inner, string tier, Func<string, CancellationToken, Task<string>> redact, ILogger logger,
+    Func<JsonNode?, (string Tier, string? Grant)>? classify = null)
     : DelegatingAIFunction(inner)
 {
     public const int MaxOutput = 48 * 1024;
 
     public string Tier { get; } = tier;
+
+    /// <summary>For a tool whose tier and "always allow" grant depend on its arguments, such as a skill's script: decides them per call.</summary>
+    public Func<JsonNode?, (string Tier, string? Grant)>? Classify { get; } = classify;
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
@@ -88,6 +92,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         StringComparer.OrdinalIgnoreCase);
     private const int MaxSparkUpdates = 200;
     private const double Gib = 1024d * 1024 * 1024;
+    private readonly NodeExec _exec = new(nodes, requests);
 
     /// <summary>The Spark's latest host readings, with the last hour's peaks. Rounded so a model reads them, not raw counters.</summary>
     private object SparkHealth()
@@ -533,7 +538,8 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                 "Runs a command or script as root on a managed server, through Lucia's agent, and returns its exit code and the end of its "
                 + "output (stdout and stderr together). Nothing is interactive: stdin is empty, so pass -y and the like. Anything it starts in "
                 + "the background stops when it ends; use systemctl or docker for what should keep running. Prefer the other tools when one "
-                + "does the job, and read before you change. Needs canRunCommands from get_node.",
+                + "does the job, and read before you change. Never use it to look up images, tags or digests: use query_registry and "
+                + "list_node_images. Needs canRunCommands from get_node.",
                 async Task<object?> ([Description(NodeHelp)] string node,
                     [Description("The command, or a whole multi-line script.")] string command,
                     [Description("bash, sh or python3.")] string interpreter = "bash",
@@ -634,6 +640,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
             ("node_action", "restart") => $"Every app on {node} is offline for a few minutes while it restarts.",
             ("node_action", "update-agent") => $"Lucia loses touch with {node} for about a minute while its agent updates.",
             ("run_command", _) => $"This runs the command below as root on {node}. It can change anything there.",
+            ("run_skill_script", _) => $"This runs a skill's script as root on {node}. It can change anything there.",
             ("install_spark_updates", _) => "Updates install on the Spark that runs Lucia. Platform updates pause local AI while they install.",
             _ => "This can remove data or interrupt your lab.",
         };
@@ -859,59 +866,12 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         return [.. list.Take(200)];
     }
 
-    private async Task<(string Hostname, NodeRequestResult Result)> ExecOnNode(string node, string command, string interpreter, int seconds, CancellationToken ct)
-    {
-        var (id, hostname) = await Node(node, ct);
-        if ((await nodes.Facts(ct)).FirstOrDefault(item => item.NodeId == id)?.Status?.Features?.Contains("exec") != true)
-            throw new AssistantException(409, "exec_unsupported",
-                $"{hostname}'s agent can't run commands yet. Update it with node_action update-agent, then try again.");
-        var job = Guid.NewGuid();
-        // The node stops the command at its limit; this only bounds the wait if the node goes quiet.
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(seconds, 1, NodeRequests.MaxCommandSeconds) + 60);
-        try
-        {
-            var result = await requests.Exec(id, job, command, interpreter, seconds, ct);
-            while (result is { Success: true, Running: true } && DateTimeOffset.UtcNow < deadline)
-            {
-                try { result = await requests.Follow(id, job, stop: false, ct); }
-                catch (HardwareOnboardingException ex) when (ex.StatusCode == 504) { await Task.Delay(TimeSpan.FromSeconds(5), ct); }
-            }
-            if (!result.Success) throw new AssistantException(409, "command_refused", result.Message ?? $"{hostname} refused the command.");
-            return (hostname, result);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            using var brief = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try { await requests.Follow(id, job, stop: true, brief.Token); }
-            catch (Exception ex) when (ex is HardwareOnboardingException or OperationCanceledException) { }
-            throw;
-        }
-    }
+    private Task<(string Hostname, NodeRequestResult Result)> ExecOnNode(string node, string command, string interpreter, int seconds, CancellationToken ct) =>
+        _exec.Exec(node, command, interpreter, seconds, ct);
 
-    private async Task<(Guid Id, string Hostname)> Node(string text, CancellationToken ct)
-    {
-        var wanted = (text ?? "").Trim().TrimEnd('.');
-        var names = await nodes.Names(ct);
-        if (Guid.TryParse(wanted, out var id))
-            foreach (var item in names)
-                if (item.NodeId == id) return item;
-        if (IPAddress.TryParse(wanted, out var ip) && ip.ToString() == wanted)
-            foreach (var address in await nodes.Addresses(ct))
-                if (address.Address?.ToString() == wanted)
-                    foreach (var item in names)
-                        if (string.Equals(item.Hostname, address.Hostname, StringComparison.OrdinalIgnoreCase)) return item;
-        foreach (var candidate in new[] { wanted, wanted.Split('.')[0] })
-            foreach (var item in names)
-                if (string.Equals(item.Hostname, candidate, StringComparison.OrdinalIgnoreCase)) return item;
-        throw Unknown(text ?? "");
-    }
+    private Task<(Guid Id, string Hostname)> Node(string text, CancellationToken ct) => _exec.Node(text, ct);
 
-    internal static AssistantException Unknown(string text) =>
-        new(404, "unknown_node", Spark().IsMatch(text) ? "The Spark isn't a managed server. Use get_spark_health, get_spark_updates, check_spark_updates and install_spark_updates for it."
-            : $"No managed server is called \"{Short(text)}\". Use list_nodes to see them.");
-
-    [GeneratedRegex(@"spark|dgx", RegexOptions.IgnoreCase)]
-    private static partial Regex Spark();
+    internal static AssistantException Unknown(string text) => NodeExec.Unknown(text);
 
     private async Task<JsonArray> NodeRows(CancellationToken ct)
     {
@@ -945,6 +905,9 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         try { return Scrub(text, await stacks.Secrets(ct)); }
         catch (RegexMatchTimeoutException) { return "[Lucia couldn't check this output for secrets in time, so it was withheld. Ask for less.]"; }
     }
+
+    /// <summary>Scrubs a tool result of app secrets, for tools built outside this class (skills).</summary>
+    internal Task<string> RedactResult(string text, CancellationToken ct) => Redact(text, ct);
 
     /// <summary>Whether a variable or field name holds a secret.</summary>
     public static bool IsSecret(string key) => SecretName().IsMatch(key) || SecretFields.Contains(key);

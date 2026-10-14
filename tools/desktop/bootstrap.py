@@ -56,6 +56,7 @@ FILES = frozenset((
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
     "tools/packages/package_worker.py", "tools/runners/spark_runner_worker.py", "tools/runners/spark_model_worker.py",
+    "tools/skills/skill_worker.py", "deployment/skill-runner/Dockerfile",
     "deployment/boot/Dockerfile", "deployment/boot/serve.py", "deployment/boot/discover-and-wait",
     "deployment/boot/partitioner-guard", "deployment/boot/grub.cfg.in", "deployment/boot/finish-install",
     "deployment/boot/screen.sh", "deployment/boot/grub-theme.txt",
@@ -1295,6 +1296,10 @@ def provision_locked(root, state, directory, request, password, verify_only, eve
                     if model_worker.is_file():
                         event("model-worker", "Installing the Spark's Qwen3.8-Flash-Next service; it stays stopped until you start it on the AI page.")
                         p.run([sys.executable, str(model_worker), "install"])
+                    skill_worker = source / "tools/skills/skill_worker.py"
+                    if skill_worker.is_file():
+                        event("skill-worker", "Installing the Spark's Assistant Skills runner service; it runs skill scripts only in throwaway containers.")
+                        p.run([sys.executable, str(skill_worker), "install"])
                 else:
                     event("domain-worker", "DNS activation service is deferred until persistent user services are explicitly approved; identity and host setup are otherwise unchanged.")
         pem = read_bytes(state / "trust/lucia-root-ca.crt", 32768).decode("ascii")

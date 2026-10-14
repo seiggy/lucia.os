@@ -30,7 +30,8 @@ public sealed record AssistantSettings(string[] AutoTools, string[] Hosts, Dicti
 
 /// <summary>One turn's tools and the permission handler that governs them.</summary>
 #pragma warning disable GHCP001 // The SDK marks its permission decision as evaluation-only, but it is the handler's required result.
-public sealed record AssistantKit(IReadOnlyList<AIFunction> Tools, Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Permission);
+public sealed record AssistantKit(IReadOnlyList<AIFunction> Tools, Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Permission,
+    string? Instructions = null);
 #pragma warning restore GHCP001
 
 /// <summary>
@@ -145,15 +146,18 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
     public AssistantKit Kit(AssistantTurn turn, AssistantSettings settings, IReadOnlyList<AssistantTool> tools, AssistantStream stream, AssistantRun run,
         AssistantJobGrants? job = null)
     {
-        var tiers = tools.ToDictionary(tool => tool.Name, tool => tool.Tier);
+        var byName = tools.ToDictionary(tool => tool.Name);
         var calls = 0;
         return new(tools, async (request, invocation) =>
         {
-            if (request is not PermissionRequestCustomTool call || !tiers.TryGetValue(call.ToolName, out var tier))
+            if (request is not PermissionRequestCustomTool call || !byName.TryGetValue(call.ToolName, out var chosen))
                 return PermissionDecision.Reject("Lucia's assistant can only use its own tools.");
             if (Interlocked.Increment(ref calls) > MaxCallsPerTurn)
                 return PermissionDecision.Reject($"This turn has used its {MaxCallsPerTurn} tool calls. Summarize what you found and ask the owner how to go on.");
             var input = call.Args is { ValueKind: not JsonValueKind.Undefined } args ? JsonNode.Parse(args.GetRawText()) : null;
+            var tier = chosen.Tier;
+            string? skillGrant = null;
+            if (chosen.Classify is { } classify) (tier, skillGrant) = classify(input);
             string? host = null;
             if (tier == ToolTier.Web)
             {
@@ -171,8 +175,8 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             }
             var grant = tier switch
             {
-                ToolTier.Change => "tool:" + call.ToolName,
-                ToolTier.Destructive when job is not null => "tool:" + call.ToolName,
+                ToolTier.Change => skillGrant ?? "tool:" + call.ToolName,
+                ToolTier.Destructive when job is not null => skillGrant ?? "tool:" + call.ToolName,
                 ToolTier.Web => "host:" + host,
                 ToolTier.Registry => "registry:" + host,
                 _ => null,

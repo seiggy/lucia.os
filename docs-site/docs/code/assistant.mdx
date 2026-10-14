@@ -38,6 +38,7 @@ Three decisions shape most of the code.
 | `AssistantProviders.cs` | LiteLLM and Local AI model sources |
 | `AssistantEngineProxy.cs` | Loopback shim that writes reasoning effort into a request |
 | `AssistantJobs.cs` | Job storage, the cron ticker, job grants |
+| `Skills/` | Owner skills: the store, the tools, the three script runners. See [Assistant skills](./assistant-skills.mdx) |
 | `AssistantPush.cs` | Web Push without a library |
 | `AssistantWeb.cs` | `read_web_page`: public sites only |
 | `GitHubSignIn.cs` | GitHub device flow and token refresh |
@@ -57,12 +58,14 @@ public static class ToolTier
 
 | Tier | Examples | In a chat | In a job |
 |---|---|---|---|
-| `read` | `list_nodes`, `read_logs`, `ask_owner`, `notify_owner` | Runs | Runs |
+| `read` | `list_nodes`, `read_logs`, `ask_owner`, `notify_owner`, `load_skill`, `read_skill_resource`, `refresh_skills` | Runs | Runs |
 | `web` | `read_web_page` | Runs for allowed hosts, asks otherwise | Also runs for the job's hosts |
 | `registry` | `query_registry` | Asks per registry | Runs for the job's registries |
 | `change` | `install_catalog_app`, `app_action`, `run_backup` | Runs if the owner allowed it in settings or for this chat; else asks | Also runs if the job allows it |
 | `destructive` | `delete_app`, `node_action`, `run_command` | Always asks | Asks unless the job allows that tool |
 | `secret` | `request_secret` | Runs: the card is the consent | Same |
+
+`run_skill_script` takes its tier from the named skill's `lucia.tier` (`read`, `change` or `destructive`), and a call that names no valid skill counts as `change`. Its grant key is `skill:<name>@<hash>`, so editing a skill makes old grants lapse. See [Assistant skills](./assistant-skills.mdx).
 
 Plan mode refuses `change`, `destructive` and `secret` outright.
 
@@ -242,7 +245,7 @@ Everything lives under `Assistant:Directory`, in a per-owner folder. The owner k
   runtime/  workspace/     Copilot CLI state and working directory
 ```
 
-Writes go through `DomainOnboardingStore.WriteJson`, reads go through `RejectLinks`, and ids are validated as GUIDs or hex before they reach a path. Jobs hold `Prompts` (1 to 10, 32,768 characters each), `Cron`, `TimeZone`, `Model`, `Reasoning`, `ContextTier`, and the `Tools`, `Hosts` and `Registries` grants. `AssistantJobs.SaveAsync` checks that granted tools are change or destructive tools that exist.
+Writes go through `DomainOnboardingStore.WriteJson`, reads go through `RejectLinks`, and ids are validated as GUIDs or hex before they reach a path. Jobs hold `Prompts` (1 to 10, 32,768 characters each), `Cron`, `TimeZone`, `Model`, `Reasoning`, `ContextTier`, the `Tools`, `Hosts` and `Registries` grants, and `Skills` (names, `*` for every enabled skill, or empty). `AssistantJobs.SaveAsync` checks that granted tools are change or destructive tools that exist.
 
 ## Push
 

@@ -1,0 +1,125 @@
+---
+title: Deploying assistant skills
+description: What the Spark skill runner, the managed nodes and the KVM sandbox need, where skill files live, and how to check each one.
+sidebar_position: 9
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Deploying assistant skills
+
+<WhoWhatWhy
+  who="The person who runs the Spark and the managed servers, and decides where skill scripts may run."
+  what="The three places a skill script can run, what each one needs, where the skill files and the Spark's request queue live, and how to check that each path works."
+  why="A skill script runs as root on a node, in a container on the Spark or in a micro-VM. Each place has its own requirements, and a script that can't run there should fail with a reason rather than silently."
+/>
+
+Skills are folders the assistant can read, and scripts it can run. The owner writes them in the web panel. For the user's side, see [Assistant skills](../guide/assistant-skills.mdx). For the code, see [the developer page](../code/assistant-skills.mdx). This page covers what the machines need.
+
+## Where a script can run
+
+Each skill names one place for its scripts, in its `lucia.execution` setting:
+
+| Place | Needs | Runs |
+|---|---|---|
+| `node` (default) | A managed server with an agent that reports the `skills` feature | Any script the agent can run, as the agent's user |
+| `spark` | The skill runner installed on the Spark | Scripts in a throwaway container |
+| `sandbox` | A node that reports `kvm` (`/dev/kvm` and Docker) | Python and JavaScript only, in a micro-VM |
+
+A script that can't run in its place fails with a message that says why. A sandbox script on a server without KVM, for example, gets "No server can run sandboxed skills".
+
+## Skill files on the host
+
+The host keeps owner skills under `Assistant__Directory`, in a `skills` folder next to the other assistant state:
+
+```text
+/data/assistant/skills/
+  index.json              enabled state, source, updated time and hash for each skill
+  <name>/SKILL.md
+  <name>/scripts/...
+  <name>/references/...
+  <name>/assets/...
+```
+
+`index.json` holds what isn't part of a skill's package, so back it up with the rest of `/data`. The limits are 200 skills, 200 files per skill, 1 MiB per file, 5 MiB per skill and 256 KiB for each file edited in the web panel.
+
+Built-in skills ship inside the host and aren't written to this folder. The panel marks them read-only.
+
+## The Spark skill runner
+
+The desktop bootstrap (`tools/desktop/bootstrap.py`) installs the runner. It runs skill scripts only in throwaway containers, never on the Spark itself.
+
+- **The service.** `tools/skills/skill_worker.py` runs as a setup-user service with `install` and `run` commands. It picks up requests and writes answers.
+- **The image.** The worker builds `lucia-skill-runner` from `deployment/skill-runner/Dockerfile`. It includes Node 24, the .NET 10 SDK, Python 3 and bash. Its base images are pinned by digest, so a rebuild gets the same base.
+- **The queue.** Requests and answers go through `host/data/assistant/skill-runner/`:
+
+  ```text
+  host/data/assistant/skill-runner/
+    requests/<id>.json     one request per script run
+    responses/<id>.json    the answer the host reads
+    worker.json            the worker's own status
+  ```
+
+- **Expiry.** A request can live for at most 20 minutes. A script's timeout is between 1 and 600 seconds.
+- **Interrupted runs.** A request the worker claimed but didn't finish before a restart is answered `interrupted`. It is never run again, so a script that changes things is never repeated by surprise.
+
+Containers run with these limits: 1 GB of memory, 2 CPUs, 256 processes, no capabilities, a read-only root filesystem with `/tmp` writable, and no network unless the skill sets `lucia.network: bridge`.
+
+The Spark runner's packages and the sandbox's Hyperlight packages are preview releases. Expect their behavior to change before they are final.
+
+## Managed nodes
+
+Node agents that report the `skills` feature download each enabled skill from the host, once per version:
+
+- The agent asks for the skill manifest every minute, and right away when the host sends `sync-skills`.
+- Each package is fetched by name and hash, checked with SHA-256 before it is unpacked, and written with restrictive modes: folders 0700, files 0600, no execute bit on the files.
+- A package is renamed into place in one step. Hashes no longer in the manifest are removed.
+
+Agents older than the skills release don't report the feature. Update them first with `node_action update-agent`, from Servers in the panel, then the skills sync starts on its own.
+
+### The KVM sandbox
+
+A node can run `sandbox` scripts when it reports `kvm`. That needs:
+
+- `/dev/kvm` on the server, so the Hyperlight micro-VM can start.
+- Docker, which runs the sandbox image with `--device /dev/kvm`.
+- A node with `x86_64` hardware. The host prefers a KVM node when the call names one.
+
+Check it on the node:
+
+```bash
+ls -l /dev/kvm
+command -v docker
+```
+
+If `/dev/kvm` is missing, the script fails with "this server has no /dev/kvm", and the other nodes still work.
+
+## Check that each path works
+
+1. **Node skills.** In the panel, turn on a built-in skill and ask the assistant to read its instructions with `load_skill`. If it gets the text, the host has delivered the skill. A node that can't run the script says so in its reply, and its agent logs show the sync attempt.
+
+2. **Spark runner.** Confirm the worker and the image exist:
+
+   ```bash
+   docker image inspect lucia-skill-runner --format '{{.Id}}'
+   ls host/data/assistant/skill-runner/
+   ```
+
+   A request you can't find an answer for means the worker isn't running. Start it from the desktop, or run `skill_worker.py install` again.
+
+3. **Sandbox.** Confirm the node reports `kvm` on the Servers page, then run a small Python skill set to `sandbox`. A reply with the script's output means the micro-VM started.
+
+## Failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "No server can run sandboxed skills" | No node reports `kvm` | Use a server with `/dev/kvm`, or move the script to `node` or `spark`. |
+| "Docker isn't installed on this server" | Docker missing on the sandbox node | Install Docker, then retry. |
+| A script answers `interrupted` | The worker restarted during the run | Expected. Ask the assistant to run it again if the result still matters. |
+| A node never gets a skill | Agent older than the skills release | Run `node_action update-agent` from Servers. |
+| "That skill no longer exists" | The skill was deleted or turned off while a chat was running | Turn the skill back on, or start a new chat. |
+
+## See also
+
+- [Assistant](./assistant.mdx) for the host, its state and what the assistant can reach.
+- [Nodes](./nodes.mdx) for the node agent and its updates.

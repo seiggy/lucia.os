@@ -31,6 +31,7 @@ internal static partial class NodeRequests
                         {
                             var answer = request.Kind == "logs" ? await AnswerAsync(request, token)
                                 : request.Kind.StartsWith("exec", StringComparison.Ordinal) ? await NodeExec.AnswerAsync(request, token)
+                                : request.Kind == "sync-skills" ? await SkillSync.AnswerAsync(request, token)
                                 : NodeUpdates.Start(request, ct => AgentRelease.UpdateAsync(client, node, certificate(), key, ct), token);
                             await client.AnswerAsync(node, certificate(), answer, key, token);
                         }

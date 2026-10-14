@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Lucia.Homelab.Server.Assistant.Skills;
 using Lucia.Homelab.Server.Boot;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Onboarding;
@@ -200,9 +201,10 @@ public static partial class StackEndpoints
             context.Response.Headers["X-Lucia-Agent-Release"] = release;
             await NodeAgentRelease.WriteTar(context.Response.Body, ct);
         });
+        nodes.MapNodeSkills();
     }
 
-    private static async Task<(string Hostname, string Body)> ReadNodeBody(Guid id, string purpose, HttpContext context,
+    internal static async Task<(string Hostname, string Body)> ReadNodeBody(Guid id, string purpose, HttpContext context,
         BootOptions options, DiscoveryChallenges challenges, ManagedNodeEnrollment enrollment, CancellationToken ct)
     {
         var address = HardwareBootExtensions.RequireNetwork(context, options);
@@ -222,7 +224,7 @@ public static partial class StackEndpoints
         return hostname;
     }
 
-    private static async Task<string> VerifyProofHeader(Guid id, string purpose, string body, HttpContext context, BootOptions options,
+    internal static async Task<string> VerifyProofHeader(Guid id, string purpose, string body, HttpContext context, BootOptions options,
         DiscoveryChallenges challenges, ManagedNodeEnrollment enrollment, CancellationToken ct)
     {
         var address = HardwareBootExtensions.RequireNetwork(context, options);

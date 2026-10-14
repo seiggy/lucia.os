@@ -1,0 +1,119 @@
+---
+title: Assistant skills
+description: Give the assistant saved instructions and scripts for jobs you do often, and decide where each script runs.
+sidebar_position: 10
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Assistant skills
+
+<WhoWhatWhy
+  who="Lab owners who repeat the same kind of job, such as checking image updates or patching a server."
+  what="What a skill is, where to find the built-in ones, how to write or import your own, and what each script is allowed to do."
+  why="The assistant knows a lot in general but not how you like things done. A skill puts your steps and checks in one place, so every chat and job follows the same method."
+/>
+
+A skill is a folder of instructions, with optional files and scripts, that the assistant reads when a task fits it. Think of it as a runbook. You write the steps once, and the assistant follows them the same way each time.
+
+Lucia ships four built-in skills. You can read them, but not change them. You can duplicate one to make your own version.
+
+| Built-in skill | What it covers |
+|---|---|
+| App troubleshooting | Working out why an app is down or restarting |
+| Container image updates | Checking whether a newer image exists and what changing it involves |
+| Custom app authoring | Writing a custom app for the catalog |
+| OS security patching | Checking for and planning OS security updates |
+
+## Find the skills
+
+Open **Settings → Assistant skills**. The page lists every skill, with its name, a short description, where its scripts run and whether it is on. Turn a skill off to hide it from the assistant. A turned-off skill stays saved, so you can turn it back on later.
+
+{/* TODO screenshot: the Assistant skills settings page with the built-in list and one owner skill. */}
+
+Choose a skill to see its instructions and files. Built-in skills show a note that says they are read-only.
+
+## Make a skill
+
+You can add a skill three ways.
+
+- **New skill.** Give it a name, such as `zfs-pool-health`, and a short description. The description helps the assistant decide when the skill fits, so write it as one plain sentence. Lucia creates the folder with a starter `SKILL.md` file.
+- **Upload a package.** Send a zip of a skill folder. A zip can be at most 5 MiB.
+- **Import from GitHub.** Paste the address of a folder on github.com, such as `https://github.com/owner/repo/tree/main/skills/my-skill`. Lucia reads the folder through GitHub's public API, so private repositories won't import.
+
+Skill names use lowercase letters, numbers and single hyphens. A skill can hold up to 200 files, with 1 MiB for each file and 5 MiB in total. The editor lets you change text files up to 256 KiB.
+
+A skill folder looks like this:
+
+```text
+my-skill/
+  SKILL.md          instructions, with a short header at the top
+  scripts/          scripts the assistant can run
+  references/       notes it reads when it needs more detail
+  assets/           other files it can read
+```
+
+The header in `SKILL.md` holds the skill's name, description and settings:
+
+```markdown
+---
+name: zfs-pool-health
+description: Checks ZFS pool health on the TrueNAS box and reports any pool that is degraded.
+metadata:
+  lucia.execution: node
+  lucia.tier: read
+---
+
+Run scripts/check-pools.sh on the storage server, then summarize any pool that is not ONLINE.
+```
+
+## Where a script runs
+
+Each skill picks where its scripts run. You set it in the skill's header, and you can see it on the skill's page.
+
+| Where | What it means | Use it for |
+|---|---|---|
+| On a server | The script runs on the managed server the assistant names. The server's agent runs it. | Checks and changes that must happen on that machine |
+| On the Spark | The script runs on the Spark, in a throwaway container. | Checks that belong on the Spark itself |
+| In the sandbox | Python and JavaScript run in an isolated micro-VM on a server with KVM. The script gets no network unless the skill allows it. | Scripts you want kept away from the rest of the server |
+
+A sandboxed script needs a server with hardware virtualization (KVM). If none of your servers has it, the assistant says so and the script doesn't run.
+
+Each skill also has a **tier**, which sets how much approval it needs:
+
+- **Read.** The script only looks. It runs without asking.
+- **Change.** The script changes something. It asks first, unless you have allowed it.
+- **Destructive.** The script can delete or interrupt something. It always asks in a chat.
+
+Lucia checks the tier when the script runs. It takes the tier from the skill's header, so a skill can't lower its own tier by editing a file.
+
+## Approve a script
+
+The first time the assistant wants to run a script that isn't read-only, its approval card shows the skill's name, its tier and where it runs. You can approve once, or pick the card's option to always allow that skill's scripts for the chat.
+
+A standing "always allow" applies to one exact version of the skill. The grant includes a short fingerprint of the skill's content. If you edit the skill, the grant no longer matches, and the next run asks you again. This keeps a changed script from running on an old yes.
+
+:::warning
+A script that runs on a server runs with the same reach as a command you type there. Read the script before you approve it, the same way you would read a command.
+:::
+
+## Use skills in jobs
+
+Each job has a **Skills it may use** list. Leave it empty to give the job no skills, choose specific skills, or choose **All enabled skills**. Built-in skills are offered to every job, because they only describe tools the job already has. A job still asks before a script runs, as described in [Assistant jobs](./assistant-jobs.mdx).
+
+## Refresh the list
+
+When you add or change a skill during a chat, say so in your message, for example "I just added a skill for the backups." The assistant then reloads the list. Its new tools join the chat from your next message.
+
+## Problems
+
+| You see | What to do |
+|---|---|
+| "Built-in skills are read-only" | Duplicate the skill and edit the copy. |
+| "Lucia keeps at most 200 skills" | Delete or turn off skills you no longer use. |
+| "The skill is larger than 5 MiB" | Remove large files from the folder, or move them out of the skill. |
+| A server says it can't run sandboxed skills | That server has no KVM. Use a different server or put the script on a server or the Spark. |
+| "That skill no longer exists" | The skill was deleted or turned off during the chat. Turn it back on, or ask again. |
+| A script asks again after you edited it | The skill's version changed, so earlier "always allow" choices no longer apply. Review the change and approve again. |
+
+For the rest of the assistant, see [Assistant](./assistant.mdx).

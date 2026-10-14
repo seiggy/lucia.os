@@ -60,6 +60,10 @@ public sealed partial class NodeRequests
     public Task<NodeRequestResult> Follow(Guid node, Guid job, bool stop, CancellationToken ct) =>
         Ask(node, new(Guid.NewGuid(), stop ? "exec-stop" : "exec-status", "", 0, Job: job), ct);
 
+    /// <summary>Asks the node to fetch its skill packages now instead of at its next poll; it answers once that pass has finished or after a short wait.</summary>
+    public Task<NodeRequestResult> SyncSkills(Guid node, CancellationToken ct) =>
+        Ask(node, new(Guid.NewGuid(), "sync-skills", "", 0), ct);
+
     private async Task<NodeRequestResult> Ask(Guid node, NodeRequest request, CancellationToken ct)
     {
         var answer = new TaskCompletionSource<NodeRequestResult>(TaskCreationOptions.RunContinuationsAsynchronously);

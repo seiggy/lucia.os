@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Lucia.Homelab.Server.Assistant.Skills;
 using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Stacks;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -28,6 +29,7 @@ public static class AssistantEndpoints
         builder.Services.AddSingleton(services => new AssistantEngineProxy(() => LoopbackPort(services)));
         builder.Services.AddSingleton<AssistantRuntime>();
         builder.Services.AddSingleton<AssistantBroker>();
+        builder.Services.AddSkills();
         builder.Services.AddSingleton<AssistantTools>();
         builder.Services.AddSingleton<AssistantRuns>();
         builder.Services.AddSingleton(services => ActivatorUtilities.CreateInstance<AssistantPush>(services, AssistantPush.CreateClient()));
@@ -148,6 +150,8 @@ public static class AssistantEndpoints
             await github.DisconnectAsync(Owner(context));
             return Results.NoContent();
         });
+        // Skill packages: written and managed here, offered to every chat and to the jobs that select them.
+        group.MapSkills();
         // Scheduled jobs: each run is a chat of its own, acting as whoever last saved the job.
         group.MapGet("/jobs", (HttpContext context, AssistantJobs jobs, CancellationToken ct) => jobs.ListAsync(Owner(context), ct));
         group.MapPost("/jobs", async (HttpContext context, AssistantJobs jobs, CancellationToken ct) =>
@@ -235,7 +239,7 @@ public static class AssistantEndpoints
     };
 
     /// <summary>A path-safe folder name per owner, stable across browser sign-ins.</summary>
-    private static string Owner(HttpContext context)
+    internal static string Owner(HttpContext context)
     {
         var subject = context.User.FindFirstValue("sub") ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(subject))

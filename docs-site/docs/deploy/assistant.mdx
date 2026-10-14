@@ -39,6 +39,9 @@ flowchart LR
 | A model on the Spark, or the Local AI app on a node | `local:` models | Optional. See [Local AI](./local-ai.mdx). |
 | `HostPlatform__InferenceApiKey` | The Spark's own model | At least 32 characters and different from the owner API key. |
 | Node agents that report the `exec` feature | `run_command` | Update the agent first. See [Nodes](./nodes.mdx). |
+| Node agents that report the `skills` feature | Skill scripts on a node | Skills sync to the agent every minute. Agents older than the skills release need `node_action update-agent` first. |
+| The skill runner on the Spark | Skill scripts with `spark` execution | Installed by the desktop bootstrap. See [Deploying assistant skills](./assistant-skills.mdx). |
+| A node with KVM (`/dev/kvm`) and Docker | Skill scripts with `sandbox` execution | Optional. Without it sandbox scripts fail with a clear message. See [Deploying assistant skills](./assistant-skills.mdx). |
 | HTTPS on a name devices trust | Browser notifications | Web Push needs a secure context. See [Networking and DNS](./networking-and-dns.mdx). |
 
 None of the model sources is required on its own. The assistant works with Copilot only, with local models only, or with both. A source that isn't ready says why in the model picker.
@@ -79,6 +82,7 @@ All assistant state lives under `Assistant__Directory`, with one folder per owne
   litellm/<owner>.json      LiteLLM virtual key, encrypted
   push-key.json             VAPID private key, encrypted
   runtime/                  Copilot runtime state
+  skills/                   owner skills, index.json and one folder per skill
   workspace/                its working directory (kept empty)
 ```
 
@@ -123,6 +127,7 @@ The reverse proxy never reaches the host over loopback, since it connects throug
 | Container registries | The registry protocol | Tag counts and digests. Private images use sign-ins from Settings → Registries. |
 | The public web | `read_web_page` | Public sites only: up to 2 MB fetched, 20,000 characters per read. |
 | Owner's browsers | Web Push | Notifications to devices the owner registered. |
+| Skill scripts | Nodes, the Spark's skill runner, or the KVM sandbox | Run the owner's skill scripts where each skill says. Each script runs in a container or micro-VM, never on the Spark host. See [Deploying assistant skills](./assistant-skills.mdx). |
 
 It has no direct file access, no shell on the Spark and no access to GitHub beyond the model service. Commands run only on managed servers whose agent announces command support. A command outlives an agent restart, but its exit code is lost.
 

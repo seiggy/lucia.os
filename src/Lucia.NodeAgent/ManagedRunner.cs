@@ -68,6 +68,7 @@ internal static class ManagedRunner
         // The closures read the current configuration, so renewed certificates carry over.
         _ = Task.Run(() => StackRunner.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
         _ = Task.Run(() => NodeRequests.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
+        _ = Task.Run(() => SkillSync.RunAsync(client, plan.DeviceId, () => configuration!.CertificatePem, key, token), token);
         _ = Task.Run(() => NodeUpdates.RunAsync(token), token);
         _ = Task.Run(() => NodeUsage.RunAsync(token), token);
         var nextRenewal = DateTimeOffset.MinValue;
@@ -243,6 +244,6 @@ internal static class ManagedRunner
         return new(plan.DeviceId, plan.Hostname, version, FirstNumber("uptime"), FirstNumber("loadavg"),
             memoryTotal, memoryAvailable, total, available, NodeRuntime.Current, NodeUpdates.Current, AgentRelease.Current,
             NodeUsage.Cpu(Optional(Path.Combine(proc, "stat"))), NodeUsage.CpuTemperature(sysClass), gpuPercent, gpuTemperature,
-            NodeExec.Features);
+            SkillSync.Features, SkillSync.Reported());
     }
 }

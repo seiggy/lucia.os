@@ -114,6 +114,44 @@ internal static partial class AssistantWeb
         }
     }
 
+    /// <summary>
+    /// Reads a GitHub API reply as bytes, up to <paramref name="maxBytes"/>, over the same checked connection as pages. A redirect
+    /// isn't followed, so the caller only ever talks to the one site the owner allowed.
+    /// </summary>
+    internal static async Task<byte[]> Fetch(Uri uri, int maxBytes, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Lucia-Assistant/1.0");
+            request.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+            request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+            using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                throw new AssistantException(404, "github_not_found", "GitHub has nothing at that address. Check the URL, and that the repository is public.");
+            if (!response.IsSuccessStatusCode)
+                throw new AssistantException(502, "github_error", $"GitHub answered HTTP {(int)response.StatusCode}.");
+            await using var body = await response.Content.ReadAsStreamAsync(deadline.Token);
+            var buffer = new byte[maxBytes + 1];
+            var length = 0;
+            int read;
+            while (length < buffer.Length && (read = await body.ReadAsync(buffer.AsMemory(length), deadline.Token)) > 0) length += read;
+            if (length > maxBytes) throw new AssistantException(413, "github_too_large", "A file on GitHub is larger than skills allow.");
+            return buffer[..length];
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new AssistantException(504, "github_timeout", "GitHub didn't answer in time.");
+        }
+        catch (Exception error) when (error is HttpRequestException or IOException)
+        {
+            if (error.GetBaseException() is AssistantException refused) throw refused;
+            throw new AssistantException(502, "github_unreachable", "Lucia couldn't connect to GitHub.");
+        }
+    }
+
     /// <summary>Whether an address is on the public internet: not private, loopback, link-local, shared, multicast or reserved.</summary>
     internal static bool Public(IPAddress address)
     {

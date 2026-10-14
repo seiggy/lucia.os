@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import ssl
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -20,7 +21,7 @@ sys.path[:0] = [str(app / "tools/identity"), str(app / "tools/host")]
 import application
 from provision import Provisioner, write_file
 
-SOURCES = ("deployment/host/Dockerfile", "tools/host/package.py")
+SOURCES = ("deployment/host/Dockerfile", "tools/host/package.py", "tools/skills/skill_worker.py", "deployment/skill-runner/Dockerfile")
 expected = json.loads((stage / "manifest.json").read_text())["sha256"]
 p = Provisioner(argparse.Namespace(state=str(state), host=None, certificate_mode="private-ca",
                                   auth_port=None, ldap_port=None, ca_port=None))
@@ -110,6 +111,8 @@ with contextlib.ExitStack() as stack:
         stable = lambda devices: [{**item, "device": {k: v for k, v in item["device"].items() if k not in live}} for item in devices]
         assert stable(hardware_after["devices"]) == stable(hardware_before["devices"]) and hardware_after["tasks"] == hardware_before["tasks"]
         assert hardware_after["events"][:len(hardware_before["events"])] == hardware_before["events"]
+        # The Assistant Skills runner is a setup-user service; installing it again is a no-op restart that picks up the new files.
+        subprocess.run([sys.executable, str(app / "tools/skills/skill_worker.py"), "install"], check=True, capture_output=True, timeout=120)
         result = {"agent_jobs": True, "artifact": expected, "worker_state": packages["worker"]["state"],
                   "models_preserved": before_slots, "installation_enabled": True, "persistent_state_preserved": True}
         write_file(stage / "result.json", json.dumps(result, indent=2) + "\n")

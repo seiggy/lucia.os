@@ -53,6 +53,7 @@ A job runs while nobody watches, so it can't wait for you the way a chat can. An
 - **Risky changes.** Deleting, restoring a backup, publishing, installing updates, restarting a server and running a command. Allow one only when the job's prompts truly need it.
 - **Sites it may read.** Extra host names for this job, one per line.
 - **Container registries it may query.** A registry is where container images are stored. Allowing one lets the job ask it for an image's tags, to see whether a newer version exists. Docker Hub, GitHub, GitLab, Quay, Google and Microsoft are in the list. Registries you added under **Settings → Registries** appear too.
+- **Skills it may use.** Pick the skills this job can read and run scripts from. Leave it empty for none, choose specific skills, or choose **All enabled skills**. Scripts still follow each skill's approval rules. See [Assistant skills](./assistant-skills.mdx).
 
 :::warning
 A risky change allowed for a job runs with nobody checking it. The editor warns you in these words: "Nobody checks these before they happen." Think twice before you allow a command to run on a schedule, and prefer to leave it off for every job.

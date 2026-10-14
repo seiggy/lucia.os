@@ -105,6 +105,8 @@ Your choices are remembered for each model on this browser.
 | Make changes (asks unless allowed) | Install a catalog app, save a custom app, start, stop, restart, update or move an app, run a backup, check servers for updates |
 | Make risky changes (always asks in chat) | Delete an app, restore a backup, publish or unpublish an app, install updates, restart a server, update a server's agent, run a command |
 | Notify you | Send a message to your phone or browser |
+| Read skills | Load a skill's instructions and its files, and reload the list of enabled skills |
+| Run skill scripts | Run a script from a skill on a node, the Spark or the sandbox. The skill's tier decides whether it asks. |
 
 ## What it can't do
 
@@ -124,4 +126,4 @@ Your choices are remembered for each model on this browser.
 | A card you already answered | It was answered in another window, or the chat moved on. Reload the panel. |
 | "The owner didn't answer within 30 minutes" | Ask again. Lucia declined the call because nobody answered. |
 
-To run a prompt on a schedule without opening the panel, see [Assistant jobs](./assistant-jobs.mdx). The machine-side details are in [deploying the assistant](../deploy/assistant.mdx).
+To run a prompt on a schedule without opening the panel, see [Assistant jobs](./assistant-jobs.mdx). Skills are small folders of instructions and scripts that teach the assistant a task. See [Assistant skills](./assistant-skills.mdx). The machine-side details are in [deploying the assistant](../deploy/assistant.mdx).
