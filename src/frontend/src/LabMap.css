@@ -8,7 +8,7 @@
   --accent-soft: color-mix(in srgb, var(--accent) 24%, var(--surface));
   --void: #04050a; --cyan: #00f0ff; --acid: #a6ff00; --amber: #ffb000; --red: #ff4d6d; --magenta: #ff2bd6; --dim: #7b8798; --hud: #d6f7fb;
   --hud-font: 'Chakra Petch', ui-sans-serif, system-ui, sans-serif;
-  position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr);
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
   height: calc(100dvh - var(--labmap-top, 150px) - var(--labmap-bottom, 0px)); min-height: 460px;
   background: var(--void); color: var(--text);
 }
@@ -21,7 +21,7 @@
 .labmap [data-health=failed] { --tone: var(--red); }
 .labmap [data-health=stale], .labmap [data-health=unknown] { --tone: var(--dim); }
 
-.labmap-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 24px; background: var(--page); border-bottom: 1px solid var(--line); position: relative; z-index: 20; }
+.labmap-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 24px; background: var(--page); border-bottom: 1px solid var(--line); position: relative; z-index: 20; }
 .labmap-toolbar h1 { font-size: 20px; line-height: 1.2; letter-spacing: -.02em; margin-right: 12px; }
 .labmap-tool, .labmap-layers summary { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out; }
 .labmap-tool:hover, .labmap-layers summary:hover { background: var(--surface-subtle); }

@@ -161,7 +161,7 @@ The universe scene uses a licensed jumpgate model that is not in the repository.
 
 ## The page
 
-`LabMap.tsx` is lazy loaded and owner-only. It reads the structure every 60 seconds and the live data every 10, both through `ownerRequest`, and pauses both while the tab is hidden. The selected span and site cap persist in `localStorage` (`labmap-span`, `labmap-sites`) as does the theme (`labmap-theme`). `stale` flips when no live reading has landed for 35 seconds, which the status strip shows as "Live readings paused". Wallboard mode requests fullscreen, hides the toolbar and steps through `counts.attention` every 12 seconds with `flyTo`.
+`LabMap.tsx` is lazy loaded and owner-only. It reads the structure every 60 seconds and the live data every 10, both through `ownerRequest`, and pauses both while the tab is hidden. The map's height comes from `--labmap-top`, which `LabMap.tsx` measures from the header down. When the assistant pushes the page, the page scrolls inside `.app-shell` rather than the window, so the measurement adds that column's `scrollTop` and a `ResizeObserver` on it re-measures when it changes size. The selected span and site cap persist in `localStorage` (`labmap-span`, `labmap-sites`) as does the theme (`labmap-theme`). `stale` flips when no live reading has landed for 35 seconds, which the status strip shows as "Live readings paused". Wallboard mode requests fullscreen, hides the toolbar and steps through `counts.attention` every 12 seconds with `flyTo`.
 
 ## The portal shell
 

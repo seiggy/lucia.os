@@ -90,17 +90,24 @@ export function AssistantDock({ session, refreshSession, page, open, side, waiti
     }
   }, [open])
   // A pushed page scrolls in its own column (AssistantDock.css), so the reading position moves between it and the window.
+  // The column's height and the page's width both change when the flag flips, so apply the position after that layout and again
+  // on the next frames, in case it has grown taller (narrower content wraps) and the first attempt clamped.
   useLayoutEffect(() => {
     const shell = dock.current?.parentElement
     if (!pushed || !shell) return
     const root = document.documentElement
     const top = window.scrollY
     root.dataset.assistantPush = ''
+    void shell.offsetHeight
     shell.scrollTop = top
+    let frame = requestAnimationFrame(() => { shell.scrollTop = top; frame = requestAnimationFrame(() => { shell.scrollTop = top }) })
     return () => {
+      cancelAnimationFrame(frame)
       const top = shell.scrollTop
       delete root.dataset.assistantPush
+      void root.offsetHeight
       window.scrollTo({ top, behavior: 'instant' })
+      frame = requestAnimationFrame(() => window.scrollTo({ top, behavior: 'instant' }))
     }
   }, [pushed])
   useEffect(() => {

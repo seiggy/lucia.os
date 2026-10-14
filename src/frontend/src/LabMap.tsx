@@ -163,10 +163,15 @@ function LabMapView({ session, refreshSession }: Session) {
   useLayoutEffect(() => {
     const element = root.current
     if (!element) return
-    const place = () => element.style.setProperty('--labmap-top', `${Math.max(0, element.getBoundingClientRect().top + window.scrollY)}px`)
+    // The map fills what is left below the header. A pushed assistant makes the page scroll in .app-shell, not the window, so count both,
+    // and measure again whenever that column changes size.
+    const shell = element.closest<HTMLElement>('.app-shell')
+    const place = () => element.style.setProperty('--labmap-top', `${Math.max(0, element.getBoundingClientRect().top + window.scrollY + (shell?.scrollTop ?? 0))}px`)
     place()
     window.addEventListener('resize', place)
-    return () => window.removeEventListener('resize', place)
+    const observer = shell ? new ResizeObserver(place) : null
+    if (shell) observer?.observe(shell)
+    return () => { window.removeEventListener('resize', place); observer?.disconnect() }
   }, [wallboard])
 
   useEffect(() => {
