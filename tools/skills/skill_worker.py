@@ -255,6 +255,9 @@ def tag():
     return IMAGE + ":" + hashlib.sha256(DOCKERFILE.read_bytes()).hexdigest()[:16]
 
 
+DOTNET_PROPERTIES = ("-p:PublishAot=false", "-p:NuGetAudit=false")
+
+
 def interpreter(path):
     suffix = extension(path)
     if suffix == ".sh":
@@ -265,7 +268,8 @@ def interpreter(path):
         return ["node", path]
     if suffix in (".ts", ".mts"):
         return ["node", "--experimental-strip-types", path]
-    return ["dotnet", "run", path]
+    # .NET 10 file-based apps default to PublishAot, whose restore fetches the AOT compiler; without network that fails.
+    return ["dotnet", "run", path, *DOTNET_PROPERTIES]
 
 
 def checker(path):
@@ -278,7 +282,7 @@ def checker(path):
         return ["node", "--check", path]
     if suffix in (".ts", ".mts"):
         return ["node", "--check", "--experimental-strip-types", path]
-    return ["dotnet", "build", path, "-nologo", "-v:q", "-clp:NoSummary"]
+    return ["dotnet", "build", path, "-nologo", "-v:q", "-clp:NoSummary", *DOTNET_PROPERTIES]
 
 
 def docker_command(image, name, work, network, arguments, argv):

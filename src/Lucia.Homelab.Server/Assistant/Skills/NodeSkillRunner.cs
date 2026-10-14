@@ -29,7 +29,7 @@ public sealed class NodeSkillRunner(NodeExec exec, SkillStore store)
             ".py" => ("python3", $"python3 {Quote(script)}"),
             ".js" or ".mjs" => ("node", $"node {Quote(script)}"),
             ".ts" or ".mts" => ("node", $"node --experimental-strip-types {Quote(script)}"),
-            ".cs" => ("dotnet", $"dotnet run {Quote(script)}"),
+            ".cs" => ("dotnet", $"dotnet run {Quote(script)} -p:PublishAot=false -p:NuGetAudit=false"),
             _ => ("", ""),
         };
         if (runtime.Length == 0 || !SkillStore.ValidName(skill) || !SkillNodeEndpoints.HashPattern().IsMatch(hash)) return null;

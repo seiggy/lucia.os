@@ -171,7 +171,7 @@ def run_checks(base):
     assert bridged[bridged.index("--network") + 1] == "bridge" and not any(item.startswith("LUCIA_SKILL_ARGS") for item in bridged)
     assert [w.interpreter(p) for p in ("a.sh", "a.py", "a.js", "a.mjs", "a.ts", "a.mts", "a.cs")] == [
         ["bash", "a.sh"], ["python3", "a.py"], ["node", "a.js"], ["node", "a.mjs"], ["node", "--experimental-strip-types", "a.ts"],
-        ["node", "--experimental-strip-types", "a.mts"], ["dotnet", "run", "a.cs"]]
+        ["node", "--experimental-strip-types", "a.mts"], ["dotnet", "run", "a.cs", "-p:PublishAot=false", "-p:NuGetAudit=false"]]
     assert [w.checker(p) for p in ("a.sh", "a.py", "a.js", "a.ts")] == [
         ["bash", "-n", "a.sh"], ["python3", "-m", "py_compile", "a.py"], ["node", "--check", "a.js"],
         ["node", "--check", "--experimental-strip-types", "a.ts"]]
@@ -249,7 +249,7 @@ def run_checks(base):
         assert command[-3:] == ["bash", "-n", "check.sh"] and stdin == b"" and not any(i.startswith("LUCIA_SKILL_ARGS") for i in command)
         calls.clear()
         got = submit(check_value(script="scripts/App.cs", language="csharp", content="int x = ;"))
-        assert calls[-1][0][-6:-3] == ["dotnet", "build", "check.cs"]
+        assert calls[-1][0][-8:-5] == ["dotnet", "build", "check.cs"]
 
         # A non-zero exit and a timeout are results, not errors.
         with patch.object(w, "execute", lambda *a: fake(*a, output="boom", code=3)):

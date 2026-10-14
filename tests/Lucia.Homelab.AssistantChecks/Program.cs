@@ -1467,7 +1467,7 @@ try
     Check(NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.sh")!.Contains("bash 'scripts/a.sh'")
         && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.mjs")!.Contains("node 'scripts/a.mjs'")
         && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.ts")!.Contains("node --experimental-strip-types 'scripts/a.ts'")
-        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.cs")!.Contains("dotnet run 'scripts/a.cs'")
+        && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.cs")!.Contains("dotnet run 'scripts/a.cs' -p:PublishAot=false")
         && NodeSkillRunner.Command("alpha", nodeHash, "{}", "scripts/a.exe") is null, "Each language runs with its own runtime.");
 
     // Packages for nodes: only enabled node and sandbox skills, each pinned to its content hash and checksum.

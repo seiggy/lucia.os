@@ -147,9 +147,11 @@ All three paths verify the skill's hash before they run anything, and they pass 
 
 `NodeSkillRunner` sends a script to a managed server through `NodeExec`, the same path `run_command` uses. The node agent runs the script from its own copy, installed by `SkillSync` (covered below). The model can name the server with a `node` argument; the rest of the arguments go to the script.
 
+A `.cs` script runs as `dotnet run <file> -p:PublishAot=false -p:NuGetAudit=false`. .NET 10 file-based apps default to PublishAot, and its restore fetches the AOT compiler, so the flags keep the run from failing offline.
+
 ### Spark
 
-`SparkSkillRunner` writes a request into the Spark's queue at `host/data/assistant/skill-runner/requests/<id>.json` and waits for `responses/<id>.json`. `tools/skills/skill_worker.py` is the setup-user service that claims requests. It runs the skill in a throwaway container built from `deployment/skill-runner/Dockerfile`, where containers run read-only as `nobody`, with `/tmp` as the only writable place. A request claimed but not answered before a crash is answered `interrupted` and never runs again.
+`SparkSkillRunner` writes a request into the Spark's queue at `host/data/assistant/skill-runner/requests/<id>.json` and waits for `responses/<id>.json`. `tools/skills/skill_worker.py` is the setup-user service that claims requests. It runs the skill in a throwaway container built from `deployment/skill-runner/Dockerfile`, where containers run read-only as `nobody`, with `/tmp` as the only writable place. A request claimed but not answered before a crash is answered `interrupted` and never runs again. `interpreter()` and `checker()` in `skill_worker.py` add the same two `-p:` flags to a `.cs` script's `dotnet run` and `dotnet build`.
 
 ### Sandbox
 

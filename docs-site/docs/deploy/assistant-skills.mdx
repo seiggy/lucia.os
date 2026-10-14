@@ -50,7 +50,7 @@ Built-in skills ship inside the host and aren't written to this folder. The pane
 The desktop bootstrap (`tools/desktop/bootstrap.py`) installs the runner. It runs skill scripts only in throwaway containers, never on the Spark itself.
 
 - **The service.** `tools/skills/skill_worker.py` runs as a setup-user service with `install` and `run` commands. It picks up requests and writes answers.
-- **The image.** The worker builds `lucia-skill-runner` from `deployment/skill-runner/Dockerfile`. It includes Node 24, the .NET 10 SDK, Python 3 and bash. Its base images are pinned by digest, so a rebuild gets the same base.
+- **The image.** The worker builds `lucia-skill-runner` from `deployment/skill-runner/Dockerfile`. It includes Node 24, the .NET 10 SDK, Python 3 and bash. Its base images are pinned by digest, so a rebuild gets the same base. C# scripts build and run with PublishAot and NuGet audit turned off, so they don't need the AOT compiler.
 - **The queue.** Requests and answers go through `host/data/assistant/skill-runner/`:
 
   ```text
