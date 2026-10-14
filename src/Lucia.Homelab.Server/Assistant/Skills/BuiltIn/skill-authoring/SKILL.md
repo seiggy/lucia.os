@@ -45,7 +45,15 @@ Pick the template for the language in `references/`:
 - `references/skill-template.md`: SKILL.md structure.
 - `references/script-bash.md`, `references/script-python.md`, `references/script-javascript.md`, `references/script-csharp.md`: how arguments arrive (JSON in `LUCIA_SKILL_ARGS` and on stdin) and how to validate them.
 
-Send the scripts as `files` under `scripts/` and notes under `references/`. Then call `draft_skill` with the `name`, `description`, `execution`, `tier`, `body`, `rationale`, `sourceChats` and `files`. The rationale says why this narrow skill exists and which declined or timed-out calls it replaces. Read the returned `warnings`: they flag command passthrough, a tier that understates the script, and unvalidated arguments. Fix what you can with `draft_skill` and `update: true`.
+Send the scripts as `files` under `scripts/` and notes under `references/`. Then call `draft_skill` with the `name`, `description`, `execution`, `tier`, `body`, `rationale`, `sourceChats`, `files` and `parametersSchema`. The rationale says why this narrow skill exists and which declined or timed-out calls it replaces. Read the returned `warnings`: they flag command passthrough, a tier that understates the script, and unvalidated arguments. Fix what you can with `draft_skill` and `update: true`.
+
+Always send `parametersSchema`, the JSON Schema of the arguments object, as JSON text. It is stored as `parameters_schema` in the skill's metadata and is what `load_skill` shows the next model as the script's arguments. Without it a script shows only a bare default. The arguments are one JSON object, never a quoted string and never an array. For a `node` skill the server's name goes inside the object as `node` (Lucia adds that property to your schema if you leave it out), so describe every other input beside it, with `required`, types and limits. Example for a skill that checks patched packages:
+
+```json
+{"type":"object","properties":{"node":{"type":"string","description":"The server to run on."},"packages":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50},"lockWaitSeconds":{"type":"integer","minimum":1,"maximum":300}},"required":["node","packages"]}
+```
+
+In the SKILL.md body, show one call whose `arguments` is a real object, such as `{"node": "<server>", "packages": ["openssl", "curl"]}`. The script still validates every value itself: the schema tells a model what to send, it doesn't replace the checks.
 
 ## 6. Finish
 

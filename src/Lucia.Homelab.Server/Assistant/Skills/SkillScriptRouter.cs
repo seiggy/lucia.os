@@ -15,14 +15,14 @@ public sealed class SkillScriptRouter(SkillStore store, NodeSkillRunner node, Sp
     /// <summary>Why a script can't run in a mode, as text for the model; null when it can go to that mode's runner.</summary>
     public static string? Refuse(string execution, string script)
     {
-        if (!SkillLanguages.IsScript(script)) return $"Error: {script} isn't a script Lucia runs. Scripts end in .sh, .py, .js, .mjs, .ts, .mts or .cs.";
+        if (!SkillLanguages.IsScript(script)) return $"HOST: {script} isn't a script Lucia runs. Scripts end in .sh, .py, .js, .mjs, .ts, .mts or .cs.";
         return execution switch
         {
             SkillExecution.Node => null,
-            SkillExecution.Sandbox when !SkillLanguages.SandboxCanRun(script) => $"Error: {script} can't run in the sandbox, which runs JavaScript and Python only.",
+            SkillExecution.Sandbox when !SkillLanguages.SandboxCanRun(script) => $"HOST: {script} can't run in the sandbox, which runs JavaScript and Python only.",
             SkillExecution.Sandbox => null,
             SkillExecution.Spark => null,
-            _ => $"Error: unknown execution mode {execution}.",
+            _ => $"HOST: unknown execution mode {execution}.",
         };
     }
 
@@ -31,7 +31,7 @@ public sealed class SkillScriptRouter(SkillStore store, NodeSkillRunner node, Sp
     {
         var name = skill.Frontmatter.Name;
         var relative = Path.GetRelativePath(skill.Path, script.FullPath).Replace('\\', '/');
-        if (!SkillStore.ValidName(name) || relative.StartsWith("../", StringComparison.Ordinal)) return "Error: that script isn't part of the skill.";
+        if (!SkillStore.ValidName(name) || relative.StartsWith("../", StringComparison.Ordinal)) return "HOST: that script isn't part of the skill.";
         var settings = store.SettingsOf(name);
         if (Refuse(settings.Execution, relative) is { } refusal) return refusal;
         return settings.Execution switch

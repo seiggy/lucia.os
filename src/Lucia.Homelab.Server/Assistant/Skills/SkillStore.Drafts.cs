@@ -87,14 +87,21 @@ public sealed partial class SkillStore
         if (sources.Length > MaxSourceChats || sources.Any(id => id.Length != 32 || !id.All(char.IsAsciiHexDigitLower)))
             throw Invalid($"List up to {MaxSourceChats} source chats by their ids.");
         var normalized = NormalizeFiles(request.Files, MaxDraftFiles);
-        IReadOnlyDictionary<string, string?> Provenance(string[]? found) => new Dictionary<string, string?>
+        string? schemaText = null;
+        if (request.ParametersSchema is { Length: > 0 } declared && SkillSchemas.Check(declared, out schemaText) is { } schemaProblem) throw Invalid(schemaProblem);
+        IReadOnlyDictionary<string, string?> Provenance(string[]? found)
         {
-            [SkillAuthors.AuthorKey] = SkillAuthors.Assistant,
-            [SkillAuthors.SourceChatsKey] = sources.Length > 0 ? string.Join(',', sources) : null,
-            [SkillAuthors.RationaleKey] = rationale,
-            [SkillAuthors.WarningsKey] = found is { Length: > 0 } ? JsonSerializer.Serialize(found) : null,
-            [SkillAuthors.LastEditKey] = SkillAuthors.Assistant,
-        };
+            var extra = new Dictionary<string, string?>
+            {
+                [SkillAuthors.AuthorKey] = SkillAuthors.Assistant,
+                [SkillAuthors.SourceChatsKey] = sources.Length > 0 ? string.Join(',', sources) : null,
+                [SkillAuthors.RationaleKey] = rationale,
+                [SkillAuthors.WarningsKey] = found is { Length: > 0 } ? JsonSerializer.Serialize(found) : null,
+                [SkillAuthors.LastEditKey] = SkillAuthors.Assistant,
+            };
+            if (schemaText is not null) extra[SkillSchemas.Key] = schemaText;
+            return extra;
+        }
         var updated = false;
         string[] warnings = [];
         await Locked(async () =>

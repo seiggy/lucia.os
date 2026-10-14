@@ -74,30 +74,29 @@ public sealed class SparkSkillRunner(IOptions<AssistantOptions> options, SkillSt
 
     /// <param name="script">The script's path inside the skill, such as scripts/check.py.</param>
     /// <param name="arguments">What the model passed; it goes to the script as JSON on stdin and in LUCIA_SKILL_ARGS.</param>
-    /// <returns>The result as text for the model; expected failures read "Error: ..." so the model sees why.</returns>
+    /// <returns>The result as text for the model; Lucia's own refusals read "HOST: ..." so the model can tell them from the script's output.</returns>
     public async Task<string> RunAsync(string skill, string script, JsonElement? arguments, CancellationToken ct)
     {
-        if (arguments is { ValueKind: not (JsonValueKind.Object or JsonValueKind.Null or JsonValueKind.Undefined) })
-            return "Error: pass the arguments as an object.";
-        var passed = arguments is { ValueKind: JsonValueKind.Object } given ? JsonNode.Parse(given.GetRawText()) as JsonObject ?? [] : [];
-        if (Encoding.UTF8.GetByteCount(passed.ToJsonString()) > MaxArgumentBytes) return $"Error: the arguments are too large; the limit is {MaxArgumentBytes / 1024} KiB.";
-        if (Unavailable(Status()) is { } why) return "Error: " + why;
+        var (passed, error, _) = SkillArguments.Normalize(arguments, null, SkillExecution.Spark);
+        if (error is not null) return error;
+        if (Encoding.UTF8.GetByteCount(passed!.ToJsonString()) > MaxArgumentBytes) return $"HOST: the arguments are too large; the limit is {MaxArgumentBytes / 1024} KiB.";
+        if (Unavailable(Status()) is { } why) return "HOST: " + why;
         var language = SkillLanguages.Language(script);
-        if (language is null || !Languages.Contains(language) || !SkillLanguages.IsScript(script)) return $"Error: {script} isn't a script that runs on the Spark.";
-        if (store.HashOf(skill) is not { } hash) return "Error: that skill no longer exists.";
+        if (language is null || !Languages.Contains(language) || !SkillLanguages.IsScript(script)) return $"HOST: {script} isn't a script that runs on the Spark.";
+        if (store.HashOf(skill) is not { } hash) return "HOST: that skill no longer exists.";
         var request = new SparkSkillRequest(1, Guid.NewGuid().ToString("D"), "run", skill, hash, script, language, passed, null, RunSeconds,
             store.SettingsOf(skill).Network, Expires(RunSeconds));
         try
         {
             var response = await SubmitAsync(request, TimeSpan.FromSeconds(RunSeconds + QueueSeconds), ct);
-            if (response.Status != "ok") return "Error: " + (response.Message ?? "the Spark's skill runner refused this script.");
+            if (response.Status != "ok") return "HOST: " + (response.Message ?? "the Spark's skill runner refused this script.");
             var note = response.TimedOut ? $"\nStopped: it ran for more than {RunSeconds} seconds."
                 : response.Truncated ? "\n(The output is cut to its last 48 KiB.)" : "";
             return $"Ran {script} on the Spark in a throwaway container{(request.Network == SkillNetwork.Bridge ? " with network access" : " without network access")}. "
                 + $"Exit code {(response.ExitCode is { } code ? code.ToString(CultureInfo.InvariantCulture) : "unknown")}.{note}\n"
                 + (string.IsNullOrEmpty(response.Output) ? "(no output)" : response.Output);
         }
-        catch (AssistantException e) { return "Error: " + e.Message; }
+        catch (AssistantException e) { return "HOST: " + e.Message; }
     }
 
     /// <summary>A syntax-only check of <paramref name="content"/> as the file at <paramref name="path"/>; nothing in it runs.</summary>

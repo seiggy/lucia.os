@@ -28,7 +28,7 @@ public sealed class AssistantSkills(SkillStore store, SkillScriptRouter router, 
         Available skills:
         {skills}
 
-        Read a skill with load_skill before following it, its listed files with read_skill_resource, and run one of its scripts with run_skill_script. A script that runs on a server needs that server's name in the arguments object, as a "node" entry. Call refresh_skills when the owner says they added or changed a skill.
+        Read a skill with load_skill before following it, its listed files with read_skill_resource, and run one of its scripts with run_skill_script. Pass a script's arguments as a JSON object, never as a quoted string, in the shape its schema in load_skill gives. A script that runs on a server needs that server's name as a "node" entry in the arguments. Call refresh_skills when the owner says they added or changed a skill.
         """;
 
     private readonly Dictionary<string, AgentSkillsProvider> _providers = [];
@@ -58,7 +58,7 @@ public sealed class AssistantSkills(SkillStore store, SkillScriptRouter router, 
             var revision = store.Revision;
             foreach (var function in current.Tools)
             {
-                var live = new LiveSkillFunction(function, revision, store, async token =>
+                var live = new LiveSkillFunction(function, revision, store, logger, async token =>
                 {
                     var fresh = await Allowed(token);
                     return fresh.Count == 0 ? [] : (await ProviderToolsAsync(fresh, token)).Tools.ToDictionary(tool => tool.Name);
@@ -131,7 +131,7 @@ public sealed class AssistantSkills(SkillStore store, SkillScriptRouter router, 
             var allowed = offered.ToHashSet(StringComparer.Ordinal);
             // Lucia's broker decides approvals, so the framework's own approval wrappers are off.
             return _providers[key] = new AgentSkillsProviderBuilder()
-                .UseFileSkills(store.SourceRoots, SkillStore.FileOptions(), router.Runner)
+                .UseSource(factory => new LuciaSkillsSource(new AgentFileSkillsSource(store.SourceRoots, router.Runner, SkillStore.FileOptions(), factory), store))
                 .UseFilter((skill, _) => allowed.Contains(skill.Frontmatter.Name))
                 .UseOptions(options =>
                 {
@@ -162,16 +162,81 @@ public sealed class AssistantSkills(SkillStore store, SkillScriptRouter router, 
     /// A skill tool that follows the store: if skills changed since the turn began, a call goes to the tool of a freshly built provider,
     /// so a skill added mid-turn can be loaded without waiting for the next message.
     /// </summary>
-    private sealed class LiveSkillFunction(AIFunction inner, long revision, SkillStore store,
+    private sealed class LiveSkillFunction(AIFunction inner, long revision, SkillStore store, ILogger logger,
         Func<CancellationToken, Task<Dictionary<string, AIFunction>>> refresh) : DelegatingAIFunction(inner)
     {
+        private readonly bool _run = inner.Name == AgentSkillsProvider.RunSkillScriptToolName;
+        private JsonElement? _schema;
+
+        /// <summary>run_skill_script says what the framework's tool can't: <c>arguments</c> is an object, and the server may be named beside it.</summary>
+        public override JsonElement JsonSchema => _run ? _schema ??= RunSchema(base.JsonSchema) : base.JsonSchema;
+
         protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
         {
-            if (store.Revision == revision) return await base.InvokeCoreAsync(arguments, cancellationToken);
+            if (store.Revision == revision)
+                return _run && Repair(arguments) is { } refused ? refused : await base.InvokeCoreAsync(arguments, cancellationToken);
             // Skills changed mid-turn: never run through the stale provider, so a disabled skill stops at once.
-            return (await refresh(cancellationToken)).TryGetValue(Name, out var fresh)
-                ? await fresh.InvokeAsync(arguments, cancellationToken)
-                : "Error: that skill is no longer enabled.";
+            if (!(await refresh(cancellationToken)).TryGetValue(Name, out var fresh)) return "HOST: that skill is no longer enabled.";
+            return _run && Repair(arguments) is { } refusal ? refusal : await fresh.InvokeAsync(arguments, cancellationToken);
+        }
+
+        /// <summary>
+        /// Reads the call's <c>arguments</c> and <c>node</c> once and hands the framework's tool one object with the server inside; the
+        /// stray top-level <c>node</c> is removed. Returns the HOST: message when the call can't be understood, and null otherwise.
+        /// </summary>
+        private string? Repair(AIFunctionArguments arguments)
+        {
+            var skill = Text(arguments, "skillName");
+            if (skill is null || !SkillStore.ValidName(skill) || store.HashOf(skill) is null) return null;
+            string? beside = null;
+            if (arguments.TryGetValue("node", out var given) && given is not null && !(given is JsonElement { ValueKind: JsonValueKind.Null }))
+            {
+                beside = Text(arguments, "node");
+                if (beside is null) return SkillArguments.Prefix + "node must be the server's name as a string, such as \"lucialab01\".";
+            }
+            arguments.TryGetValue("arguments", out var raw);
+            JsonElement? element = raw switch
+            {
+                null => null,
+                JsonElement json => json,
+                _ => JsonSerializer.SerializeToElement(raw),
+            };
+            var (args, error, coerced) = SkillArguments.Normalize(element, beside, store.SettingsOf(skill).Execution, out var repairs);
+            if (error is not null) return error;
+            arguments["arguments"] = JsonSerializer.SerializeToElement(args);
+            arguments.Remove("node");
+            if (coerced || repairs.NodeInjected)
+            {
+                SkillArguments.Count(coerced, repairs.NodeInjected, skill);
+                logger.LogInformation(coerced
+                        ? "Assistant skill arguments for {Skill}/{Script} were coerced from a JSON string. coerced={Coerced} injectedNode={InjectedNode}"
+                        : "Assistant skill arguments for {Skill}/{Script} took the server from a top-level node. coerced={Coerced} injectedNode={InjectedNode}",
+                    skill, Text(arguments, "scriptName"), coerced, repairs.NodeInjected);
+            }
+            return null;
+        }
+
+        private static string? Text(AIFunctionArguments arguments, string key) => arguments.TryGetValue(key, out var value)
+            ? value switch { string text => text, JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(), _ => null }
+            : null;
+
+        private static JsonElement RunSchema(JsonElement original)
+        {
+            var schema = JsonNode.Parse(original.GetRawText()) as JsonObject ?? new JsonObject { ["type"] = "object" };
+            var properties = schema["properties"] as JsonObject ?? [];
+            properties["arguments"] = new JsonObject
+            {
+                ["type"] = "object",
+                ["description"] = "The script's inputs as a JSON object (not a string). See the script's schema in load_skill.",
+            };
+            properties["node"] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = "The server to run a node skill on; you may put it here or inside arguments, not both with different values.",
+            };
+            schema["properties"] = properties;
+            schema["required"] = new JsonArray("skillName", "scriptName");
+            return JsonSerializer.SerializeToElement(schema);
         }
     }
 }

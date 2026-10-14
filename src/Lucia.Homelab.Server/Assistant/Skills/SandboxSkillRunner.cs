@@ -101,30 +101,29 @@ public sealed class SandboxSkillRunner(NodeExec exec, SkillStore store, SkillSan
 
     /// <param name="script">The script's path inside the skill, such as scripts/check.py.</param>
     /// <param name="arguments">What the model passed: an optional <c>node</c> names the server, the rest goes to the script.</param>
-    /// <returns>The result as text for the model; expected failures read "Error: ..." so the model sees why.</returns>
+    /// <returns>The result as text for the model; Lucia's own refusals read "HOST: ..." so the model can tell them from the script's output.</returns>
     public async Task<string> RunAsync(string skill, string script, JsonElement? arguments, CancellationToken ct)
     {
-        if (Language(script) is not { } language) return $"Error: {script} can't run in the sandbox, which runs JavaScript and Python only.";
-        var passed = arguments is { ValueKind: JsonValueKind.Object } given ? JsonNode.Parse(given.GetRawText()) as JsonObject ?? [] : [];
-        if (arguments is { ValueKind: not (JsonValueKind.Object or JsonValueKind.Null or JsonValueKind.Undefined) })
-            return "Error: pass the arguments as an object.";
-        var named = passed["node"] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
-        passed.Remove("node");
+        if (Language(script) is not { } language) return $"HOST: {script} can't run in the sandbox, which runs JavaScript and Python only.";
+        var (passed, error, _) = SkillArguments.Normalize(arguments, null, SkillExecution.Sandbox);
+        if (error is not null) return error;
+        var named = SkillArguments.NodeOf(passed!);
+        passed!.Remove("node");
         var hash = store.HashOf(skill);
-        if (hash is null) return "Error: that skill no longer exists.";
-        if (runtime.Hash is not { } sandboxHash) return "Error: this controller has no sandbox runtime build, so skills can't run in the sandbox.";
+        if (hash is null) return "HOST: that skill no longer exists.";
+        if (runtime.Hash is not { } sandboxHash) return "HOST: this controller has no sandbox runtime build, so skills can't run in the sandbox.";
         var domains = store.SettingsOf(skill).AllowedDomains;
         var command = Command(skill, hash, sandboxHash, Request(script, language, passed, domains), network: domains.Length > 0);
-        if (command is null) return "Error: that skill can't be run in the sandbox.";
+        if (command is null) return "HOST: that skill can't be run in the sandbox.";
         try
         {
             if (named is { Length: > 0 })
                 try { named = (await exec.Node(named, ct)).Id.ToString(); }
                 catch (AssistantException e) when (e.Code == "unknown_node") { named = null; }
-            if (Choose(named, await exec.KvmNodes(ct)) is not { } node) return "Error: " + NoServer;
+            if (Choose(named, await exec.KvmNodes(ct)) is not { } node) return "HOST: " + NoServer;
             var (id, hostname) = node;
             if (!await exec.SyncsSkills(id, ct))
-                return $"Error: {hostname}'s agent can't download skills yet. Update it with node_action update-agent, then try again.";
+                return $"HOST: {hostname}'s agent can't download skills yet. Update it with node_action update-agent, then try again.";
             var result = await exec.Exec(id, hostname, command, "bash", Seconds, ct);
             if (NodeSkillRunner.NotSynced(result))
             {
@@ -137,18 +136,18 @@ public sealed class SandboxSkillRunner(NodeExec exec, SkillStore store, SkillSan
                     result = await exec.Exec(id, hostname, command, "bash", Seconds, ct);
                 }
                 if (NodeSkillRunner.NotSynced(result))
-                    return $"Error: {hostname} hasn't downloaded this skill and the sandbox runtime yet; try again in a few minutes.";
+                    return $"HOST: {hostname} hasn't downloaded this skill and the sandbox runtime yet; try again in a few minutes.";
             }
             var where = $"in the Hyperlight sandbox on {hostname}";
             if (Parse(result.Output) is not { } run)
-                return $"Error: the sandbox on {hostname} gave no answer (exit code {(result.ExitCode is { } c ? c.ToString() : "unknown")}).\n"
+                return $"HOST: the sandbox on {hostname} gave no answer (exit code {(result.ExitCode is { } c ? c.ToString() : "unknown")}).\n"
                     + (string.IsNullOrWhiteSpace(result.Output) ? "(no output)" : result.Output);
-            if (run.Error is { Length: > 0 }) return $"Error: {script} didn't run {where}: {run.Error}";
+            if (run.Error is { Length: > 0 }) return $"HOST: {script} didn't run {where}: {run.Error}";
             var note = run.Truncated ? "\n(Output was cut to its last 48 KiB.)" : "";
             return $"Ran {script} {where}. Exit code {run.ExitCode}.\n" + (run.Output.Length == 0 ? "(no output)" : run.Output) + note;
         }
-        catch (AssistantException e) when (e.Code is "unknown_node" or "exec_unsupported" or "command_refused") { return "Error: " + e.Message; }
-        catch (Onboarding.HardwareOnboardingException e) { return "Error: " + e.Message; }
+        catch (AssistantException e) when (e.Code is "unknown_node" or "exec_unsupported" or "command_refused") { return "HOST: " + e.Message; }
+        catch (Onboarding.HardwareOnboardingException e) { return "HOST: " + e.Message; }
     }
 
     private static string Quote(string text) => "'" + text.Replace("'", "'\\''") + "'";

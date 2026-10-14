@@ -1498,7 +1498,7 @@ try
         && await packages.GetAsync("late", manifest.Skills.Single(entry => entry.Name == "late").Hash, default) is null
         && await packages.GetAsync("late", repacked.Skills.Single(entry => entry.Name == "late").Hash, default) is not null,
         "Editing a skill replaces its package; the old hash can no longer be downloaded.");
-    Check((await new NodeSkillRunner(new NodeExec(null!, null!), skillStore).RunAsync("alpha", "scripts/check.py", null, default)).StartsWith("Error: this skill runs on a server")
+    Check((await new NodeSkillRunner(new NodeExec(null!, null!), skillStore).RunAsync("alpha", "scripts/check.py", null, default)).StartsWith("HOST: arguments has no \"node\" key")
         && (await new NodeSkillRunner(new NodeExec(null!, null!), skillStore).RunAsync("alpha", "scripts/check.py", JsonSerializer.SerializeToElement(new { x = 1 }), default)).Contains("\"node\""),
         "A node-mode script without a node argument says what to pass.");
 
@@ -1640,7 +1640,7 @@ try
     Check(stillRuns is not null && !stillRuns.Contains("isn't available yet"), "A skill disabled mid-turn can't run its scripts: " + stillRuns);
     await skillStore.SetEnabledAsync("alpha", false, default);
     var lastGone = (await sparkContext.Tools.First(tool => tool.Name == "run_skill_script").InvokeAsync(new AIFunctionArguments { ["skillName"] = "alpha", ["scriptName"] = "scripts/check.py" }, default))?.ToString();
-    Check(lastGone == "Error: that skill is no longer enabled.", "Disabling the last enabled skill stops an in-flight turn from running it.");
+    Check(lastGone == "HOST: that skill is no longer enabled.", "Disabling the last enabled skill stops an in-flight turn from running it.");
 
     await skillStore.CreateAsync(new("rich", "Has extra frontmatter.", "node", "read", null, null), default);
     var richPath = Path.Combine(skillStore.Root, "rich", "SKILL.md");
@@ -1652,6 +1652,179 @@ try
         && nested["tags"] is IList<object> { Count: 2 } && (string)nested["team"] == "ops" && (string)nested["lucia.tier"] == "change" && rewritten.Body.StartsWith("# Rich again"),
         "Saving a skill keeps unknown frontmatter keys, list values and nested metadata, changing only name, description and lucia.* settings.");
     await skillStore.DeleteAsync("rich", default);
+
+    // run_skill_script's arguments: JSON text and a top-level node are accepted, the schema load_skill shows is the skill's own, and every refusal starts with HOST:.
+    static JsonElement Json(string text) => JsonDocument.Parse(text).RootElement.Clone();
+    static JsonElement AxStr(string text) => JsonSerializer.SerializeToElement(text);
+    const string axObject = "{\"node\":\"lucialab01\",\"packages\":[\"openssl\",\"curl\"],\"expected\":{\"openssl\":\"3.5.1-1\"},\"lockWaitSeconds\":60}";
+    var axOne = SkillArguments.Normalize(Json(axObject), null, "node");
+    var axTwo = SkillArguments.Normalize(AxStr(axObject), null, "node");
+    var axFour = SkillArguments.Normalize(Json(axObject.Replace("\"node\":\"lucialab01\",", "")), "lucialab01", "node", out var axFourRepairs);
+    Check(axOne is { Error: null, Coerced: false } && axOne.Args!.ToJsonString() == axObject && axTwo is { Error: null, Coerced: true } && axTwo.Args!.ToJsonString() == axObject
+        && axFour is { Error: null, Coerced: false } && axFourRepairs.NodeInjected && JsonNode.DeepEquals(axFour.Args, axOne.Args), "An object with node runs unchanged; JSON text and a top-level node give the same object.");
+    const string arrayMessage = "HOST: arguments was an array; send an object with a \"node\" key.";
+    var axRefusals = new[]
+    {
+        SkillArguments.Normalize(AxStr("[\"openssl\"]"), "lucialab01", "node").Error, SkillArguments.Normalize(Json("[1]"), null, "node").Error,
+        SkillArguments.Normalize(Json("5"), null, "node").Error, SkillArguments.Normalize(Json("true"), null, "node").Error,
+        SkillArguments.Normalize(AxStr("5"), null, "node").Error, SkillArguments.Normalize(AxStr("null"), null, "node").Error, SkillArguments.Normalize(AxStr("hello"), null, "node").Error,
+        SkillArguments.Normalize(AxStr("\"quoted\""), null, "node").Error, SkillArguments.Normalize(AxStr(new string('x', 40 * 1024)), null, "node").Error,
+        SkillArguments.Normalize(Json("{\"node\":{\"name\":\"lucialab01\"}}"), null, "node").Error, SkillArguments.Normalize(Json("{\"node\":\"a\"}"), "b", "node").Error,
+        SkillArguments.Normalize(Json("{\"x\":1}"), null, "node").Error, SkillArguments.Normalize(null, null, "node").Error, SkillArguments.Normalize(Json("{\"node\":\"  \"}"), null, "node").Error,
+    };
+    Check(axRefusals.All(message => message is not null && message.StartsWith("HOST: ")), "Every refusal of the arguments starts with HOST:.");
+    Check(axRefusals[0] == arrayMessage && axRefusals[1] == arrayMessage && SkillArguments.Normalize(Json("[1]"), null, "spark").Error == "HOST: arguments was an array; send a JSON object.",
+        "A string of an array and a raw array get the array message.");
+    Check(axRefusals[2] == "HOST: arguments was a number; send a JSON object." && axRefusals[3] == "HOST: arguments was a boolean; send a JSON object."
+        && axRefusals[4] == "HOST: arguments was a number inside a string; send a JSON object." && axRefusals[5] == "HOST: arguments was null inside a string; send a JSON object."
+        && axRefusals[7] == "HOST: arguments was a string inside a string; send a JSON object.", "A scalar says which kind it was.");
+    Check(axRefusals[6] == "HOST: arguments was a string that isn't valid JSON; send a JSON object, not a quoted string." && axRefusals[8]!.Contains("over 32 KiB"),
+        "A string that isn't JSON, or is too big to parse, is refused clearly.");
+    Check(axRefusals[9] == SkillArguments.NodeMustBeText && axRefusals[10] == "HOST: arguments.node (\"a\") and node (\"b\") disagree; name the server once, inside arguments."
+        && axRefusals[11] == axRefusals[12] && axRefusals[11] == axRefusals[13] && axRefusals[11]!.StartsWith("HOST: arguments has no \"node\" key; add the server to run on"),
+        "A node that isn't text, two different nodes and a missing node each get their own message.");
+    var axSame = SkillArguments.Normalize(Json("{\"node\":\"LucialAB01 \",\"x\":1}"), " lucialab01", "node", out var axSameRepairs);
+    var axNull = SkillArguments.Normalize(null, null, "spark");
+    var axMissing = SkillArguments.Normalize(Json("null"), null, "sandbox");
+    var axSparkNode = SkillArguments.Normalize(Json("{\"x\":1}"), "somewhere", "spark");
+    Check(axSame.Error is null && !axSameRepairs.NodeInjected && axNull is { Error: null, Args.Count: 0 } && axMissing is { Error: null, Args.Count: 0 }
+        && axSparkNode.Args!.ToJsonString() == "{\"x\":1,\"node\":\"somewhere\"}", "The same node twice (any case) is fine, and nothing is required of a Spark or sandbox script.");
+
+    var axRoot = Path.Combine(storage, "args-data");
+    var axOptions = Options.Create(new AssistantOptions { Directory = axRoot });
+    var axStore = new SkillStore(axOptions, NullLogger<SkillStore>.Instance, null, Path.Combine(storage, "no-built-in-skills-args"));
+    var axSource = Environment.GetEnvironmentVariable("LUCIA_VERIFY_SKILL_DIR");
+    var axSkillDir = Path.Combine(axStore.Root, "verify-patched-packages");
+    Directory.CreateDirectory(Path.Combine(axSkillDir, "scripts"));
+    if (axSource is not null && Directory.Exists(axSource))
+    {
+        File.Copy(Path.Combine(axSource, "SKILL.md"), Path.Combine(axSkillDir, "SKILL.md"));
+        File.Copy(Path.Combine(axSource, "scripts", "verify.py"), Path.Combine(axSkillDir, "scripts", "verify.py"));
+    }
+    else
+    {
+        File.WriteAllText(Path.Combine(axSkillDir, "SKILL.md"), "---\nname: verify-patched-packages\ndescription: Verify that a patching run landed.\nmetadata:\n  lucia.execution: node\n  lucia.tier: read\n---\n\n# Verify\n");
+        File.WriteAllText(Path.Combine(axSkillDir, "scripts", "verify.py"), "print('ok')\n");
+    }
+    var axRouter = new SkillScriptRouter(axStore, new NodeSkillRunner(new NodeExec(null!, null!), axStore), new SparkSkillRunner(axOptions, axStore),
+        new SandboxSkillRunner(new NodeExec(null!, null!), axStore, new SkillSandboxRuntime()));
+    using var axProvider = new AssistantSkills(axStore, axRouter, NullLoggerFactory.Instance);
+    await axStore.SetEnabledAsync("verify-patched-packages", true, default);
+    var axLog = new CaptureLogger();
+    var axKinds = new List<string>();
+    using var axListener = new System.Diagnostics.Metrics.MeterListener();
+    axListener.InstrumentPublished = (instrument, listener) =>
+    {
+        if (instrument.Meter.Name == AssistantBroker.GovernanceMeter && instrument.Name == SkillArguments.CoercedCounter) listener.EnableMeasurementEvents(instrument);
+    };
+    axListener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+    {
+        foreach (var tag in tags) if (tag.Key == "kind") lock (axKinds) axKinds.Add((string)tag.Value! + ":" + value);
+    });
+    axListener.Start();
+    var axContext = await axProvider.ContextAsync(null, NoRedact, axLog, default);
+    var axRun = axContext.Tools.First(tool => tool.Name == "run_skill_script");
+    var axSchema = JsonNode.Parse(axRun.JsonSchema.GetRawText())!;
+    Check(axSchema["properties"]!["arguments"]!["type"]!.GetValue<string>() == "object" && axSchema["properties"]!["arguments"]!["description"]!.GetValue<string>().Contains("not a string")
+        && axSchema["properties"]!["node"]!["type"]!.GetValue<string>() == "string" && axSchema["properties"]!["skillName"] is not null && axSchema["properties"]!["scriptName"] is not null
+        && axSchema["required"]!.AsArray().Select(item => (string)item!).SequenceEqual(["skillName", "scriptName"]),
+        "run_skill_script advertises arguments as an object and an optional node: " + axSchema.ToJsonString());
+    var axLoaded = (await axContext.Tools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "verify-patched-packages" }, default))?.ToString() ?? "";
+    var axNodeSchema = SkillSchemas.Default("node").ToJsonString();
+    Check(axLoaded.Contains("<script name=\"scripts/verify.py\">") && axLoaded.Contains("<parameters_schema>" + axNodeSchema + "</parameters_schema>")
+        && !axLoaded.Contains("\"type\":\"array\",\"items\":{\"type\":\"string\"}") && axLoaded.Contains("<available_resources"),
+        "load_skill shows the node schema for a script, never the framework's array of strings: " + axLoaded[Math.Max(0, axLoaded.LastIndexOf("<available_scripts", StringComparison.Ordinal))..]);
+
+    var axNodeRunner = new NodeSkillRunner(new NodeExec(null!, null!), axStore);
+    var axRunArray = "[\"linux-image-amd64\",\"openssl\"]";
+    var axPrepared = new[]
+    {
+        axNodeRunner.Prepare("verify-patched-packages", "scripts/verify.py", Json(axObject)),
+        axNodeRunner.Prepare("verify-patched-packages", "scripts/verify.py", AxStr(axObject)),
+        axNodeRunner.Prepare("verify-patched-packages", "scripts/verify.py", JsonSerializer.SerializeToElement(axFour.Args)),
+    };
+    var axScriptArgs = axObject.Replace("\"node\":\"lucialab01\",", "");
+    Check(axPrepared.All(item => item.Error is null && item.Node == "lucialab01" && item.Command is not null) && axPrepared.Select(item => item.Command).Distinct().Count() == 1
+        && axPrepared[0].Command!.Contains(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(axScriptArgs))), "An object, JSON text and a top-level node send the node the identical command and script input.");
+    var axArrayPrepared = axNodeRunner.Prepare("verify-patched-packages", "scripts/verify.py", AxStr(axRunArray));
+    Check(axArrayPrepared == (arrayMessage, null, null), "A string holding an array is refused with the array message and builds no command.");
+    var axArrayTool = (await axRun.InvokeAsync(new AIFunctionArguments { ["skillName"] = "verify-patched-packages", ["scriptName"] = "scripts/verify.py",     ["arguments"] = AxStr(axRunArray), ["node"] = AxStr("lucialab01") }, default))?.ToString();
+        var axNonJson = (await axRun.InvokeAsync(new AIFunctionArguments { ["skillName"] = "verify-patched-packages", ["scriptName"] = "scripts/verify.py", ["arguments"] = AxStr("packages: openssl") }, default))?.ToString();
+        var axDisagree = (await axRun.InvokeAsync(new AIFunctionArguments { ["skillName"] = "verify-patched-packages", ["scriptName"] = "scripts/verify.py", ["arguments"] = Json("{\"node\":\"a\"}"), ["node"] = AxStr("b") }, default))?.ToString();
+    Check(axArrayTool == arrayMessage && axNonJson!.StartsWith("HOST: arguments was a string that isn't valid JSON") && axDisagree!.StartsWith("HOST: arguments.node (\"a\")")
+        && axKinds.Count == 0 && axLog.Messages.Count == 0, "The run tool refuses these shapes before running anything, and counts and logs nothing for them.");
+    // Shapes 1, 2 and 4 get past validation and reach the node lookup, which this check has no servers for.
+    foreach (var (label, shape) in new (string, AIFunctionArguments)[]
+    {
+        ("object", new() { ["arguments"] = Json(axObject) }),
+        ("string", new() { ["arguments"] = AxStr(axObject) }),
+        ("top-level node", new() { ["arguments"] = Json(axScriptArgs), ["node"] = AxStr("lucialab01") }),
+    })
+    {
+        shape["skillName"] = "verify-patched-packages";
+        shape["scriptName"] = "scripts/verify.py";
+        await Reject(async () => await axRun.InvokeAsync(shape, default), 500, "tool_failed", $"The {label} shape reaches the runner.");
+        Check(!shape.ContainsKey("node"), $"The {label} shape hands the framework no stray node.");
+    }
+    Check(axKinds.Order().SequenceEqual(["node:1", "string:1"]) && axLog.Messages.Count(message => message.Contains("were coerced from a JSON string") && message.Contains("coerced=True") && message.Contains("verify-patched-packages/scripts/verify.py")) == 1
+        && axLog.Messages.Count(message => message.Contains("took the server from a top-level node") && message.Contains("injectedNode=True")) == 1
+        && !axLog.Messages.Any(message => message.Contains("openssl")), "A coerced string and an injected node are each logged and counted once, without the arguments' content.");
+    var axGrant = axRun.Classify!(JsonNode.Parse("{\"skillName\":\"verify-patched-packages\",\"scriptName\":\"scripts/verify.py\",\"arguments\":\"{}\",\"node\":\"lucialab01\"}"));
+    Check(axGrant == (ToolTier.Read, AssistantSkills.Grant("verify-patched-packages", axStore.HashOf("verify-patched-packages")!)) && axRun.Classify!(JsonNode.Parse("{\"scriptName\":\"x\"}")) == (ToolTier.Change, null),
+        "A call's tier and grant still come from its skillName.");
+    var axDisabledKit = broker.Kit(new AssistantTurn(owner, govKey + "-args", "Hi", null, "execute"), new AssistantSettings([], []), [.. axContext.Tools], new AssistantStream("m-args", null),
+        new AssistantRun("m-args", default), skills: new SkillGate(_ => false, _ => false));
+    Check((Verdict(await GovCall(axDisabledKit, "run_skill_script", new { skillName = "verify-patched-packages", scriptName = "scripts/verify.py", arguments = axObject, node = "lucialab01" }))).StartsWith("reject: Refused: That skill is disabled"),
+        "The broker still refuses a disabled skill's script, whatever shape the arguments take.");
+    var axEnabledKit = broker.Kit(new AssistantTurn(owner, govKey + "-args2", "Hi", null, "execute"), new AssistantSettings([], []), [.. axContext.Tools], new AssistantStream("m-args2", null),
+        new AssistantRun("m-args2", default), skills: new SkillGate(_ => true, _ => false));
+    Check(Verdict(await GovCall(axEnabledKit, "run_skill_script", new { skillName = "verify-patched-packages", scriptName = "scripts/verify.py", arguments = axObject, node = "lucialab01" })) == "approve",
+        "A read-tier skill's script with a string argument and a top-level node still runs without asking.");
+
+    // Declared schemas: a skill's own parameters_schema (a mapping or JSON text, for every script or per script) replaces the defaults.
+    async Task<SkillSummary> SchemaSkill(string name, string execution, string metadata, params string[] scripts)
+    {
+        var folder = Path.Combine(axStore.Root, name);
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "SKILL.md"), $"---\nname: {name}\ndescription: Schema check {name}.\nmetadata:\n  lucia.execution: {execution}\n  lucia.tier: read\n{metadata}---\n\n# {name}\n");
+        foreach (var path in scripts) await axStore.WriteFileAsync(name, path, "print(1)\n", default);
+        return (await axStore.ListAsync(default)).Single(skill => skill.Name == name);
+    }
+    var axMapping = await SchemaSkill("schema-mapping", "node", "  parameters_schema:\n    type: object\n    properties:\n      packages:\n        type: array\n        minItems: 1\n        items:\n          type: string\n    required:\n      - packages\n    additionalProperties: false\n", "scripts/a.py", "scripts/b.py");
+    var axMappingSchema = axStore.SchemaOf("schema-mapping", "scripts/a.py");
+    Check(axMapping.Problem is null && axMappingSchema["properties"]!["packages"]!["minItems"]!.GetValue<double>() == 1 && axMappingSchema["additionalProperties"]!.GetValue<bool>() == false
+        && axMappingSchema["properties"]!["node"]!["type"]!.GetValue<string>() == "string" && axMappingSchema["required"]!.AsArray().Select(item => (string)item!).SequenceEqual(["packages", "node"])
+        && JsonNode.DeepEquals(axMappingSchema, axStore.SchemaOf("schema-mapping", "scripts/b.py")), "A YAML mapping schema applies to every script, with the node property and requirement added for a node skill: " + axMapping.Problem);
+    await axStore.SetEnabledAsync("schema-mapping", true, default);
+    var axMappingLoaded = (await (await axProvider.ContextAsync(null, NoRedact, axLog, default)).Tools.First(tool => tool.Name == "load_skill").InvokeAsync(new AIFunctionArguments { ["skillName"] = "schema-mapping" }, default))?.ToString() ?? "";
+    Check(axMapping.Problem is null && axMappingLoaded.Contains("\"required\":[\"packages\",\"node\"]") && axMappingLoaded.Contains("\"minItems\":1")
+        && (await axStore.GetAsync("schema-mapping", default)).ParametersSchema.Keys.Order().SequenceEqual(["scripts/a.py", "scripts/b.py"]),
+        "load_skill shows the declared schema, and the skill's detail lists each script's: " + axMappingLoaded);
+    var axText = await SchemaSkill("schema-text", "spark", "  parameters_schema: '{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}}}'\n", "scripts/a.py");
+    Check(axText.Problem is null && axStore.SchemaOf("schema-text", "scripts/a.py").ToJsonString() == "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}}}", "A JSON-text schema is read as it is, and a Spark skill doesn't get a node.");
+    var axPerScript = await SchemaSkill("schema-map", "sandbox", "  parameters_schema:\n    scripts/a.py:\n      type: object\n      properties:\n        city:\n          type: string\n      required: [city]\n", "scripts/a.py", "scripts/b.py");
+    Check(axPerScript.Problem is null && axStore.SchemaOf("schema-map", "scripts/a.py")["required"]!.AsArray().Count == 1 && axStore.SchemaOf("schema-map", "scripts/a.py")["properties"]!["node"] is null
+        && JsonNode.DeepEquals(axStore.SchemaOf("schema-map", "scripts/b.py"), SkillSchemas.Default("sandbox")), "A per-script map gives each script its own schema and the mode's default to the rest.");
+    var axBad = new[]
+    {
+        await SchemaSkill("schema-bad-array", "node", "  parameters_schema: '{\"type\":\"array\",\"items\":{\"type\":\"string\"}}'\n", "scripts/a.py"),
+        await SchemaSkill("schema-bad-text", "node", "  parameters_schema: 'not json'\n", "scripts/a.py"),
+        await SchemaSkill("schema-bad-scalar", "node", "  parameters_schema: 7\n", "scripts/a.py"),
+        await SchemaSkill("schema-bad-map", "node", "  parameters_schema:\n    scripts/a.py:\n      type: string\n", "scripts/a.py"),
+    };
+    Check(axBad.All(skill => skill.Problem is { } problem && problem.Contains("parameters_schema")) && !(await axStore.OfferedAsync(default)).Any(name => name.StartsWith("schema-bad")),
+        "A skill whose parameters_schema isn't an object schema shows a problem and isn't offered: " + string.Join(" | ", axBad.Select(skill => skill.Problem)));
+    await Reject(() => axStore.ImportZipAsync(new MemoryStream(Zip(("SKILL.md", "---\nname: zip-bad-schema\ndescription: Bad schema.\nmetadata:\n  parameters_schema: '{\"type\":\"array\"}'\n---\n\n# Bad\n"))), default),
+        400, "invalid_skill", "Importing a skill with an array schema is refused when it is saved.");
+    var axDraft = await axStore.DraftAsync(new("draft-schema", "Drafted with a schema.", "node", "read", "# Draft\n", [new("scripts/a.py", "print(1)\n")], null, "Replaces a call.", false,
+        "{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"integer\"}}}"), default);
+    await Reject(() => axStore.DraftAsync(new("draft-schema-bad", "Drafted with a bad schema.", "node", "read", "# Draft\n", null, null, "Replaces a call.", false, "{\"type\":\"array\"}"), default),
+        400, "invalid_skill", "A draft with an array schema is refused.");
+    Check(axDraft.Name == "draft-schema" && axStore.SchemaOf("draft-schema", "scripts/a.py")["properties"]!["n"] is not null && axStore.SchemaOf("draft-schema", "scripts/a.py")["required"]![0]!.GetValue<string>() == "node",
+        "A draft can declare its parameters_schema, which is stored in the metadata.");
+    Check(JsonNode.DeepEquals(SkillSchemas.Default("node"), JsonNode.Parse("{\"type\":\"object\",\"properties\":{\"node\":{\"type\":\"string\",\"description\":\"The server to run on.\"}},\"required\":[\"node\"]}"))
+        && SkillSchemas.Default("spark").ToJsonString() == "{\"type\":\"object\"}" && SkillSchemas.Default("sandbox").ToJsonString() == "{\"type\":\"object\",\"properties\":{\"node\":{\"type\":\"string\"}}}",
+        "Without a declared schema a node skill needs node, a Spark skill takes any object and a sandbox skill may name a node.");
 
     // Every skill service the app registers must have its Skills-namespace constructor dependencies registered too,
     // so a missing AddSingleton can't break the container (and with it chats and the node routes) at runtime.
@@ -1793,6 +1966,18 @@ try
         ["sourceChats"] = J(sources ?? [csA]), ["update"] = update,
     };
     var csDrafted = await CsJson("draft_skill", owner, CsDraft("pool-health"));
+    var schemaDraft = CsDraft("schema-object");
+    schemaDraft["parametersSchema"] = J(new { type = "object", properties = new { pool = new { type = "string" } }, required = new[] { "pool" } });
+    await CsJson("draft_skill", owner, schemaDraft);
+    var schemaText = CsDraft("schema-text");
+    schemaText["parametersSchema"] = JsonSerializer.SerializeToElement("{\"type\":\"object\",\"properties\":{\"pool\":{\"type\":\"string\"}}}");
+    await CsJson("draft_skill", owner, schemaText);
+    var objectSchema = (await csStore.GetAsync("schema-object", default)).ParametersSchema.Values.First().ToString();
+    var textSchema = (await csStore.GetAsync("schema-text", default)).ParametersSchema.Values.First().ToString();
+    Check(objectSchema.Contains("\"pool\"") && objectSchema.Contains("\"node\"") && textSchema.Contains("\"pool\"") && textSchema.Contains("\"node\""),
+        "draft_skill takes parametersSchema as an object or as JSON text, and adds node for node skills.");
+    await csStore.DeleteAsync("schema-object", default);
+    await csStore.DeleteAsync("schema-text", default);
     var csDraftedSummary = (await csStore.ListAsync(default)).First(skill => skill.Name == "pool-health");
     var csManifest = SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "pool-health", "SKILL.md")))!.Metadata();
     Check((string)csDrafted["status"]! == "disabled" && (string)csDrafted["review"]! == "#/settings/assistant/skills?skill=pool-health" && !csDraftedSummary.Enabled
@@ -2172,4 +2357,19 @@ sealed class FakeOpenAi : HttpMessageHandler
     }
 
     private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
+}
+
+/// <summary>Keeps what is logged, formatted as the sink would show it.</summary>
+sealed class CaptureLogger : ILogger
+{
+    public List<string> Messages { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        if (logLevel == LogLevel.Information) lock (Messages) Messages.Add(formatter(state, exception));
+    }
 }

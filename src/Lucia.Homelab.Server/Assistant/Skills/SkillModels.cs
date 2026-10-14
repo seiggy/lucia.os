@@ -51,7 +51,7 @@ public static class SkillAuthors
 
 /// <param name="Update">Replace the assistant's own disabled draft of that name instead of refusing a name that is taken.</param>
 public sealed record SkillDraftRequest(string? Name, string? Description, string? Execution, string? Tier, string? Body, SkillDraftFile[]? Files,
-    string[]? SourceChats, string? Rationale, bool Update = false);
+    string[]? SourceChats, string? Rationale, bool Update = false, string? ParametersSchema = null);
 
 public sealed record SkillDraftFile(string? Path, string? Content);
 
@@ -59,7 +59,7 @@ public sealed record SkillDraftResult(string Name, string Status, string Hash, s
 
 /// <summary>An edit to an existing skill; anything left out stays as it is. <paramref name="RemoveFiles"/> deletes files from the skill.</summary>
 public sealed record SkillEditRequest(string? Name, string? Description, string? Execution, string? Tier, string? Body, SkillDraftFile[]? Files,
-    string[]? RemoveFiles, string? Rationale);
+    string[]? RemoveFiles, string? Rationale, string? ParametersSchema = null);
 
 public sealed record SkillEditResult(string Name, bool Enabled, string Hash, string[] Warnings, string[] Files);
 
@@ -87,6 +87,9 @@ public sealed record SkillDetail(string Name, string Description, string Executi
     public string? Rationale { get; init; }
     public string[] SourceChats { get; init; } = [];
     public string[] Warnings { get; init; } = [];
+
+    /// <summary>The JSON Schema of the <c>arguments</c> each script takes, by script path, after the defaults for the skill's execution mode.</summary>
+    public IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonObject> ParametersSchema { get; init; } = new Dictionary<string, System.Text.Json.Nodes.JsonObject>();
 }
 
 public sealed record SkillCreateRequest(string? Name, string? Description, string? Execution, string? Tier, string[]? AllowedDomains, string? Body,

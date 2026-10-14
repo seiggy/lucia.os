@@ -68,6 +68,8 @@ metadata:
 Run scripts/check-pools.sh on the storage server, then summarize any pool that is not ONLINE.
 ```
 
+A skill can also describe the arguments its scripts take, under `parameters_schema` in `metadata`. Write it as a JSON Schema object with `"type": "object"`, and list each argument with its type and limits. The assistant reads that description before it calls a script, so it sends the right values. The script still checks its own input.
+
 ## Turn declined commands into skills
 
 When the assistant asks to run a command and you decline it, or the answer never comes, that call stays in the chat. The sessions list shows a count for each chat, such as "2 declined · 1 timed out".
@@ -142,6 +144,7 @@ When you add or change a skill during a chat, say so in your message, for exampl
 | You see | What to do |
 |---|---|
 | "Built-in skills are read-only" | Duplicate the skill and edit the copy. |
+| "parameters_schema in the SKILL.md metadata must be a JSON Schema object with \"type\": \"object\"" | Fix the `parameters_schema` header so it is a JSON Schema object with `"type": "object"`. |
 | "Lucia keeps at most 200 skills" | Delete or turn off skills you no longer use. |
 | "The skill is larger than 5 MiB" | Remove large files from the folder, or move them out of the skill. |
 | A server says it can't run sandboxed skills | That server has no KVM. Use a different server or put the script on a server or the Spark. |

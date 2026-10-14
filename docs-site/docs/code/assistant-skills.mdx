@@ -29,6 +29,9 @@ Everything lives in `src/Lucia.Homelab.Server/Assistant/Skills/`, with the front
 | `AssistantSkills.cs` | Builds the turn's skill tools from `AgentSkillsProvider` and the store |
 | `SkillAgent.cs` | Wraps the Agent Framework's skill provider for a turn |
 | `SkillScriptRouter.cs` | Picks the runner for a script by its execution mode |
+| `SkillArguments.cs` | Reads a call's `arguments` once, before any runner: JSON text, a top-level `node`, the `HOST:` messages |
+| `SkillSchemas.cs` | Reads a skill's `parameters_schema` and gives every script a schema, declared or default |
+| `LuciaSkillsSource.cs` | Wraps the framework's file skills so `load_skill` shows those schemas |
 | `NodeSkillRunner.cs` | Runs a `node` script through the node agent |
 | `SparkSkillRunner.cs` | Runs a `spark` script through the Spark's skill queue |
 | `SandboxSkillRunner.cs` | Runs a `sandbox` script in a Hyperlight micro-VM on a KVM node |
@@ -79,6 +82,7 @@ Import has two entry points, both checked against the same limits. A zip upload 
 | `lucia.tier` | `read`, `change`, `destructive` | The tier of a script call |
 | `lucia.allowed-domains` | host list | Hosts the skill may read, added to the broker's host grants |
 | `lucia.network` | `none`, `bridge` | Network for a Spark script's container. Default `none`. Sandbox scripts get a network only when `lucia.allowed-domains` is set |
+| `parameters_schema` | JSON Schema object, as a YAML mapping or JSON text | The shape of the `arguments` object a script takes: one schema for every script, or a map from script path to schema. See [Script arguments](#script-arguments) |
 
 ```csharp title="src/Lucia.Homelab.Server/Assistant/Skills/SkillModels.cs"
 public const string ExecutionKey = "lucia.execution", TierKey = "lucia.tier", DomainsKey = "lucia.allowed-domains", NetworkKey = "lucia.network";
@@ -121,6 +125,37 @@ A call that names no skill, or a skill that doesn't exist, is a change. The brok
 
 The model is offered the enabled skills' names and descriptions, and calls `load_skill` to read one before it follows it.
 
+### Script arguments
+
+The framework describes every file script as taking an array of strings, and smaller models believed it: they sent `arguments` as JSON text, and the old runners refused anything that wasn't an object. Three pieces now sit between the model and the runner.
+
+`LuciaSkillsSource` wraps each framework file skill. Its scripts are `LuciaSkillScript` objects that run through the framework's own script but advertise the skill's schema, and `load_skill` rebuilds the `<available_scripts>` block with it. Discovery, resources and the runner stay the framework's.
+
+`SkillStore.SchemasOf` picks each script's schema. A skill declares `parameters_schema` under `metadata`, as a YAML mapping or JSON text, either as one schema for every script or as a map from script path (`scripts/verify.py`) to a schema. It must have `"type": "object"`; a bad value is a skill `Problem` and an import or draft that carries one is refused. The assistant sends the schema as `parametersSchema` on `draft_skill` or `edit_skill`, as an object or as JSON text, and `SkillSchemas.Check` stores it in compact form. With nothing declared:
+
+| Mode | Schema |
+|---|---|
+| `node` | An object with a required `node` string. A declared schema gets the `node` property and requirement added |
+| `spark` | `{"type":"object"}` |
+| `sandbox` | An object with an optional `node` string |
+
+`SkillArguments.Normalize` reads the call once. An object passes as it is; text is parsed once (up to 32 KiB) and an object inside it is used. A top-level `node` next to the arguments is moved inside them, and two different names are refused. The `LiveSkillFunction` around `run_skill_script` does this and also advertises `arguments` as an object plus an optional `node`. Whatever Lucia refuses starts with `HOST:`, so a model can tell it from a script's own `ERROR:` lines:
+
+| Call | Result |
+|---|---|
+| Object with `node` | Runs unchanged |
+| Text holding an object | Runs, and the repair is logged and counted |
+| Text or value that is an array | `HOST: arguments was an array; send an object with a "node" key.` |
+| Number or boolean | `HOST: arguments was a number; send a JSON object.` |
+| `null` or no arguments | Treated as `{}`, so a node skill then gets the "no node key" message |
+| Text that isn't JSON | `HOST: arguments was a string that isn't valid JSON; send a JSON object, not a quoted string.` |
+| Object without `node`, but a top-level `node` | Runs with the node moved inside |
+| Two different nodes | `HOST: arguments.node ("a") and node ("b") disagree; name the server once, inside arguments.` |
+| `node` isn't text | `HOST: arguments.node must be the server's name as a string, such as "lucialab01".` |
+| No `node` for a node skill | `HOST: arguments has no "node" key; add the server to run on, such as {"node": "lucialab01", ...}.` |
+
+A repaired call writes an information log line (`Assistant skill arguments for {Skill}/{Script} were coerced from a JSON string.`, with `coerced` and `injectedNode` fields) and adds one to the `lucia.assistant.skill_arguments_coerced` counter on the `AgentGovernance` meter, tagged `kind=string` or `kind=node`. The arguments' content is never logged. A script's own validation is unchanged.
+
 ## Drafts and edits
 
 The assistant can write skills too, but never as a live change. Two tools do it, and each has its own tier.
@@ -129,8 +164,8 @@ The assistant can write skills too, but never as a live change. Two tools do it,
 |---|---|---|
 | `list_skills` | `read` | Lists enabled and built-in skills, with author, runner, tier and, for drafts, their chats and rationale. Pass `includeDisabled` for disabled skills and drafts |
 | `get_skill` | `read` | Reads one skill's `SKILL.md` and file list, or one file. It never runs anything |
-| `draft_skill` | `draft` | Creates a disabled skill, or updates the assistant's own untouched draft when `update` is set |
-| `edit_skill` | `skill-edit` | Proposes a change to an owner or assistant skill. The owner approves a diff first |
+| `draft_skill` | `draft` | Creates a disabled skill, or updates the assistant's own untouched draft when `update` is set. Takes `parametersSchema` |
+| `edit_skill` | `skill-edit` | Proposes a change to an owner or assistant skill, `parametersSchema` included. The owner approves a diff first |
 
 ### Drafts
 
@@ -193,7 +228,7 @@ A chat offers every enabled skill. A job passes its `Skills` field. `null` or an
 
 ### Mid-turn changes
 
-`refresh_skills` makes the turn pick up store changes. Each skill call is wrapped in a `LiveSkillFunction` that compares the store's `Revision` with the one it was built against. If the revision moved, the call goes to a freshly built provider. A skill that was disabled mid-turn returns `Error: that skill is no longer enabled.`
+`refresh_skills` makes the turn pick up store changes. Each skill call is wrapped in a `LiveSkillFunction` that compares the store's `Revision` with the one it was built against. If the revision moved, the call goes to a freshly built provider. A skill that was disabled mid-turn returns `HOST: that skill is no longer enabled.`
 
 ## Routing a script to a runner
 
@@ -216,7 +251,7 @@ All three paths verify the skill's hash before they run anything, and they pass 
 
 ### Node
 
-`NodeSkillRunner` sends a script to a managed server through `NodeExec`, the same path `run_command` uses. The node agent runs the script from its own copy, installed by `SkillSync` (covered below). The model can name the server with a `node` argument; the rest of the arguments go to the script.
+`NodeSkillRunner` sends a script to a managed server through `NodeExec`, the same path `run_command` uses. The node agent runs the script from its own copy, installed by `SkillSync` (covered below). The model names the server with a `node` entry inside `arguments`. A top-level `node` is moved there first (see [Script arguments](#script-arguments)), and the rest of the arguments go to the script.
 
 A `.cs` script runs as `dotnet run <file> -p:PublishAot=false -p:NuGetAudit=false`. .NET 10 file-based apps default to PublishAot, and its restore fetches the AOT compiler, so the flags keep the run from failing offline.
 

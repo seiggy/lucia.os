@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Lucia.Homelab.Server.Domains;
 using Microsoft.Agents.AI;
@@ -106,7 +107,11 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         var summary = Summarize(name, await LoadedAsync(ct));
         var markdown = ReadMarkdown(name, out var raw);
         return new(summary, markdown?.Settings().AllowedDomains ?? [], markdown?.Text("license"), markdown?.Text("compatibility"),
-            markdown?.Body ?? raw ?? "", Inspect(name).Files) { Network = markdown?.Settings().Network ?? SkillNetwork.None };
+            markdown?.Body ?? raw ?? "", Inspect(name).Files)
+        {
+            Network = markdown?.Settings().Network ?? SkillNetwork.None,
+            ParametersSchema = SchemasOf(name),
+        };
     }
 
     public async Task<SkillSummary?> FindAsync(string name, CancellationToken ct) =>
@@ -119,6 +124,29 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
     /// <summary>The skill's Lucia settings from its frontmatter; the defaults when it can't be read.</summary>
     public SkillSettings SettingsOf(string name) =>
         ValidName(name) && Directory.Exists(Dir(name)) ? ReadMarkdown(name, out _)?.Settings() ?? SkillSettings.Default : SkillSettings.Default;
+
+    /// <summary>
+    /// The schema of the <c>arguments</c> each of the skill's scripts takes, by script path, as the model is told: what the skill declares,
+    /// or the default for its execution mode.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonObject> SchemasOf(string name)
+    {
+        var result = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        if (!ValidName(name) || !Directory.Exists(Dir(name))) return result;
+        var markdown = ReadMarkdown(name, out _);
+        var execution = markdown?.Settings().Execution ?? SkillExecution.Node;
+        var declared = SkillSchemas.Read(markdown, out _);
+        foreach (var file in Inspect(name).Files.Where(file => file.Kind == "script" && SkillLanguages.IsScript(file.Path)))
+            result[file.Path] = SkillSchemas.For(execution, declared, file.Path);
+        return result;
+    }
+
+    /// <summary>The schema for one script of a skill; the execution mode's default when the skill declares none.</summary>
+    public JsonObject SchemaOf(string name, string script)
+    {
+        var markdown = ValidName(name) && Directory.Exists(Dir(name)) ? ReadMarkdown(name, out _) : null;
+        return SkillSchemas.For(markdown?.Settings().Execution ?? SkillExecution.Node, SkillSchemas.Read(markdown, out _), script);
+    }
 
     /// <summary>The skill's content hash, or null when there is no such skill.</summary>
     public string? HashOf(string name) => ValidName(name) && Directory.Exists(Dir(name)) ? Inspect(name).Hash : null;
@@ -425,6 +453,8 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         if (files.Count - 1 > MaxFiles || files.Sum(file => (long)file.Data.Length) > MaxSkillBytes)
             throw new AssistantException(413, "skill_too_large", "That package is larger than skills allow.");
         if (markdown!.Settings().Execution == SkillExecution.Sandbox) RequireSandboxLanguages(files.Select(file => file.Path));
+        SkillSchemas.Read(markdown, out var schemaProblem);
+        if (schemaProblem is not null) throw Invalid(schemaProblem);
         await Locked(async () =>
         {
             if (Directory.Exists(Dir(name))) throw new AssistantException(409, "skill_exists", $"There is already a skill named {name}.");
@@ -579,6 +609,7 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         var entry = EntryFor(name);
         var description = loaded.TryGetValue(name, out var frontmatter) ? frontmatter.Description : markdown?.Text("description") ?? "";
         var problem = inspection.Problem ?? (loaded.ContainsKey(name) ? null : Explain(name, markdown));
+        if (problem is null) SkillSchemas.Read(markdown, out problem);
         var author = IsBuiltIn(name) ? SkillAuthors.Lucia : entry.Source == SkillAuthors.Assistant ? SkillAuthors.Assistant : SkillAuthors.Owner;
         var meta = markdown?.Metadata() ?? [];
         var drafted = author == SkillAuthors.Assistant;

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using Lucia.Homelab.Server.Assistant.Skills;
 using Microsoft.Extensions.AI;
 
@@ -131,7 +132,7 @@ public sealed class SkillAuthoring(AssistantChatLog chats, SkillStore store, ILo
         {
             detail.Name, detail.Description, Status = detail.BuiltIn ? "built-in" : detail.Enabled ? "enabled" : "disabled", detail.Author, detail.Execution,
             detail.Tier, detail.NeedsReview, detail.Rationale, detail.SourceChats, detail.Warnings, detail.Problem, detail.Body,
-            Files = detail.Files.Select(file => new { file.Path, file.Kind, file.Size }),
+            Files = detail.Files.Select(file => new { file.Path, file.Kind, file.Size }), detail.ParametersSchema,
         };
     }
 
@@ -145,12 +146,13 @@ public sealed class SkillAuthoring(AssistantChatLog chats, SkillStore store, ILo
         [Description("Scripts under scripts/, notes under references/ and data under assets/. A file you send replaces the one at that path.")] SkillDraftFile[]? files = null,
         [Description("Ids of the chats this came from, from list_chats.")] string[]? sourceChats = null,
         [Description("Rewrite your own earlier disabled draft of this name instead of refusing the name.")] bool update = false,
+        [Description("The JSON Schema of the arguments object the scripts take, as an object (JSON text also works): {\"type\":\"object\",\"properties\":{...},\"required\":[...]}. A node skill's schema gets the \"node\" property added if you leave it out. Always send it.")] JsonElement? parametersSchema = null,
         CancellationToken ct = default)
     {
         var owner = OwnerOf(AssistantTools.Call(args).SessionKey);
         var sources = (sourceChats ?? []).Select(id => id?.Trim() ?? "").Where(id => id.Length > 0).Distinct().ToArray();
         RequireOwned(owner, sources);
-        var result = await store.DraftAsync(new(name, description, execution, tier, body, files, sources, rationale, update), ct);
+        var result = await store.DraftAsync(new(name, description, execution, tier, body, files, sources, rationale, update, SchemaText(parametersSchema)), ct);
         await Notify(owner, (result.Updated ? "Skill draft updated: " : "New skill to review: ") + result.Name,
             "The assistant drafted a skill. Review it on the Skills page and enable it if it looks right.", result.Name, ct);
         return new
@@ -169,7 +171,8 @@ public sealed class SkillAuthoring(AssistantChatLog chats, SkillStore store, ILo
         [Description("read, change or destructive, or leave out to keep it.")] string? tier = null,
         [Description("The whole new SKILL.md body, or leave out to keep it.")] string? body = null,
         [Description("Files to add or replace under scripts/, references/ or assets/.")] SkillDraftFile[]? files = null,
-        [Description("Paths of files to delete from the skill.")] string[]? removeFiles = null, CancellationToken ct = default)
+        [Description("Paths of files to delete from the skill.")] string[]? removeFiles = null,
+        [Description("The new JSON Schema of the arguments object the scripts take, as an object (JSON text also works), or leave out to keep it.")] JsonElement? parametersSchema = null, CancellationToken ct = default)
     {
         var owner = OwnerOf(AssistantTools.Call(args).SessionKey);
         // The arguments were read once, when the owner was asked; what runs is that approved plan.
@@ -177,6 +180,15 @@ public sealed class SkillAuthoring(AssistantChatLog chats, SkillStore store, ILo
         await Notify(owner, "Skill edited: " + result.Name, "The assistant edited this skill with your approval.", result.Name, ct);
         return new { result.Name, Status = result.Enabled ? "enabled" : "disabled", result.Hash, result.Warnings, result.Files, Note = "Saved. The skill keeps its enabled state; its content changed, so earlier 'always allow' choices for its scripts no longer apply." };
     }
+
+    // A schema may come as an object or as JSON text; SkillSchemas validates either form once it's stored as text.
+    private static string? SchemaText(JsonElement? schema) => schema switch
+    {
+        null or { ValueKind: JsonValueKind.Null or JsonValueKind.Undefined } => null,
+        { ValueKind: JsonValueKind.Object } value => value.GetRawText(),
+        { ValueKind: JsonValueKind.String } value => value.GetString(),
+        _ => throw new AssistantException(400, "invalid_schema", "HOST: parametersSchema must be a JSON Schema object."),
+    };
 
     // The draft is saved; telling the owner is best effort.
     private async Task Notify(string owner, string title, string text, string skill, CancellationToken ct)

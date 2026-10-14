@@ -42,6 +42,10 @@ internal sealed record SkillMarkdown(Dictionary<string, object?> Map, string Bod
 
     public SkillSettings Settings() => SkillSettings.From(Metadata());
 
+    /// <summary>One <c>metadata</c> entry as parsed, so a YAML mapping stays a mapping; null when there is none.</summary>
+    public object? MetadataValue(string key) =>
+        Map.TryGetValue("metadata", out var value) && value is IDictionary<object, object> entries && entries.TryGetValue(key, out var item) ? item : null;
+
     /// <summary>
     /// Writes a SKILL.md from a copy of <paramref name="previous"/>'s frontmatter: only name, description and the lucia.* metadata keys
     /// change, and every other value (license, version, list-valued allowed-tools, other metadata) passes through as it was parsed.

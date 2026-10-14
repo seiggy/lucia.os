@@ -16,7 +16,7 @@ public sealed partial class SkillStore
     private sealed record EditPlan(string Name, string BaseHash, bool Enabled, string BeforeManifest, string AfterManifest, SkillSettings Settings,
         IReadOnlyList<(string Path, byte[] Data)> Writes, IReadOnlyList<string> Removes, string[] Warnings);
 
-    private static readonly string[] EditFields = ["name", "rationale", "description", "execution", "tier", "body", "files", "removeFiles"];
+    private static readonly string[] EditFields = ["name", "rationale", "description", "execution", "tier", "body", "files", "removeFiles", "parametersSchema"];
 
     /// <summary>
     /// Reads an edit_skill call's arguments once, exactly: the property names are case-sensitive, none may repeat or be unknown, and
@@ -26,7 +26,7 @@ public sealed partial class SkillStore
     {
         if (arguments.ValueKind != JsonValueKind.Object) throw Invalid("Name the skill to edit.");
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        string? name = null, description = null, execution = null, tier = null, body = null, rationale = null;
+        string? name = null, description = null, execution = null, tier = null, body = null, rationale = null, parametersSchema = null;
         SkillDraftFile[]? files = null;
         string[]? removes = null;
         foreach (var property in arguments.EnumerateObject())
@@ -42,6 +42,9 @@ public sealed partial class SkillStore
                 case "execution": execution = Str(value, property.Name); break;
                 case "tier": tier = Str(value, property.Name); break;
                 case "body": body = Str(value, property.Name); break;
+                case "parametersSchema":
+                    parametersSchema = value.ValueKind == JsonValueKind.Object ? value.GetRawText() : Str(value, property.Name);
+                    break;
                 case "removeFiles":
                     removes = value.ValueKind == JsonValueKind.Null ? null : value.ValueKind == JsonValueKind.Array
                         ? [.. value.EnumerateArray().Select(item => Str(item, "removeFiles") ?? throw Invalid("removeFiles lists paths."))]
@@ -53,7 +56,7 @@ public sealed partial class SkillStore
                     break;
             }
         }
-        return new(name, description, execution, tier, body, files, removes, rationale);
+        return new(name, description, execution, tier, body, files, removes, rationale, parametersSchema);
     }
 
     private static SkillDraftFile ParseFile(JsonElement item)
@@ -115,6 +118,11 @@ public sealed partial class SkillStore
         var reviewed = AssistantAuthored(name) && previous.Metadata().GetValueOrDefault(SkillAuthors.LastEditKey)?.ToString() == SkillAuthors.Owner;
         var extra = new Dictionary<string, string?> { [SkillAuthors.LastEditKey] = reviewed ? SkillAuthors.Owner : SkillAuthors.Assistant };
         if (AssistantAuthored(name)) extra[SkillAuthors.WarningsKey] = warnings.Length > 0 ? JsonSerializer.Serialize(warnings) : null;
+        if (request.ParametersSchema is { Length: > 0 } declared)
+        {
+            if (SkillSchemas.Check(declared, out var schemaText) is { } schemaProblem) throw Invalid(schemaProblem);
+            extra[SkillSchemas.Key] = schemaText;
+        }
         return new(name, inspection.Hash, EntryFor(name).Enabled, raw ?? "", SkillMarkdown.Write(name, description, settings, body, previous, extra), settings, writes, removes, warnings);
     }
 

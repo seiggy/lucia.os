@@ -54,28 +54,32 @@ public sealed class NodeSkillRunner(NodeExec exec, SkillStore store)
     internal static bool NotSynced(NodeRequestResult result) =>
         result.ExitCode == NotSyncedExit && (result.Output ?? "").Contains(NotSyncedText, StringComparison.Ordinal);
 
+    /// <summary>Checks the arguments and builds what a run sends: the server to run on and the shell command, or the HOST: refusal.</summary>
+    internal (string? Error, string? Node, string? Command) Prepare(string skill, string script, JsonElement? arguments)
+    {
+        var (passed, error, _) = SkillArguments.Normalize(arguments, null, SkillExecution.Node);
+        if (error is not null) return (error, null, null);
+        var node = SkillArguments.NodeOf(passed!)!;
+        passed!.Remove("node");
+        var hash = store.HashOf(skill);
+        if (hash is null) return ("HOST: that skill no longer exists.", null, null);
+        var command = Command(skill, hash, passed.ToJsonString(), script);
+        return command is null ? ($"HOST: {script} has an extension that doesn't run on a server.", null, null) : (null, node, command);
+    }
+
     /// <param name="script">The script's path inside the skill, such as scripts/check.py.</param>
     /// <param name="arguments">What the model passed: <c>node</c> names the server, the rest goes to the script.</param>
-    /// <returns>The result as text for the model; expected failures read "Error: ..." so the model sees why.</returns>
+    /// <returns>The result as text for the model; Lucia's own refusals read "HOST: ..." so the model can tell them from the script's output.</returns>
     public async Task<string> RunAsync(string skill, string script, JsonElement? arguments, CancellationToken ct)
     {
-        var passed = arguments is { ValueKind: JsonValueKind.Object } given ? JsonNode.Parse(given.GetRawText()) as JsonObject ?? [] : [];
-        if (arguments is { ValueKind: not (JsonValueKind.Object or JsonValueKind.Null or JsonValueKind.Undefined) })
-            return "Error: pass the arguments as an object, with a \"node\" entry naming the server to run on.";
-        var node = passed["node"] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
-        if (string.IsNullOrWhiteSpace(node))
-            return "Error: this skill runs on a server. Pass its name in the arguments object as \"node\", for example the hostname from list_nodes.";
-        passed.Remove("node");
-        var hash = store.HashOf(skill);
-        if (hash is null) return "Error: that skill no longer exists.";
-        var command = Command(skill, hash, passed.ToJsonString(), script);
-        if (command is null) return $"Error: {script} has an extension that doesn't run on a server.";
+        var (error, node, command) = Prepare(skill, script, arguments);
+        if (error is not null) return error;
         try
         {
-            var (id, hostname) = await exec.Node(node, ct);
+            var (id, hostname) = await exec.Node(node!, ct);
             if (!await exec.SyncsSkills(id, ct))
-                return $"Error: {hostname}'s agent can't download skills yet. Update it with node_action update-agent, then try again.";
-            var result = await exec.Exec(id, hostname, command, "bash", Seconds, ct);
+                return $"HOST: {hostname}'s agent can't download skills yet. Update it with node_action update-agent, then try again.";
+            var result = await exec.Exec(id, hostname, command!, "bash", Seconds, ct);
             if (NotSynced(result))
             {
                 try { await exec.SyncSkills(id, ct); }
@@ -84,16 +88,16 @@ public sealed class NodeSkillRunner(NodeExec exec, SkillStore store)
                 while (NotSynced(result) && DateTimeOffset.UtcNow < until)
                 {
                     await Task.Delay(SyncPoll, ct);
-                    result = await exec.Exec(id, hostname, command, "bash", Seconds, ct);
+                    result = await exec.Exec(id, hostname, command!, "bash", Seconds, ct);
                 }
-                if (NotSynced(result)) return $"Error: {hostname} hasn't downloaded this skill yet; try again in a minute.";
+                if (NotSynced(result)) return $"HOST: {hostname} hasn't downloaded this skill yet; try again in a minute.";
             }
             var note = result.Running ? $"\n{hostname} stopped answering, so Lucia stopped waiting. The script stops by itself at its time limit." : "";
             return $"Ran {script} on {hostname}. Exit code {(result.ExitCode is { } code ? code.ToString() : "unknown")}.{note}\n"
                 + (string.IsNullOrEmpty(result.Output) ? "(no output)" : result.Output);
         }
-        catch (AssistantException e) when (e.Code is "unknown_node" or "exec_unsupported" or "command_refused") { return "Error: " + e.Message; }
-        catch (Onboarding.HardwareOnboardingException e) { return "Error: " + e.Message; }
+        catch (AssistantException e) when (e.Code is "unknown_node" or "exec_unsupported" or "command_refused") { return "HOST: " + e.Message; }
+        catch (Onboarding.HardwareOnboardingException e) { return "HOST: " + e.Message; }
     }
     private static string Quote(string text) => "'" + text.Replace("'", "'\\''") + "'";
 }
