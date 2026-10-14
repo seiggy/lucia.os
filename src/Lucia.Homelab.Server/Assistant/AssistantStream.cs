@@ -130,7 +130,7 @@ public sealed class AssistantStream(string messageId, string? model)
     /// Shows the owner a tool call to approve, or records a decision the policy made itself (<paramref name="automatic"/>).
     /// The runtime may ask before it reports the call started, so the tool part is added here when it is missing.
     /// </summary>
-    public List<object> Ask(string toolCallId, string toolName, JsonNode? input, string approvalId, string? reason, bool automatic)
+    public List<object> Ask(string toolCallId, string toolName, JsonNode? input, string approvalId, string? reason, bool automatic, JsonObject? diff = null)
     {
         var chunks = new List<object>();
         if (_ended) return chunks;
@@ -138,8 +138,14 @@ public sealed class AssistantStream(string messageId, string? model)
         var approval = new JsonObject { ["id"] = approvalId };
         if (reason is not null) approval["requestReason"] = reason;
         if (automatic) approval["isAutomatic"] = true;
+        // A skill edit shows what it changes, and is never covered by "always allow".
+        if (diff is not null)
+        {
+            approval["diff"] = diff.DeepClone();
+            approval["alwaysAllow"] = false;
+        }
         _parts[index] = _parts[index] with { State = "approval-requested", Approval = approval };
-        chunks.Add(new { type = "tool-approval-request", approvalId, toolCallId, reason, isAutomatic = automatic ? true : (bool?)null });
+        chunks.Add(new { type = "tool-approval-request", approvalId, toolCallId, reason, isAutomatic = automatic ? true : (bool?)null, approvalDescriptor = diff });
         return chunks;
     }
 

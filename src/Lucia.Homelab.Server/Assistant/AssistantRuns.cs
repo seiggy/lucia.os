@@ -8,16 +8,19 @@ using Microsoft.Extensions.Options;
 namespace Lucia.Homelab.Server.Assistant;
 
 public sealed record AssistantChatRequest(string SessionId, string MessageId, string Text, string Mode, string? Model, string? Route,
-    string? Reasoning = null, string? ContextTier = null);
+    string? Reasoning = null, string? ContextTier = null, string? Command = null, string[]? Sources = null);
 public sealed record AssistantSessionInfo(string Title, DateTimeOffset Updated, string? Model, string? JobId = null);
 public sealed record AssistantTranscript(List<UiMessage> Messages);
 
 /// <summary>Runs chat turns in the background so they survive disconnects, and keeps each owner's chats as JSON files.</summary>
 public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<AssistantOptions> options,
     IHostApplicationLifetime lifetime, ILogger<AssistantRuns> logger, AssistantBroker broker, AssistantTools? tools = null,
-    AssistantSkills? skills = null) : IAsyncDisposable
+    AssistantSkills? skills = null, AssistantChatLog? chats = null) : IAsyncDisposable
 {
+    public const string CreateSkillCommand = "create-skill";
+    private const int MaxSources = 10;
     private const long TranscriptLimit = 16 * 1024 * 1024;
+    private readonly AssistantChatLog _chats = chats ?? new(options, Microsoft.Extensions.Logging.Abstractions.NullLogger<AssistantChatLog>.Instance);
     private readonly ConcurrentDictionary<string, AssistantRun> _runs = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -44,6 +47,20 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     /// <param name="actor">Who Lucia's history credits with the assistant's changes.</param>
     /// <param name="user">The signed-in Lucia user, for the SSH login the assistant suggests.</param>
     /// <param name="job">The job this turn runs for, unattended. A new chat then belongs to it.</param>
+    /// <summary>The lines /create-skill adds to the turn's context block: the command, the chats to work on and what to load.</summary>
+    internal static string CommandContext(string? command, IReadOnlyList<string> sources) => command is null ? "" :
+        "\nCommand: " + command + "\nChats: " + string.Join(", ", sources) + "\nLoad the skill-authoring skill and follow it for these chats.";
+
+    /// <summary>The chats a command works on: the owner's own, up to ten, defaulting to the current chat.</summary>
+    private string[] Sources(string owner, string current, string[]? given)
+    {
+        var ids = (given ?? []).Select(source => source?.Trim() ?? "").Distinct().ToArray();
+        if (ids.Length == 0) return [current];
+        if (ids.Length > MaxSources || ids.Any(source => !IsSessionId(source) || source != current && !File.Exists(Path.Combine(Root, "users", owner, source, "session.json"))))
+            throw new AssistantException(400, "invalid_sources", $"Choose up to {MaxSources} of your own chats.");
+        return ids;
+    }
+
     public async Task<AssistantRun> StartAsync(string owner, AssistantChatRequest request, string actor, string? user, CancellationToken ct,
         AssistantJob? job = null)
     {
@@ -51,8 +68,14 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
         if (request.MessageId is null || !MessageIdPattern().IsMatch(request.MessageId) || request.Mode is not ("plan" or "execute")
             || request.Model is { } model && !ModelPattern().IsMatch(model) || !ValidTuning(request.Reasoning, request.ContextTier))
             throw new AssistantException(400, "invalid_request", "The request body is invalid.");
-        if (string.IsNullOrWhiteSpace(request.Text) || request.Text.Length > 32_768)
+        if (request.Command is not (null or CreateSkillCommand) || request.Command is null && request.Sources is { Length: > 0 })
+            throw new AssistantException(400, "invalid_request", "The request body is invalid.");
+        var note = request.Text?.Trim() ?? "";
+        if (request.Command is not null && note.StartsWith("/" + CreateSkillCommand, StringComparison.Ordinal)) note = note["/create-skill".Length..].Trim();
+        if (request.Text is null || request.Text.Length > 32_768 || request.Command is null && string.IsNullOrWhiteSpace(request.Text))
             throw new AssistantException(400, "invalid_message", "Messages must be between 1 and 32,768 characters.");
+        var sources = request.Command is null ? [] : Sources(owner, id, request.Sources);
+        var text = request.Command is null ? request.Text : "/" + CreateSkillCommand + (note.Length > 0 ? " " + note : "");
         if (AssistantProviders.IsGitHub(request.Model ?? runtime.DefaultModel) && !await runtime.ConnectedAsync(owner, ct))
             throw GitHubSignIn.NotConnected();
         var key = Key(owner, id);
@@ -63,7 +86,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             if (_runs.TryGetValue(key, out var active) && !active.Done)
                 throw new AssistantException(409, "run_active", "This chat is still answering. Stop it or wait for it to finish.");
             var transcript = await LoadAsync(folder, ct) ?? new([]);
-            var info = (ReadInfo(folder) ?? new(job?.Name ?? Title(request.Text), default, null, job?.Id)) with
+            var info = (ReadInfo(folder) ?? new(job?.Name ?? Title(text), default, null, job?.Id)) with
             {
                 Updated = DateTimeOffset.UtcNow, Model = request.Model
             };
@@ -72,14 +95,15 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
             if (retried >= 0 && transcript.Messages[retried].Id == request.MessageId)
                 transcript.Messages.RemoveRange(retried + 1, transcript.Messages.Count - retried - 1);
             else
-                transcript.Messages.Add(new(request.MessageId, "user", [new UiPart("text", request.Text)]));
+                transcript.Messages.Add(new(request.MessageId, "user", [new UiPart("text", text)]));
             await SaveAsync(folder, transcript, info);
             var run = new AssistantRun(Guid.NewGuid().ToString("N"), lifetime.ApplicationStopping);
             _runs[key] = run;
             var route = request.Route is { } page && RoutePattern().IsMatch(page) ? page : "unknown";
             var unattended = job is null ? "" : "\nRun: the scheduled job \"" + job.Name + "\". Nobody is watching: work on your own, and use "
                 + "notify_owner for anything the owner must know or do.";
-            var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}{unattended}\n</lucia-context>\n\n{request.Text}";
+            var command = CommandContext(request.Command, sources);
+            var prompt = $"<lucia-context>\nMode: {(request.Mode == "plan" ? "Plan" : "Execute")}\nPage: {route}{unattended}{command}\n</lucia-context>\n\n{text}";
             run.Completion = Task.Run(() => ExecuteAsync(key, folder, run,
                 new(owner, key, prompt, request.Model, request.Mode, actor, user, request.Reasoning, request.ContextTier), transcript, info));
             return run;
@@ -106,6 +130,7 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
     public object List(string owner)
     {
         var root = Path.Combine(Root, "users", owner);
+        var reviews = _chats.Reviews(owner);
         var sessions = Directory.Exists(root)
             ? Directory.EnumerateDirectories(root)
                 .Select(folder => (Id: Path.GetFileName(folder), Info: ReadInfo(folder)))
@@ -115,10 +140,18 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
                 {
                     id = session.Id, title = session.Info!.Title, updated = session.Info.Updated, model = session.Info.Model,
                     job = session.Info.JobId,
+                    issues = Issues(Path.Combine(root, session.Id)),
+                    reviewedAt = reviews.GetValueOrDefault(session.Id)?.At,
                     running = _runs.GetValueOrDefault(Key(owner, session.Id)) is { Done: false }
                 }).ToArray()
             : [];
         return new { sessions };
+    }
+
+    private object Issues(string folder)
+    {
+        var issues = _chats.IssuesIn(folder);
+        return new { declined = issues.Declined, expired = issues.Expired, failed = issues.Failed, timedOut = issues.TimedOut };
     }
 
     public async Task<object> GetAsync(string owner, string id, CancellationToken ct)
@@ -175,7 +208,8 @@ public sealed partial class AssistantRuns(AssistantRuntime runtime, IOptions<Ass
                 logger.LogWarning("Adding skills to a turn failed ({ErrorType}).", e.GetType().Name);
             }
         }
-        var kit = broker.Kit(turn, settings, [.. all, .. context.Tools], stream, run, job);
+        var gate = new SkillGate(context.Runnable ?? (_ => false), skills is null ? _ => true : skills.DraftLocked, skills is null ? null : skills.EditDiff);
+        var kit = broker.Kit(turn, settings, [.. all, .. context.Tools], stream, run, job, gate);
         return context.Instructions.Length > 0 ? kit with { Instructions = context.Instructions } : kit;
     }
 

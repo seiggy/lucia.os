@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { allSkills, copyName, languageChoices, languageOf, isSandboxScript, parseSkillCheck, parseSkillDetail, parseSkillList, pickSkills, sandboxBlockers,
-  shortHash, sizeText, sortSkills, starterScript, validateSkillName, validFileName } from '../.checks/skills.js'
+import { allSkills, copyName, languageChoices, languageOf, isSandboxScript, parseSkill, parseSkillCheck, parseSkillDetail, parseSkillList, pickSkills, sandboxBlockers,
+  shortHash, sizeText, skillFromHash, sortSkills, splitSkills, starterScript, validateSkillName, validFileName } from '../.checks/skills.js'
 import { parseRoute } from '../.checks/dashboard.js'
 
 const hash = 'ab'.repeat(32)
@@ -64,4 +64,24 @@ assert.equal(shortHash(hash), 'abababab')
 assert.equal(sizeText(512), '512 B')
 assert.equal(sizeText(2048), '2.0 KB')
 assert.deepEqual(parseRoute('#/settings/assistant/skills'), { page: 'assistant-skills' })
+// Drafts the assistant wrote: new fields are additive, so an older host's list still parses.
+assert.deepEqual([list.skills[0].author, list.skills[0].needsReview, list.skills[0].rationale, list.skills[0].sourceChats, list.skills[0].warnings], ['owner', false, null, [], []])
+assert.equal(parseSkillList({ skills: [builtIn] }).skills[0].author, 'lucia')
+const chat = 'c'.repeat(32)
+const draft = { ...skill, name: 'restart-immich', author: 'assistant', needsReview: true, rationale: 'run_command was declined 3 times.', sourceChats: [chat], warnings: ['Uses docker restart in a read skill.'] }
+const drafts = parseSkillList({ skills: [skill, draft, builtIn], kvmNodes: [], needsReview: 1 })
+assert.equal(drafts.needsReview, 1)
+assert.deepEqual(drafts.skills.find(item => item.name === 'restart-immich'), { ...draft, source: null, problem: null, builtIn: false })
+assert.equal(parseSkillList({ skills: [draft, { ...draft, name: 'second-one' }] }).needsReview, 2)
+assert.equal(parseSkillList({ skills: [draft], needsReview: -4 }).needsReview, 1)
+assert.deepEqual(parseSkill({ ...draft, author: 'robot', sourceChats: [1], warnings: 'x', rationale: 4 }).sourceChats, [])
+assert.equal(parseSkill({ ...draft, author: 'robot' }).author, 'owner')
+assert.equal(parseSkillDetail({ ...draft, body: '', files: [] }).rationale, draft.rationale)
+const groups = splitSkills(drafts.skills)
+assert.deepEqual(groups.review.map(item => item.name), ['restart-immich'])
+assert.deepEqual(groups.rest.map(item => item.name), ['app-troubleshooting', 'check-zfs-health'])
+assert.equal(skillFromHash('#/settings/assistant/skills?skill=restart-immich'), 'restart-immich')
+assert.equal(skillFromHash('#/settings/assistant/skills?skill=Bad_Name'), null)
+assert.equal(skillFromHash('#/settings/assistant/skills'), null)
+assert.deepEqual(parseRoute('#/settings/assistant/skills?skill=restart-immich'), { page: 'assistant-skills' })
 console.log('Skill checks passed: names, languages, sandbox limits, pickers, parsers and routing.')

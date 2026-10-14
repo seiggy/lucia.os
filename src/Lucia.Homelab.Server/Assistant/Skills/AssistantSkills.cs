@@ -7,7 +7,7 @@ using Microsoft.Extensions.AI;
 namespace Lucia.Homelab.Server.Assistant.Skills;
 
 /// <summary>The skills part of one turn: the system message text that lists them, and the tools that read and run them.</summary>
-public sealed record SkillContext(string Instructions, IReadOnlyList<AssistantTool> Tools)
+public sealed record SkillContext(string Instructions, IReadOnlyList<AssistantTool> Tools, Func<string, bool>? Runnable = null)
 {
     public static readonly SkillContext Empty = new("", []);
 }
@@ -88,8 +88,14 @@ public sealed class AssistantSkills(SkillStore store, SkillScriptRouter router, 
                 + "Use it when the owner says they added or changed a skill.",
             MarshalResult = static (result, _, _) => new ValueTask<object?>(result),
         }), ToolTier.Read, redact, logger));
-        return new(instructions, tools);
+        return new(instructions, tools, name => store.IsEnabled(name) && (all || builtIn.Contains(name) || selection!.Contains(name)));
     }
+
+    /// <summary>Whether the assistant may no longer change this skill with draft_skill; see <see cref="SkillStore.DraftLocked"/>.</summary>
+    public bool DraftLocked(string name) => store.DraftLocked(name);
+
+    /// <summary>The diff an edit_skill call would make, for the owner's approval; the plan is kept for <paramref name="key"/> so the approved edit is what gets written.</summary>
+    public JsonObject EditDiff(string key, JsonElement arguments) => store.EditDiff(SkillStore.ParseEdit(arguments), key);
 
     /// <summary>The "always allow" grant for a skill's scripts: the skill's name and the first 8 hex digits of its content hash.</summary>
     public static string Grant(string name, string hash) => $"skill:{name}@{hash[..8]}";

@@ -16,7 +16,10 @@ export type AssistantMetadata = {
 }
 export type AssistantMessage = { id: string; role: 'user' | 'assistant'; parts: AssistantPart[]; metadata?: AssistantMetadata }
 export type Transcript = { title: string; messages: AssistantMessage[]; running: boolean; job?: string }
-export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean; job?: string }
+export type ChatIssues = { declined: number; expired: number; failed: number; timedOut: number }
+export type ChatSummary = { id: string; title: string; updated: string; model?: string; running: boolean; job?: string; issues?: ChatIssues; reviewedAt?: string }
+export type SlashCommand = { id: 'create-skill'; name: string; description: string }
+export type CommandRequest = { command: SlashCommand['id']; sources: string[] }
 export type ContextTier = { id: string; name: string; tokens?: number }
 export type AssistantModel = { id: string; name: string; context?: number; reasoning?: string[]; defaultReasoning?: string; tiers?: ContextTier[] }
 export type AssistantSource = { id: string; name: string; models: AssistantModel[]; reason?: string }
@@ -26,7 +29,7 @@ export type GitHubStatus = { state: GitHubState; login?: string; userCode?: stri
 export type DockSide = 'left' | 'right'
 export type DockState = { open: boolean; side: DockSide }
 export type DockLayout = 'push' | 'overlay' | 'sheet'
-export type ToolTier = 'read' | 'web' | 'registry' | 'change' | 'destructive' | 'secret'
+export type ToolTier = 'read' | 'web' | 'registry' | 'change' | 'destructive' | 'secret' | 'draft' | 'skill-edit'
 export type AssistantTool = { name: string; tier: ToolTier; description: string }
 export type AssistantSettings = { autoTools: string[]; hosts: string[]; tools: AssistantTool[]; modelEfforts: Record<string, string[]> }
 export type ToolTone = 'busy' | 'done' | 'failed' | 'waiting' | 'muted'
@@ -116,9 +119,72 @@ export function parseSessions(value: unknown): ChatSummary[] {
   return value.sessions.map(item => {
     if (!record(item) || !isChatId(item.id) || typeof item.title !== 'string' || typeof item.updated !== 'string'
       || typeof item.running !== 'boolean') throw unexpected()
+    const issues = parseIssues(item.issues)
     return { id: item.id, title: item.title || 'Chat', updated: item.updated, running: item.running,
-      ...(typeof item.model === 'string' && item.model ? { model: item.model } : {}), ...jobOf(item.job) }
+      ...(typeof item.model === 'string' && item.model ? { model: item.model } : {}), ...jobOf(item.job),
+      ...(issues ? { issues } : {}), ...(typeof item.reviewedAt === 'string' && item.reviewedAt ? { reviewedAt: item.reviewedAt } : {}) }
   })
+}
+
+// Older hosts send no issue counts; a missing or malformed object reads as none.
+function parseIssues(value: unknown): ChatIssues | undefined {
+  if (!record(value)) return undefined
+  const count = (item: unknown) => typeof item === 'number' && Number.isFinite(item) && item > 0 ? Math.floor(item) : 0
+  return { declined: count(value.declined), expired: count(value.expired), failed: count(value.failed), timedOut: count(value.timedOut) }
+}
+
+// "3 declined · 1 timed out"; empty when the chat had no problems.
+export function issueText(issues: ChatIssues | undefined): string {
+  if (!issues) return ''
+  return ([[issues.declined, 'declined'], [issues.timedOut, 'timed out'], [issues.expired, 'expired'], [issues.failed, 'failed']] as const)
+    .filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ')
+}
+
+export const slashCommands: SlashCommand[] = [
+  { id: 'create-skill', name: '/create-skill', description: 'Turn declined or timed-out commands into skills for you to review' },
+]
+export const maxCommandSources = 10
+
+// The text after a leading "/" while it is still a command name, or null once the owner types a space or a normal message.
+export function slashQuery(text: string): string | null {
+  const match = /^\/([a-z-]*)$/i.exec(text)
+  return match ? match[1].toLowerCase() : null
+}
+
+export const matchCommands = (text: string): SlashCommand[] => {
+  const query = slashQuery(text)
+  return query === null ? [] : slashCommands.filter(command => command.id.startsWith(query))
+}
+
+// Recent chats and job runs, newest first, labelled with what went wrong in them.
+export function sourceOptions(chats: readonly ChatSummary[], skip?: string): { value: string; label: string }[] {
+  return chats.filter(chat => chat.id !== skip)
+    .sort((a, b) => (Date.parse(b.updated) || 0) - (Date.parse(a.updated) || 0))
+    .map(chat => {
+      const issues = issueText(chat.issues)
+      return { value: chat.id, label: `${chat.job ? 'Job run · ' : ''}${chat.title}${issues ? ` (${issues})` : ''}` }
+    })
+}
+
+// What the owner sees in the thread: the command, then their note.
+export const commandText = (command: SlashCommand['id'], note: string) => `/${command}${note.trim() ? ` ${note.trim()}` : ''}`
+
+// The chat request's command fields; "this chat" is the chat itself, and the host takes at most ten.
+export function commandBody(command: SlashCommand['id'], chat: string, chosen: string[] | null): CommandRequest {
+  return { command, sources: chosen ? [...new Set(chosen)].filter(isChatId).slice(0, maxCommandSources) : [chat] }
+}
+
+export const skillReviewHref = (name: string) => `#/settings/assistant/skills?skill=${encodeURIComponent(name)}`
+
+export type DraftedSkill = { name: string; description: string; warnings: number; href: string }
+// The compact card for a finished draft_skill call; null when it didn't draft anything.
+export function draftedSkill(part: AssistantToolPart): DraftedSkill | null {
+  if (part.toolName !== 'draft_skill' || part.state !== 'output-available' || !record(part.output)) return null
+  const input = record(part.input) ? part.input : {}
+  const name = typeof part.output.name === 'string' && part.output.name ? part.output.name : typeof input.name === 'string' ? input.name : ''
+  if (!name) return null
+  const warnings = Array.isArray(part.output.warnings) ? part.output.warnings.length : typeof part.output.warnings === 'number' ? part.output.warnings : 0
+  return { name, description: typeof input.description === 'string' ? input.description.trim() : '', warnings, href: skillReviewHref(name) }
 }
 
 const trimmed = (value: unknown) => typeof value === 'string' ? value.trim() : ''
@@ -282,6 +348,7 @@ function parseToolPart(part: Record<string, unknown>): AssistantToolPart[] {
     ...(saved.isAutomatic === true ? { isAutomatic: true } : {}),
     ...(typeof saved.approved === 'boolean' ? { approved: saved.approved } : {}),
     ...(typeof saved.reason === 'string' ? { reason: saved.reason } : {}),
+    ...(parseSkillDiff(saved.diff ?? saved.descriptor) ? { diff: parseSkillDiff(saved.diff ?? saved.descriptor) } : {}),
   }
   if ((state.startsWith('approval-') || state === 'output-denied') && !approval) return []
   if (state === 'output-error' && typeof part.errorText !== 'string') return []
@@ -344,6 +411,13 @@ const toolTitles = new Map([
   ['node_action:restart', 'Restart server {node}'],
   ['node_action:update-agent', 'Update Lucia’s agent on {node}'],
   ['run_command', 'Run a command on {node}'],
+  ['list_chats', 'Look through your chats'],
+  ['read_chat_transcript', 'Read a chat'],
+  ['mark_chats_reviewed', 'Mark chats as reviewed'],
+  ['list_skills', 'List skills'],
+  ['get_skill', 'Read skill {name}'],
+  ['draft_skill', 'Draft skill {name}'],
+  ['edit_skill', 'Change skill {name}'],
   ['install_spark_updates', 'Install updates on the Spark'],
 ])
 
@@ -416,21 +490,24 @@ export function approvalNote(part: AssistantToolPart): string | undefined {
   return approval?.approved ? approval.isAutomatic ? approval.reason : 'You approved this.' : undefined
 }
 
-const tiers: readonly string[] = ['read', 'web', 'registry', 'change', 'destructive', 'secret']
+const tiers: readonly string[] = ['read', 'web', 'registry', 'change', 'destructive', 'secret', 'draft', 'skill-edit']
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string')
 
 export function parseSettings(value: unknown): AssistantSettings {
   if (!record(value) || !strings(value.autoTools) || !strings(value.hosts) || !Array.isArray(value.tools)) throw unexpected()
-  const tools = value.tools.map((tool): AssistantTool => {
-    if (!record(tool) || typeof tool.name !== 'string' || !tool.name || typeof tool.tier !== 'string' || !tiers.includes(tool.tier)
-      || typeof tool.description !== 'string') throw unexpected()
-    return { name: tool.name, tier: tool.tier as ToolTier, description: tool.description }
+  // A tier this page doesn't know yet is skipped, so a newer host can't break it.
+  const tools = value.tools.flatMap((tool): AssistantTool[] => {
+    if (!record(tool) || typeof tool.name !== 'string' || !tool.name || typeof tool.tier !== 'string' || typeof tool.description !== 'string') throw unexpected()
+    return tiers.includes(tool.tier) ? [{ name: tool.name, tier: tool.tier as ToolTier, description: tool.description }] : []
   })
+  // Skill edits always ask, so they are never offered as automatic.
+  const asking = new Set(tools.filter(tool => tool.tier === 'skill-edit').map(tool => tool.name))
+  const autoTools = value.autoTools.filter(name => !asking.has(name) && name !== 'edit_skill')
   const modelEfforts: Record<string, string[]> = {}
   if (record(value.modelEfforts))
     for (const [id, list] of Object.entries(value.modelEfforts))
       if (isModelId(id) && Array.isArray(list)) modelEfforts[id] = list.filter((item): item is string => typeof item === 'string' && reasoningEfforts.includes(item))
-  return { autoTools: value.autoTools, hosts: value.hosts, tools, modelEfforts }
+  return { autoTools, hosts: value.hosts, tools, modelEfforts }
 }
 
 // The host's descriptions are written for the model; the settings page names what each change tool lets the assistant do.
@@ -468,6 +545,7 @@ export function grantScope(part: AssistantToolPart, job = false): string | undef
 }
 
 export function grantText(part: AssistantToolPart, job = false): string | undefined {
+  if (part.toolName === 'edit_skill') return undefined
   const scope = grantScope(part, job)
   return scope && (job ? `Approve, and let this job ${scope} without asking` : `Approve, and let it ${scope} for the rest of this chat`)
 }
@@ -483,3 +561,57 @@ export function questionOf(input: unknown) {
 }
 
 export const secretOf = (input: unknown) => ({ app: inputText(input, 'app'), name: inputText(input, 'name'), description: inputText(input, 'description') })
+
+export type SkillDiffFile = { path: string; change: 'added' | 'changed' | 'removed'; before?: string; after?: string }
+export type SkillDiff = { enabled: boolean; truncated: boolean; files: SkillDiffFile[] }
+const changes: readonly string[] = ['added', 'changed', 'removed']
+
+// The host builds this for edit_skill's approval; anything malformed reads as no diff.
+export function parseSkillDiff(value: unknown): SkillDiff | undefined {
+  if (!record(value) || !Array.isArray(value.files)) return undefined
+  const files = value.files.flatMap((file): SkillDiffFile[] => !record(file) || typeof file.path !== 'string' || !file.path || typeof file.change !== 'string' || !changes.includes(file.change) ? []
+    : [{ path: file.path, change: file.change as SkillDiffFile['change'], ...(typeof file.before === 'string' ? { before: file.before } : {}), ...(typeof file.after === 'string' ? { after: file.after } : {}) }])
+  return { enabled: value.enabled === true, truncated: value.truncated === true, files }
+}
+
+export const skillDiffOf = (part: AssistantToolPart): SkillDiff | undefined =>
+  part.toolName === 'edit_skill' && part.state === 'approval-requested' ? parseSkillDiff((part.approval as { descriptor?: unknown; diff?: unknown }).descriptor ?? (part.approval as { diff?: unknown }).diff) : undefined
+
+export type DiffRow = { kind: 'same' | 'add' | 'del' | 'gap'; text: string }
+const maxDiffCells = 4_000_000
+
+// A unified line diff with a few lines of context around each change; 'gap' rows stand for skipped lines.
+export function diffRows(before = '', after = '', context = 3): { rows: DiffRow[]; added: number; removed: number } {
+  const a = before ? before.replace(/\r\n/g, '\n').split('\n') : []
+  const b = after ? after.replace(/\r\n/g, '\n').split('\n') : []
+  let head = 0
+  while (head < a.length && head < b.length && a[head] === b[head]) head++
+  let tail = 0
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
+  const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail)
+  const ops: DiffRow[] = a.slice(0, head).map(text => ({ kind: 'same', text }))
+  if (x.length * y.length > maxDiffCells) ops.push(...x.map((text): DiffRow => ({ kind: 'del', text })), ...y.map((text): DiffRow => ({ kind: 'add', text })))
+  else {
+    const width = y.length + 1
+    const lcs = new Uint32Array((x.length + 1) * width)
+    for (let i = x.length - 1; i >= 0; i--)
+      for (let j = y.length - 1; j >= 0; j--)
+        lcs[i * width + j] = x[i] === y[j] ? lcs[(i + 1) * width + j + 1] + 1 : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1])
+    let i = 0, j = 0
+    while (i < x.length || j < y.length) {
+      if (i < x.length && j < y.length && x[i] === y[j]) { ops.push({ kind: 'same', text: x[i] }); i++; j++ }
+      else if (i < x.length && (j === y.length || lcs[(i + 1) * width + j] >= lcs[i * width + j + 1])) ops.push({ kind: 'del', text: x[i++] })
+      else ops.push({ kind: 'add', text: y[j++] })
+    }
+  }
+  ops.push(...a.slice(a.length - tail).map((text): DiffRow => ({ kind: 'same', text })))
+  const keep = ops.map(() => false)
+  ops.forEach((op, index) => { if (op.kind !== 'same') for (let k = Math.max(0, index - context); k <= Math.min(ops.length - 1, index + context); k++) keep[k] = true })
+  const rows: DiffRow[] = []
+  ops.forEach((op, index) => {
+    if (keep[index]) rows.push(op)
+    else if (rows.at(-1)?.kind !== 'gap' && keep.some(Boolean)) rows.push({ kind: 'gap', text: '' })
+  })
+  if (rows.at(-1)?.kind === 'gap') rows.pop()
+  return { rows, added: ops.filter(op => op.kind === 'add').length, removed: ops.filter(op => op.kind === 'del').length }
+}

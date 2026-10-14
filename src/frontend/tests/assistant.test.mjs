@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { approvalNote, chatTitle, chooseModel, chosenEffort, contextFill, currentTier, effortLabel, effortShort, grantText, isChatId, isDestructiveTool,
+import { skillDiffOf, diffRows, parseSkillDiff, approvalNote, chatTitle, commandBody, commandText, draftedSkill, issueText, matchCommands, slashQuery, sourceOptions, skillReviewHref, chooseModel, chosenEffort, contextFill, currentTier, effortLabel, effortShort, grantText, isChatId, isDestructiveTool,
   isGitHubModel, isQuestionTool, lastContext, messageText, newChatId, pageRoute, parseChoices,
   parseDock, parseGitHub, parseModels, parseSessions, parseSettings, parseTranscript, questionOf, secretOf, settledText, signInModel, toolLabel, toolNote,
   toolStatus, tokenText, toolTitle, urlHost, waitingParts } from '../.checks/assistant.js'
@@ -44,6 +44,65 @@ assert.deepEqual(parseSessions({ sessions: [summary, { ...summary, model: null, 
 for (const broken of [null, { sessions: {} }, { sessions: [{ ...summary, id: 'nope' }] }, { sessions: [{ ...summary, running: 'no' }] }])
   assert.throws(() => parseSessions(broken))
 
+// Slash commands and the issue counts that label chats for them.
+assert.equal(slashQuery('/'), '')
+assert.equal(slashQuery('/Create-sk'), 'create-sk')
+for (const text of ['', 'hello', '/create-skill note', ' /', '/ x', '//']) assert.equal(slashQuery(text), null, text)
+assert.deepEqual(matchCommands('/').map(item => item.id), ['create-skill'])
+assert.deepEqual(matchCommands('/cr').map(item => item.id), ['create-skill'])
+assert.deepEqual(matchCommands('/x'), [])
+assert.deepEqual(matchCommands('hello'), [])
+assert.equal(commandText('create-skill', ''), '/create-skill')
+assert.equal(commandText('create-skill', '  look at immich  '), '/create-skill look at immich')
+assert.deepEqual(commandBody('create-skill', id, null), { command: 'create-skill', sources: [id] })
+const other = 'd'.repeat(32)
+assert.deepEqual(commandBody('create-skill', id, [other, other, 'nope']), { command: 'create-skill', sources: [other] })
+assert.equal(commandBody('create-skill', id, Array.from({ length: 12 }, (_, i) => i.toString(16).padStart(32, '0'))).sources.length, 10)
+assert.equal(issueText({ declined: 3, expired: 0, failed: 0, timedOut: 1 }), '3 declined · 1 timed out')
+assert.equal(issueText({ declined: 0, expired: 0, failed: 0, timedOut: 0 }), '')
+assert.equal(issueText(undefined), '')
+const issues = { declined: 2, expired: 1, failed: 0, timedOut: 0 }
+const parsed = parseSessions({ sessions: [{ ...summary, issues, reviewedAt: '2026-01-02T00:00:00Z' }, { ...summary, id: other, issues: 'x', reviewedAt: null }] })
+assert.deepEqual(parsed[0].issues, issues)
+assert.equal(parsed[0].reviewedAt, '2026-01-02T00:00:00Z')
+assert.equal(parsed[1].issues, undefined)
+assert.equal('reviewedAt' in parsed[1], false)
+assert.deepEqual(sourceOptions([{ ...parsed[0], updated: '2026-01-01T00:00:00Z' }, { ...parsed[1], updated: '2026-02-01T00:00:00Z', job: id }]).map(item => item.label),
+  ['Job run · Add Immich', 'Add Immich (2 declined · 1 expired)'])
+assert.equal(sourceOptions(parsed).length, 2)
+assert.equal(sourceOptions(parsed, id).length, 1)
+const drafted = { type: 'dynamic-tool', toolName: 'draft_skill', toolCallId: 't', state: 'output-available', input: { name: 'x-y', description: ' Does it. ' }, output: { name: 'x-y', status: 'disabled', warnings: ['a', 'b'] } }
+assert.deepEqual(draftedSkill(drafted), { name: 'x-y', description: 'Does it.', warnings: 2, href: '#/settings/assistant/skills?skill=x-y' })
+assert.equal(draftedSkill({ ...drafted, output: { status: 'disabled' } }).name, 'x-y')
+assert.equal(draftedSkill({ ...drafted, output: { name: 'z' }, input: undefined }).warnings, 0)
+assert.equal(draftedSkill({ ...drafted, state: 'output-error', errorText: 'no' }), null)
+assert.equal(draftedSkill({ ...drafted, toolName: 'get_skill' }), null)
+assert.equal(skillReviewHref('a-b'), '#/settings/assistant/skills?skill=a-b')
+assert.equal(toolTitle('draft_skill', { name: 'x-y' }), 'Draft skill x-y')
+assert.equal(toolTitle('list_chats', {}), 'Look through your chats')
+// edit_skill's approval carries a host-built diff the card renders.
+assert.equal(parseSkillDiff(null), undefined)
+assert.equal(parseSkillDiff({ enabled: true }), undefined)
+assert.deepEqual(parseSkillDiff({ enabled: 1, files: [{ path: 'SKILL.md', change: 'changed', before: 'a', after: 'b' }, { path: 'x', change: 'moved' }, { change: 'added' }, { path: 'scripts/n.sh', change: 'added', after: 'echo' }] }),
+  { enabled: false, truncated: false, files: [{ path: 'SKILL.md', change: 'changed', before: 'a', after: 'b' }, { path: 'scripts/n.sh', change: 'added', after: 'echo' }] })
+assert.equal(parseSkillDiff({ enabled: true, truncated: true, files: [] }).truncated, true)
+const editPart = { type: 'dynamic-tool', toolName: 'edit_skill', toolCallId: 'e', state: 'approval-requested', input: { name: 'x' }, approval: { id: 'ap', diff: { enabled: true, files: [{ path: 'SKILL.md', change: 'changed', before: 'a', after: 'b' }] } } }
+assert.equal(grantText(editPart), undefined)
+assert.equal(grantText(editPart, true), undefined)
+const parsedEdit = parseTranscript({ messages: [{ id: 'm', role: 'assistant', parts: [{ ...editPart }] }], running: false }).messages[0].parts[0]
+assert.equal(parsedEdit.approval.diff.enabled, true)
+assert.equal(parsedEdit.approval.diff.files[0].after, 'b')
+let d = diffRows('a\nb\nc', 'a\nB\nc')
+assert.deepEqual([d.added, d.removed], [1, 1])
+assert.deepEqual(d.rows.map(row => row.kind + row.text), ['samea', 'delb', 'addB', 'samec'])
+d = diffRows('', 'x\ny')
+assert.deepEqual([d.added, d.removed, d.rows.length], [2, 0, 2])
+d = diffRows('x\ny', '')
+assert.deepEqual([d.added, d.removed], [0, 2])
+assert.deepEqual(diffRows('same\nlines', 'same\r\nlines').rows, [])
+const long = Array.from({ length: 20 }, (_, i) => 'l' + i)
+d = diffRows(long.join('\n'), long.map((l, i) => i === 10 ? 'changed' : l).join('\n'))
+assert.deepEqual(d.rows.map(row => row.kind), ['gap', 'same', 'same', 'same', 'del', 'add', 'same', 'same', 'same'])
 const models = parseModels({ connected: true, defaultModel: 'gpt-5-mini', sources: [
   { id: 'github', name: 'GitHub Copilot', models: [{ id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'claude sonnet', name: 'Bad id' }, { id: 'o4', name: ' ' }] },
   { id: ' litellm ', name: ' ', models: 'none', reason: `  ${'x'.repeat(500)}  ` },
@@ -180,8 +239,9 @@ assert.deepEqual(parseSettings(settings), { ...settings, modelEfforts: {} })
 assert.deepEqual(parseSettings({ ...settings, modelEfforts: { 'local:qwen3': ['none', 'low', 'turbo', 3], 'bad id!': ['low'], gpt: 'x' } }).modelEfforts, { 'local:qwen3': ['none', 'low'] })
 assert.equal(effortLabel('none'), 'Disabled')
 for (const broken of [null, { ...settings, hosts: 'docs.docker.com' }, { ...settings, autoTools: [3] }, { ...settings, tools: null },
-  { ...settings, tools: [{ name: 'x', tier: 'risky', description: '' }] }, { ...settings, tools: [{ name: '', tier: 'read', description: '' }] }])
+  { ...settings, tools: [{ name: '', tier: 'read', description: '' }] }])
   assert.throws(() => parseSettings(broken))
+assert.deepEqual(parseSettings({ ...settings, tools: [{ name: 'x', tier: 'risky', description: '' }] }).tools, [])
 assert.equal(toolLabel(settings.tools[0]), 'Start, stop, restart and update apps')
 assert.equal(toolLabel({ name: 'new_tool', tier: 'change', description: 'Does a new thing.' }), 'Does a new thing.')
 assert.equal(grantText(tool('approval-requested', { toolName: 'app_action', input: { app: 'immich', action: 'restart' }, approval: asking })),

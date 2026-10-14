@@ -171,18 +171,27 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         {
             if (settings.Execution == SkillExecution.Sandbox) RequireSandboxLanguages(Inspect(name).Files.Select(file => file.Path));
             var previous = ReadMarkdown(name, out _);
-            WriteText(Path.Combine(Dir(name), Manifest), SkillMarkdown.Write(name, description, settings, body, previous));
+            WriteText(Path.Combine(Dir(name), Manifest), SkillMarkdown.Write(name, description, settings, body, previous, OwnerEdit(name)));
             await Touch(name, entry => entry, ct);
         }, ct);
         return await GetAsync(name, ct);
     }
 
-    public async Task<SkillSummary> SetEnabledAsync(string name, bool enabled, CancellationToken ct)
+    public async Task<SkillSummary> SetEnabledAsync(string name, bool enabled, CancellationToken ct, string? hash = null)
     {
             RequireOwned(name);
         if (enabled && Summarize(name, await LoadedAsync(ct)).Problem is { } problem)
             throw new AssistantException(409, "skill_invalid", "This skill can't be enabled: " + problem);
-        await Locked(() => Touch(name, entry => entry with { Enabled = enabled }, ct, rehash: false), ct);
+        await Locked(async () =>
+        {
+            // Enabling is the owner's review: after it the assistant can never change this skill again.
+            var reviewed = enabled && AssistantAuthored(name);
+            // The owner enables the version they read: a draft that changed since then must be reviewed again.
+            if (reviewed && (hash is null || !string.Equals(Inspect(name).Hash, hash, StringComparison.OrdinalIgnoreCase)))
+                throw new AssistantException(409, "skill_changed", hash is null ? "Send the hash of the version you reviewed to enable this skill." : "The skill changed since you reviewed it. Review it again.");
+            if (reviewed) MarkOwnerEdit(name);
+            await Touch(name, entry => entry with { Enabled = enabled }, ct, rehash: reviewed);
+        }, ct);
         return Summarize(name, await LoadedAsync(ct));
     }
 
@@ -214,6 +223,7 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
                 throw new AssistantException(413, "skill_too_large", "A skill is at most 5 MiB.");
             if (SettingsOf(name).Execution == SkillExecution.Sandbox) RequireSandboxLanguages([relative]);
             WriteBytes(Resolve(name, relative), bytes);
+            MarkOwnerEdit(name);
             await Touch(name, entry => entry, ct);
         }, ct);
         return Inspect(name).Files.First(file => file.Path == relative);
@@ -227,6 +237,7 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         {
             if (Inspect(name).Files.All(file => file.Path != relative)) throw FileNotFound();
             File.Delete(Resolve(name, relative));
+            MarkOwnerEdit(name);
             await Touch(name, entry => entry, ct);
         }, ct);
     }
@@ -245,6 +256,7 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
             var destination = Resolve(name, target);
             DomainOnboardingStore.EnsureDirectory(Path.GetDirectoryName(destination)!);
             File.Move(Resolve(name, source), destination);
+            MarkOwnerEdit(name);
             await Touch(name, entry => entry, ct);
         }, ct);
         return Inspect(name).Files.First(file => file.Path == target);
@@ -267,7 +279,7 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
                 var text = Encoding.UTF8.GetString(data);
                 var markdown = SkillMarkdown.Parse(text);
                 if (markdown is null) throw Invalid("That skill's SKILL.md can't be read, so it can't be copied.");
-                data = new UTF8Encoding(false).GetBytes(SkillMarkdown.Write(target, markdown.Text("description") ?? "", markdown.Settings(), markdown.Body, markdown));
+                data = new UTF8Encoding(false).GetBytes(SkillMarkdown.Write(target, markdown.Text("description") ?? "", markdown.Settings(), markdown.Body, markdown, OwnerCopy));
             }
             files.Add((path, data));
         }
@@ -567,8 +579,13 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         var entry = EntryFor(name);
         var description = loaded.TryGetValue(name, out var frontmatter) ? frontmatter.Description : markdown?.Text("description") ?? "";
         var problem = inspection.Problem ?? (loaded.ContainsKey(name) ? null : Explain(name, markdown));
+        var author = IsBuiltIn(name) ? SkillAuthors.Lucia : entry.Source == SkillAuthors.Assistant ? SkillAuthors.Assistant : SkillAuthors.Owner;
+        var meta = markdown?.Metadata() ?? [];
+        var drafted = author == SkillAuthors.Assistant;
         return new(name, description, settings.Execution, settings.Tier, entry.Enabled, inspection.Hash, entry.Updated, entry.Source,
-            inspection.Files.Count(file => file.Kind == "script" && SkillLanguages.IsScript(file.Path)), problem, IsBuiltIn(name));
+            inspection.Files.Count(file => file.Kind == "script" && SkillLanguages.IsScript(file.Path)), problem, IsBuiltIn(name),
+            author, drafted && !entry.Enabled, drafted ? Clip(meta.GetValueOrDefault(SkillAuthors.RationaleKey)?.ToString()) : null,
+            drafted ? Split(meta.GetValueOrDefault(SkillAuthors.SourceChatsKey)?.ToString()) : [], drafted ? Warnings(meta.GetValueOrDefault(SkillAuthors.WarningsKey)?.ToString()) : []);
     }
 
     private static string Explain(string name, SkillMarkdown? markdown)
@@ -594,6 +611,8 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
 
     private Inspection Inspect(string name)
     {
+        // While a writer holds the gate the files are changing and the revision hasn't moved: build fresh and never cache.
+        if (_gate.CurrentCount == 0) return Build(name);
         // An inspection is only trusted for the revision it was built at, so a reader racing a save can't leave a stale hash behind.
         var revision = Revision;
         if (_inspections.TryGetValue(name, out var cached) && cached.Revision == revision) return cached;
@@ -742,10 +761,11 @@ public sealed partial class SkillStore(IOptions<AssistantOptions> options, ILogg
         try
         {
             await change();
-            Interlocked.Increment(ref _revision);
         }
         finally
         {
+            // Even a failed change may have written some files, so the revision moves either way.
+            Interlocked.Increment(ref _revision);
             _inspections.Clear();
             _gate.Release();
         }

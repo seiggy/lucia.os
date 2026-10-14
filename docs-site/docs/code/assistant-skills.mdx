@@ -36,10 +36,15 @@ Everything lives in `src/Lucia.Homelab.Server/Assistant/Skills/`, with the front
 | `SkillPackages.cs` | Tar.gz packages for nodes, built once per hash |
 | `SkillNodeEndpoints.cs` | The `skills` and `sync-skills` routes the node agent calls |
 | `SkillEndpoints.cs`, `SkillModels.cs`, `SkillBundle.cs` | The `/api/assistant/skills` routes, DTOs and bundles |
-| `BuiltIn/<name>/SKILL.md` | The four shipped skills |
+| `BuiltIn/<name>/SKILL.md` | The five shipped skills, including `skill-authoring` |
+| `SkillStore.Drafts.cs` | Drafts: `draft_skill` writes, the lock on reviewed skills, owner-edit detection, enabling by hash |
+| `SkillStore.Edit.cs` | Edits: reads the `edit_skill` arguments once, builds the approval plan, applies it on approval |
+| `SkillReviewLint.cs` | Heuristic warnings written onto a draft, as `lucia.review-warnings` |
+| `SkillModels.cs` | Also holds `SkillAuthors`, the `lucia.author`, `lucia.source-chats`, `lucia.rationale` and `lucia.last-edit` keys |
 
-Node side: `src/Lucia.NodeAgent/SkillSync.cs` and `SkillCache.cs`. Sandbox: `src/Lucia.SkillSandbox/`. Spark: `tools/skills/skill_worker.py` and `deployment/skill-runner/Dockerfile`. Frontend: `AssistantSkills.tsx`, `SkillScriptEditor.tsx` and `skills.ts`.
+Assistant side: `src/Lucia.Homelab.Server/Assistant/SkillAuthoring.cs` holds the chat-review tools (`list_chats`, `read_chat_transcript`, `mark_chats_reviewed`) and the `/create-skill` context. `AssistantChatLog.cs` counts each chat's declined, expired, failed and timed-out calls.
 
+Node side: `src/Lucia.NodeAgent/SkillSync.cs` and `SkillCache.cs`. Sandbox: `src/Lucia.SkillSandbox/`. Spark: `tools/skills/skill_worker.py` and `deployment/skill-runner/Dockerfile`. Frontend: `AssistantSkills.tsx`, `SkillScriptEditor.tsx`, `skills.ts` and `useSkillsToReview.ts`, which feeds the Needs review count. The chat-side skill code is in `assistant.ts` and `AssistantPanel.tsx`.
 ## Folder layout and limits
 
 `SkillStore` keeps one folder per skill, named by the skill. It follows the agentskills.io layout: `SKILL.md`, then `scripts/`, `references/` and `assets/`. Anything that isn't part of a package, such as enabled state and source, lives in `index.json` at the top of the folder.
@@ -116,7 +121,73 @@ A call that names no skill, or a skill that doesn't exist, is a change. The brok
 
 The model is offered the enabled skills' names and descriptions, and calls `load_skill` to read one before it follows it.
 
-### Scope per turn
+## Drafts and edits
+
+The assistant can write skills too, but never as a live change. Two tools do it, and each has its own tier.
+
+| Tool | Tier | What it does |
+|---|---|---|
+| `list_skills` | `read` | Lists enabled and built-in skills, with author, runner, tier and, for drafts, their chats and rationale. Pass `includeDisabled` for disabled skills and drafts |
+| `get_skill` | `read` | Reads one skill's `SKILL.md` and file list, or one file. It never runs anything |
+| `draft_skill` | `draft` | Creates a disabled skill, or updates the assistant's own untouched draft when `update` is set |
+| `edit_skill` | `skill-edit` | Proposes a change to an owner or assistant skill. The owner approves a diff first |
+
+### Drafts
+
+`SkillStore.Drafts.cs` owns a draft's life. A draft is always saved disabled, and it carries `lucia.author: assistant`, its `lucia.source-chats` (at most 10), a `lucia.rationale` (at most 1,000 characters) and the lint warnings. A draft takes at most 40 files.
+
+The assistant may rewrite a draft only while it is still its own and untouched. Two things lock a draft for good: the owner enables it, or the owner edits it, which sets `lucia.last-edit`. The policy denies a `draft_skill` call that targets a locked skill (`drafts-never-touch-reviewed-skills`).
+
+Enabling a draft needs the hash the owner reviewed. `SkillEnabledRequest.Hash` carries it, and a mismatch returns `409 skill_changed`. This guards against the assistant changing a draft between the review and the switch.
+
+### Edits
+
+`SkillStore.Edit.cs` handles `edit_skill`. The arguments are read once, exactly: names are case-sensitive, a field may not repeat or be unknown, and each value must have its type. That one reading becomes the `EditPlan` the owner sees as a diff, and the same plan is what gets written on approval. Nothing is re-read from the model.
+
+Each plan is kept for 2 hours (`ApprovalLife`), and at most 200 are held at once (`MaxApproved`). A diff file is capped at 32 KiB and the whole diff at 192 KiB. Applying an approved plan checks the skill's hash again, and returns `409 skill_changed` if it moved since the owner was asked.
+
+### How the policy treats each tier
+
+The rules in `AssistantBroker.cs` decide what happens. The first match by priority wins, and anything not covered is denied.
+
+| Rule | Priority | Effect |
+|---|---|---|
+| `disabled-skills-never-run` | 120 | Denies `load_skill`, `read_skill_resource` and `run_skill_script` for a skill that isn't runnable this turn |
+| `drafts-never-touch-reviewed-skills` | 120 | Denies `draft_skill` on a locked skill |
+| `skill-edit-plan-mode` | 110 | Denies `edit_skill` in Plan mode |
+| `skill-edit-chats-only` | 109 | Denies `edit_skill` in a job |
+| `skill-edit-always-asks` | 97 | Requires approval for every `edit_skill` |
+| `drafts-allowed` | 75 | Allows `draft`-tier calls: `draft_skill` and `mark_chats_reviewed` |
+
+`edit_skill` is never offered as "always allow". The frontend's `parseSettings` removes it from `autoTools`, and `grantText` returns no grant option for it.
+
+```mermaid
+sequenceDiagram
+  participant M as Model
+  participant B as AssistantBroker
+  participant S as SkillStore
+  participant O as Owner
+  M->>B: draft_skill(name, files, ...)
+  B->>S: check locked? (drafts-never-touch-reviewed-skills)
+  S-->>B: writes disabled draft + lint warnings
+  M->>B: edit_skill(name, ...)
+  B->>O: approval card with diff (skill-edit-always-asks)
+  O-->>B: approve
+  B->>S: apply EditPlan if hash unchanged
+  S-->>B: 409 skill_changed if it moved
+```
+
+After a draft is created or an edit is applied, `SkillAuthoring` sends a push notification through `Notify`. It is best effort: a failure is logged with only the error type and never stops the write.
+
+### Lint
+
+`SkillReviewLint.cs` gives heuristic warnings, which a draft shows in the Needs review list. It flags command passthrough, a `read` tier on a script that seems to change something, `LUCIA_SKILL_ARGS` used without validation, and network calls from a node script. These are hints, not guarantees, so the owner still reads the script.
+
+### Chat issues
+
+`AssistantChatLog.cs` counts a chat's declined, expired, failed and timed-out calls. The sessions list shows the counts, and `/create-skill` uses them to find candidates. Reviewed chats are recorded in `skill-reviews.json` (up to 2,000 per owner), so the next review skips them unless the owner picks them.
+
+## Scope per turn
 
 A chat offers every enabled skill. A job passes its `Skills` field. `null` or an empty list means no skills, `"*"` means every enabled skill, and a list means those names. Built-in skills are always included.
 

@@ -18,8 +18,14 @@ namespace Lucia.Homelab.Server.Assistant;
 /// </summary>
 public static class ToolTier
 {
-    public const string Read = "read", Web = "web", Registry = "registry", Change = "change", Destructive = "destructive", Secret = "secret";
+    public const string Read = "read", Web = "web", Registry = "registry", Change = "change", Destructive = "destructive", Secret = "secret", Draft = "draft", SkillEdit = "skill-edit";
 }
+
+/// <summary>
+/// What the policy needs to know about skills in one turn: whether a skill may run or be loaded (it is enabled and offered to this
+/// turn), and whether a draft_skill call would touch a skill the assistant may no longer change.
+/// </summary>
+public sealed record SkillGate(Func<string, bool> Runnable, Func<string, bool> DraftLocked, Func<string, JsonElement, JsonObject>? EditDiff = null);
 
 /// <summary>The owner's standing choices: change tools that run without asking, and sites the assistant may read without asking.</summary>
 /// <param name="ModelEfforts">For models the owner brought (<c>local:</c> and <c>litellm:</c> ids): the reasoning efforts each accepts, from <see cref="AssistantEngineProxy.Efforts"/>.</param>
@@ -77,6 +83,10 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
     public const string GovernanceMeter = "AgentGovernance";
     public const int MaxCallsPerTurn = 50, MaxHosts = 50;
     private static readonly TimeSpan AnswerWait = TimeSpan.FromMinutes(30);
+    private const string EditPlanRule = "skill-edit-plan-mode", EditJobRule = "skill-edit-chats-only";
+    private const string DisabledRule = "disabled-skills-never-run", LockedRule = "drafts-never-touch-reviewed-skills";
+    private const string DisabledSkill = "That skill is disabled or isn't available to this turn, so it can't be loaded or run. Read it with get_skill instead.";
+    private const string LockedDraft = "Only your own disabled drafts can be updated. get_skill the existing skill, or pick another name for a new draft.";
 
     // First match by priority; anything no rule covers is refused.
     private const string Policy = """
@@ -85,10 +95,30 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
         name: lucia-assistant
         default_action: deny
         rules:
+          - name: disabled-skills-never-run
+            condition: "skill_disabled"
+            action: deny
+            priority: 120
+          - name: drafts-never-touch-reviewed-skills
+            condition: "draft_target_locked"
+            action: deny
+            priority: 120
+          - name: skill-edit-plan-mode
+            condition: "mode == 'plan' and tier == 'skill-edit'"
+            action: deny
+            priority: 110
+          - name: skill-edit-chats-only
+            condition: "in_job and tier == 'skill-edit'"
+            action: deny
+            priority: 109
           - name: plan-mode-changes-nothing
             condition: "mode == 'plan' and tier == 'change' or mode == 'plan' and tier == 'destructive' or mode == 'plan' and tier == 'secret'"
             action: deny
             priority: 100
+          - name: skill-edit-always-asks
+            condition: "tier == 'skill-edit'"
+            action: require_approval
+            priority: 97
           - name: job-granted
             condition: "tier == 'destructive' and job_granted"
             action: allow
@@ -105,6 +135,10 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             condition: "tier == 'read'"
             action: allow
             priority: 80
+          - name: drafts-allowed
+            condition: "tier == 'draft'"
+            action: allow
+            priority: 75
           - name: web-allowed-host
             condition: "tier == 'web' and host_allowed"
             action: allow
@@ -144,7 +178,7 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
 
     /// <param name="job">A job's chat: its grants run without asking, destructive ones included, and "always" adds to them.</param>
     public AssistantKit Kit(AssistantTurn turn, AssistantSettings settings, IReadOnlyList<AssistantTool> tools, AssistantStream stream, AssistantRun run,
-        AssistantJobGrants? job = null)
+        AssistantJobGrants? job = null, SkillGate? skills = null)
     {
         var byName = tools.ToDictionary(tool => tool.Name);
         var calls = 0;
@@ -185,18 +219,30 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
             var jobGranted = grant is not null && job?.Has(grant) == true;
             var automatic = settings.AutoTools.Contains(call.ToolName);
             var listed = tier == ToolTier.Web && host is not null && settings.Hosts.Contains(host);
+            // A skill tool names its skill; one that names none, or one the turn can't run, counts as disabled (fail closed).
+            var skillDisabled = call.ToolName is "load_skill" or "read_skill_resource" or "run_skill_script"
+                && !(SkillName(input, "skillName") is { } skill && skills?.Runnable(skill) == true);
+            var draftLocked = call.ToolName == "draft_skill" && SkillName(input, "name") is { } target && skills?.DraftLocked(target) == true;
             var (verdict, rule) = Decide(turn, call.ToolName, tier, autonomy: automatic || granted || jobGranted ? "auto" : "ask",
-                hostAllowed: listed || granted || jobGranted, jobGranted);
+                hostAllowed: listed || granted || jobGranted, jobGranted, skillDisabled, draftLocked, inJob: job is not null);
             logger.LogInformation("Assistant tool call {Tool} ({Tier}, {Mode} mode): {Verdict} by {Rule}.",
                 call.ToolName, tier, turn.Mode, verdict, rule ?? "default");
 
             var approvalId = "approval-" + Guid.NewGuid().ToString("N");
             var toolCallId = call.ToolCallId is { Length: > 0 } id ? id : approvalId;
-            if (verdict == Verdict.Allow && tier is ToolTier.Read or ToolTier.Secret) return PermissionDecision.ApproveOnce();
+            if (verdict == Verdict.Allow && tier is ToolTier.Read or ToolTier.Secret or ToolTier.Draft) return PermissionDecision.ApproveOnce();
             if (verdict != Verdict.Ask)
             {
                 var allowed = verdict == Verdict.Allow;
-                var why = !allowed ? rule == "plan-mode-changes-nothing" ? "Plan mode doesn't change anything. Switch to Execute to run it." : "Lucia's policy doesn't allow this."
+                var why = !allowed ? rule switch
+                    {
+                        "plan-mode-changes-nothing" => "Plan mode doesn't change anything. Switch to Execute to run it.",
+                        EditPlanRule => "Plan mode doesn't change anything. Switch to Execute to edit a skill.",
+                        EditJobRule => "Scheduled jobs can't edit existing skills.",
+                        DisabledRule => DisabledSkill,
+                        LockedRule => LockedDraft,
+                        _ => "Lucia's policy doesn't allow this.",
+                    }
                     : granted ? "You allowed this for this chat."
                     : jobGranted ? "This job may do this without asking."
                     : host is not null ? $"{host} is on the assistant's allowed sites."
@@ -207,23 +253,38 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
                     run.Publish(stream.Answer(approvalId, allowed, why));
                 }
                 return allowed ? PermissionDecision.ApproveOnce()
-                    : PermissionDecision.Reject(rule == "plan-mode-changes-nothing"
-                        ? "Refused: the chat is in Plan mode, which changes nothing. Put this step in your plan; the owner can switch to Execute to run it."
-                        : "Refused by Lucia's policy.");
+                    : PermissionDecision.Reject(rule switch
+                    {
+                        "plan-mode-changes-nothing" => "Refused: the chat is in Plan mode, which changes nothing. Put this step in your plan; the owner can switch to Execute to run it.",
+                        EditPlanRule => "Refused: the chat is in Plan mode, which changes nothing. Describe the edit in your plan; the owner can switch to Execute to approve it.",
+                        EditJobRule => "Refused: scheduled jobs can't edit existing skills. Draft a new disabled skill with draft_skill instead.",
+                        DisabledRule => "Refused: " + DisabledSkill,
+                        LockedRule => "Refused: " + LockedDraft,
+                        _ => "Refused by Lucia's policy.",
+                    });
             }
 
+            JsonObject? diff = null;
+            if (tier == ToolTier.SkillEdit)
+            {
+                if (skills?.EditDiff is not { } build) return PermissionDecision.Reject("Skill editing isn't available here.");
+                // An invalid edit is refused with the reason, without troubling the owner.
+                try { diff = build(turn.SessionKey + "|" + call.ToolCallId, call.Args is { ValueKind: JsonValueKind.Object } given ? given : throw new AssistantException(400, "invalid_skill", "Name the skill to edit.")); }
+                catch (Exception e) when (e is AssistantException or ArgumentException or JsonException) { return PermissionDecision.Reject(e.Message); }
+            }
             var reason = tier switch
             {
                 ToolTier.Destructive => AssistantTools.Warning(call.ToolName, input),
                 ToolTier.Web => $"{host} isn't on the assistant's allowed sites.",
                 ToolTier.Registry => $"{host} isn't on the assistant's allowed registries.",
+                ToolTier.SkillEdit => $"This edits the skill {(SkillName(input, "name") is { Length: <= 64 } edited ? edited : "")}. See the changes below.",
                 _ => "This changes your lab.",
             };
             var pending = new Pending(turn.SessionKey, grant, job, new(TaskCreationOptions.RunContinuationsAsynchronously));
             _pending[approvalId] = pending;
             try
             {
-                lock (stream) run.Publish(stream.Ask(toolCallId, call.ToolName, input, approvalId, reason, automatic: false));
+                lock (stream) run.Publish(stream.Ask(toolCallId, call.ToolName, input, approvalId, reason, automatic: false, diff));
                 if (job is not null) _ = job.Waiting(approvalId, call.ToolName, DateTimeOffset.UtcNow + AnswerWait);
                 var (approved, answer) = await pending.Answer.Task.WaitAsync(AnswerWait, run.Stop.Token);
                 lock (stream) run.Publish(stream.Answer(approvalId, approved, answer));
@@ -336,11 +397,16 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
 
     public void Dispose() => _kernel.Dispose();
 
-    private (Verdict Verdict, string? Rule) Decide(AssistantTurn turn, string tool, string tier, string autonomy, bool hostAllowed, bool jobGranted)
+    private static string? SkillName(JsonNode? input, string field) =>
+        input is JsonObject fields && fields[field] is JsonValue value && value.TryGetValue(out string? text) ? text : null;
+
+    private (Verdict Verdict, string? Rule) Decide(AssistantTurn turn, string tool, string tier, string autonomy, bool hostAllowed, bool jobGranted,
+        bool skillDisabled = false, bool draftLocked = false, bool inJob = false)
     {
         Dictionary<string, object> context = new()
         {
             ["tier"] = tier, ["mode"] = turn.Mode, ["autonomy"] = autonomy, ["host_allowed"] = hostAllowed, ["job_granted"] = jobGranted,
+            ["skill_disabled"] = skillDisabled, ["draft_target_locked"] = draftLocked, ["in_job"] = inJob,
         };
         var result = _kernel.EvaluateToolCall("did:mesh:lucia-" + turn.Owner, tool, context);
         var verdict = $"{result.PolicyDecision?.Action}".Replace("_", "").ToLowerInvariant() switch

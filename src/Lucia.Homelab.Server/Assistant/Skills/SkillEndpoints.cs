@@ -26,7 +26,10 @@ public static class SkillEndpoints
     {
         var group = assistant.MapGroup("/skills");
         group.MapGet("", async (SkillStore store, NodeExec exec, CancellationToken ct) =>
-            new { skills = await store.ListAsync(ct), kvmNodes = await exec.HostsWith("kvm", ct) });
+        {
+            var skills = await store.ListAsync(ct);
+            return new { skills, needsReview = skills.Count(skill => skill.NeedsReview), kvmNodes = await exec.HostsWith("kvm", ct) };
+        });
         group.MapPost("", async (HttpContext context, SkillStore store, CancellationToken ct) =>
             Results.Json(await store.CreateAsync(await Read<SkillCreateRequest>(context, ct), ct), statusCode: 201));
         group.MapPost("/import", async (HttpContext context, SkillStore store, CancellationToken ct) =>
@@ -56,7 +59,10 @@ public static class SkillEndpoints
         group.MapPut("/{name}", async (string name, HttpContext context, SkillStore store, CancellationToken ct) =>
             await store.UpdateAsync(name, await Read<SkillUpdateRequest>(context, ct), ct));
         group.MapPost("/{name}/enabled", async (string name, HttpContext context, SkillStore store, CancellationToken ct) =>
-            await store.SetEnabledAsync(name, (await Read<SkillEnabledRequest>(context, ct)).Enabled, ct));
+            {
+            var request = await Read<SkillEnabledRequest>(context, ct);
+            return await store.SetEnabledAsync(name, request.Enabled, ct, request.Hash);
+        });
         group.MapDelete("/{name}", async (string name, SkillStore store, CancellationToken ct) =>
         {
             await store.DeleteAsync(name, ct);

@@ -1,11 +1,13 @@
 export type SkillExecution = 'node' | 'spark' | 'sandbox'
 export type SkillTier = 'read' | 'change' | 'destructive'
 export type SkillLanguage = 'javascript' | 'typescript' | 'python' | 'shell' | 'csharp' | 'markdown' | 'json' | 'yaml' | 'text'
+export type SkillAuthor = 'owner' | 'assistant' | 'lucia'
 export type SkillFileKind = 'script' | 'reference' | 'asset'
 
 export type SkillSummary = {
   name: string; description: string; execution: SkillExecution; tier: SkillTier; enabled: boolean; hash: string; updated: string
   source: string | null; scripts: number; problem: string | null; builtIn: boolean
+  author: SkillAuthor; needsReview: boolean; rationale: string | null; sourceChats: string[]; warnings: string[]
 }
 export type SkillFile = { path: string; kind: SkillFileKind; size: number; language: SkillLanguage | null; editable: boolean }
 export type SkillNetwork = 'none' | 'bridge'
@@ -93,7 +95,10 @@ export function parseSkill(value: unknown): SkillSummary {
     || typeof value.enabled !== 'boolean' || typeof value.hash !== 'string' || typeof value.updated !== 'string') throw unexpected()
   return { name: value.name, description: value.description, execution: value.execution as SkillExecution, tier: value.tier as SkillTier,
     enabled: value.enabled, hash: value.hash, updated: value.updated, source: optionalText(value.source),
-    scripts: typeof value.scripts === 'number' ? value.scripts : 0, problem: optionalText(value.problem), builtIn: value.builtIn === true }
+    scripts: typeof value.scripts === 'number' ? value.scripts : 0, problem: optionalText(value.problem), builtIn: value.builtIn === true,
+    author: value.author === 'assistant' || value.author === 'lucia' ? value.author : value.builtIn === true ? 'lucia' : 'owner',
+    needsReview: value.needsReview === true, rationale: optionalText(value.rationale)?.trim() || null,
+    sourceChats: strings(value.sourceChats) ? value.sourceChats : [], warnings: strings(value.warnings) ? value.warnings : [] }
 }
 
 // Built-in skills come first, then the owner's by name.
@@ -113,9 +118,25 @@ export function copyName(name: string, taken: string[]): string {
   return base
 }
 
-export function parseSkillList(value: unknown): { skills: SkillSummary[]; kvmNodes: string[] } {
+export function parseSkillList(value: unknown): { skills: SkillSummary[]; kvmNodes: string[]; needsReview: number } {
   if (!record(value) || !Array.isArray(value.skills)) throw unexpected()
-  return { skills: sortSkills(value.skills.map(parseSkill)), kvmNodes: strings(value.kvmNodes) ? value.kvmNodes : [] }
+  const skills = sortSkills(value.skills.map(parseSkill))
+  // An older host sends no count, so count the drafts.
+  const needsReview = typeof value.needsReview === 'number' && value.needsReview >= 0 ? Math.floor(value.needsReview) : skills.filter(skill => skill.needsReview).length
+  return { skills, kvmNodes: strings(value.kvmNodes) ? value.kvmNodes : [], needsReview }
+}
+
+// Drafts the assistant wrote wait in their own group; the rest keep their order.
+export const splitSkills = <T extends { needsReview: boolean }>(skills: T[]): { review: T[]; rest: T[] } =>
+  ({ review: skills.filter(skill => skill.needsReview), rest: skills.filter(skill => !skill.needsReview) })
+
+// The skills page announces changes so the navigation badge can refresh.
+export const skillsChangedEvent = 'lucia:skills-changed'
+
+// The skill a `?skill=` link in the address opens.
+export function skillFromHash(hash: string): string | null {
+  const name = new URLSearchParams(hash.split('?')[1] ?? '').get('skill')
+  return name && validateSkillName(name) === null ? name : null
 }
 
 export function parseSkillFile(value: unknown): SkillFile {

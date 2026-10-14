@@ -77,7 +77,7 @@ public sealed class AssistantTool(AIFunction inner, string tier, Func<string, Ca
 public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackStore stacks, NodeRequests requests,
     UniFiConnectionService unifi, AdGuardConnectionService adguard, DomainOnboardingStore domains, AssistantBroker broker,
     ILogger<AssistantTools> logger, AssistantPush? push = null, PackageUpdatesService? sparkPackages = null,
-    SparkTelemetryBuffer? sparkTelemetry = null, SparkTelemetryOptions? sparkTelemetryOptions = null)
+    SparkTelemetryBuffer? sparkTelemetry = null, SparkTelemetryOptions? sparkTelemetryOptions = null, SkillAuthoring? authoring = null)
 {
     private const string NodeHelp = "The server: its hostname, DNS name, address or id.";
     private const string AppHelp = "The app's name, from list_apps.";
@@ -193,7 +193,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         string? login;
         try { login = OwnerSshKeys.Username(user); }
         catch (HardwareOnboardingException) { login = null; }
-        return
+        AssistantTool[] core =
         [
             Tool(ToolTier.Read, "list_nodes",
                 "Lists Lucia's managed servers: hostname, address, DNS name, state, when each last reported, agent and OS status, GPUs and pending updates. "
@@ -546,6 +546,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     [Description("Stop it after this many seconds, 1 to 1800.")] int timeoutSeconds = 120, CancellationToken ct = default) =>
                     await RunCommand(node, command, interpreter, timeoutSeconds, ct)),
         ];
+        return [.. core, .. (authoring?.Specs().Select(spec => Tool(spec.Tier, spec.Name, spec.Description, spec.Body)) ?? [])];
     }
 
     private const int RegistryShown = 5, RegistryMatches = 50;
@@ -737,7 +738,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
     };
 
     /// <summary>The chat and tool call a question belongs to. Only Copilot's runtime supplies them, so questions work only in a chat.</summary>
-    private static (string SessionKey, string ToolCallId) Call(AIFunctionArguments args) =>
+    internal static (string SessionKey, string ToolCallId) Call(AIFunctionArguments args) =>
         args.Context?.TryGetValue(typeof(GitHub.Copilot.ToolInvocation), out var value) == true
         && value is GitHub.Copilot.ToolInvocation { SessionId: { Length: > 0 } session, ToolCallId: { Length: > 0 } call }
             ? (session, call)

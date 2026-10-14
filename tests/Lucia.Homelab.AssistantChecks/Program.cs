@@ -1230,7 +1230,7 @@ try
     var builtRouter = new SkillScriptRouter(builtStore, new NodeSkillRunner(new NodeExec(null!, null!), builtStore), new SparkSkillRunner(builtOptions, builtStore),
         new SandboxSkillRunner(new NodeExec(null!, null!), builtStore, new SkillSandboxRuntime()));
     using var builtProvider = new AssistantSkills(builtStore, builtRouter, NullLoggerFactory.Instance);
-    string[] builtNames = ["app-troubleshooting", "container-image-updates", "custom-app-authoring", "os-security-patching"];
+    string[] builtNames = ["app-troubleshooting", "container-image-updates", "custom-app-authoring", "os-security-patching", "skill-authoring"];
     var builtList = await builtStore.ListAsync(default);
     Check(builtList.Select(skill => skill.Name).SequenceEqual(builtNames) && builtList.All(skill => skill is { BuiltIn: true, Enabled: true, Execution: "node", Tier: "read", Source: "built-in", Problem: null, Scripts: 0 }
         && skill.Hash.Length == 64 && skill.Description.Length > 0), "Built-in skills are listed, enabled and read-only, with their source and tier.");
@@ -1282,7 +1282,7 @@ try
     await builtStore.UpdateAsync("my-patching", new("Mine.", "node", "read", [], "# Mine\n"), default);
     await builtStore.SetEnabledAsync("my-patching", true, default);
     var copyOfCopy = await builtStore.DuplicateAsync("my-patching", "my-patching-two", default);
-    Check(copyOfCopy is { Enabled: false, BuiltIn: false, Body: "# Mine\n" } && (await builtStore.ListAsync(default)).Select(skill => skill.Name).Take(4).SequenceEqual(builtNames),
+    Check(copyOfCopy is { Enabled: false, BuiltIn: false, Body: "# Mine\n" } && (await builtStore.ListAsync(default)).Select(skill => skill.Name).Take(5).SequenceEqual(builtNames),
         "The owner's copy is editable and can be duplicated too, and the list keeps built-ins first.");
     await Reject(() => builtStore.DuplicateAsync("os-security-patching", "app-troubleshooting", default), 409, "skill_reserved", "A copy can't take a built-in name.");
     await Reject(() => builtStore.DuplicateAsync("os-security-patching", "my-patching", default), 409, "skill_exists", "A copy can't replace a skill.");
@@ -1579,7 +1579,7 @@ try
     Check(AssistantSkills.Grant("alpha", alphaHash) == "skill:alpha@" + alphaHash[..8] && Regex.IsMatch(AssistantSkills.Grant("alpha", alphaHash), @"^skill:[a-z0-9-]+@[0-9a-f]{8}$"),
         "A skill grant is skill:<name>@<first 8 hex of the hash>.");
     var skillRun = new AssistantRun("m-skill", default);
-    var skillKit = broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, "execute"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill", null), skillRun);
+    var skillKit = broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, "execute"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill", null), skillRun, skills: new SkillGate(context.Runnable!, _ => false));
     Check(Verdict(await GovCall(skillKit, "load_skill", new { skillName = "alpha" })) == "approve", "Loading a skill is a read.");
     Check(Verdict(await GovCall(skillKit, "refresh_skills")) == "approve", "Refreshing the skill list is a read.");
     Check(Verdict(await GovCall(skillKit, "run_skill_script", new { skillName = "sparky", scriptName = "scripts/go.py" })) == "approve", "A read-tier skill's script runs without asking.");
@@ -1595,15 +1595,15 @@ try
     skillRun.Stop.Cancel();
     await regrant;
     var skillPlanRun = new AssistantRun("m-skill-plan", default);
-    var skillPlanKit = broker.Kit(new AssistantTurn(owner, govKey + "-plan", "Hi", null, "plan"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill-plan", null), skillPlanRun);
+    var skillPlanKit = broker.Kit(new AssistantTurn(owner, govKey + "-plan", "Hi", null, "plan"), new AssistantSettings([], []), [.. context.Tools], new AssistantStream("m-skill-plan", null), skillPlanRun, skills: new SkillGate(context.Runnable!, _ => false));
     Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py" })) == govPlan, "Plan mode refuses a change-tier script.");
     Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "sparky", scriptName = "scripts/go.py" })) == "approve", "Plan mode still runs a read-tier script.");
-    Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "nonexistent", scriptName = "scripts/go.py" })) == govPlan, "A script of an unknown skill counts as a change.");
+    Check(Verdict(await GovCall(skillPlanKit, "run_skill_script", new { skillName = "nonexistent", scriptName = "scripts/go.py" })).StartsWith("reject: Refused: That skill is disabled"), "A script of an unknown skill is refused as a skill that can't run.");
     var boxedGrant = AssistantSkills.Grant("boxed", skillStore.HashOf("boxed")!);
     List<string> skillSaved = [];
     var skillJob = new AssistantJobGrants("Skills", [boxedGrant], grant => { skillSaved.Add(grant); return Task.CompletedTask; }, _ => Task.CompletedTask);
     var skillJobKit = broker.Kit(new AssistantTurn(owner, govKey + "-job", "Hi", null, "execute"), new AssistantSettings([], []), [.. context.Tools],
-        new AssistantStream("m-skill-job", null), new AssistantRun("m-skill-job", default), skillJob);
+        new AssistantStream("m-skill-job", null), new AssistantRun("m-skill-job", default), skillJob, new SkillGate(_ => true, _ => false));
     Check(Verdict(await GovCall(skillJobKit, "run_skill_script", new { skillName = "boxed", scriptName = "scripts/ok.py" })) == "approve",
         "A job runs a destructive skill it holds the grant for.");
     var jobSkillAsk = GovCall(skillJobKit, "run_skill_script", new { skillName = "alpha", scriptName = "scripts/check.py" });
@@ -1666,6 +1666,412 @@ try
     Check(missing.Length == 0, "Skill services depend on unregistered types: " + string.Join(", ", missing.Select(type => type.Name)));
     var routeServices = new[] { typeof(SkillPackages), typeof(SandboxSkillRunner), typeof(SparkSkillRunner), typeof(NodeSkillRunner), typeof(AssistantSkills) };
     Check(routeServices.All(registered.Contains), "AddSkills registers every service the skill routes and runners take.");
+    // ---- /create-skill: reviewing chats, drafting skills, and the guardrails around them ----
+    var csDir = Path.Combine(storage, "cs-data");
+    var csOptions = Options.Create(new AssistantOptions { Directory = csDir });
+    var csLog = new AssistantChatLog(csOptions, NullLogger<AssistantChatLog>.Instance);
+    var csBuiltIn = Path.Combine(storage, "cs-builtin");
+    Directory.CreateDirectory(Path.Combine(csBuiltIn, "cs-built-in"));
+    File.WriteAllText(Path.Combine(csBuiltIn, "cs-built-in", "SKILL.md"), "---\nname: cs-built-in\ndescription: A built-in for checks.\nmetadata:\n  lucia.execution: node\n  lucia.tier: read\n---\n\n# Built in\n");
+    var csStore = new SkillStore(csOptions, NullLogger<SkillStore>.Instance, null, csBuiltIn);
+    var csAuthoring = new SkillAuthoring(csLog, csStore, NullLogger<SkillAuthoring>.Instance);
+    var csTools = csAuthoring.Specs().Select(spec => new AssistantTool(AIFunctionFactory.Create(spec.Body, new AIFunctionFactoryOptions
+    {
+        Name = spec.Name, Description = spec.Description, MarshalResult = static (result, _, _) => new ValueTask<object?>(result),
+    }), spec.Tier, (value, _) => Task.FromResult(value), NullLogger.Instance)).ToDictionary(tool => tool.Name);
+    Check(csTools["list_chats"].Tier == ToolTier.Read && csTools["read_chat_transcript"].Tier == ToolTier.Read && csTools["list_skills"].Tier == ToolTier.Read
+        && csTools["get_skill"].Tier == ToolTier.Read && csTools["mark_chats_reviewed"].Tier == ToolTier.Draft && csTools["draft_skill"].Tier == ToolTier.Draft
+        && csTools["edit_skill"].Tier == ToolTier.SkillEdit, "The skill-authoring tools have the tiers the policy expects.");
+    var csCurrent = Guid.NewGuid().ToString("N");
+    static JsonElement J(object value) => JsonSerializer.SerializeToElement(value);
+    async Task<string> CsCall(string tool, string who, Dictionary<string, object?>? callArgs = null) => ((TextContent)(await csTools[tool].InvokeAsync(
+        new AIFunctionArguments(callArgs) { Context = new Dictionary<object, object?> { [typeof(ToolInvocation)] = new ToolInvocation { SessionId = who + "-" + csCurrent, ToolCallId = "tc", ToolName = tool } } }))!).Text;
+    async Task<JsonNode> CsJson(string tool, string who, Dictionary<string, object?>? callArgs = null) => JsonNode.Parse(await CsCall(tool, who, callArgs))!;
+
+    // Transcript condensing: declined (with the owner's reason), expired, failed, timed out and ran.
+    UiPart CsTool(string id, string name, string state, JsonNode? input = null, JsonNode? output = null, string? error = null, JsonObject? approval = null) =>
+        new("dynamic-tool", State: state, ToolCallId: id, ToolName: name, Input: input, Output: output, ErrorText: error, Approval: approval);
+    JsonObject CsInput(string command) => new() { ["node"] = "lab02", ["command"] = command, ["DB_PASSWORD"] = "hunter2hunter2" };
+    List<UiMessage> CsMessages() =>
+    [
+        new("u1", "user", [new UiPart("text", "Check the pool and restart plex")]),
+        new("a1", "assistant",
+        [
+            new UiPart("text", "I'll look.", "done"),
+            CsTool("c1", "run_command", "output-denied", CsInput("zpool status"), approval: new() { ["id"] = "ap1", ["approved"] = false, ["reason"] = "too risky" }),
+            CsTool("c2", "run_command", "output-denied", CsInput("zpool scrub"), approval: new() { ["id"] = "ap2", ["approved"] = false, ["reason"] = "No answer within 30 minutes." }),
+            CsTool("c3", "read_logs", "output-error", error: "boom"),
+            CsTool("c4", "run_command", "output-available", CsInput("sleep 999"),
+                new JsonObject { ["node"] = "lab02", ["exitCode"] = 124, ["running"] = true, ["note"] = "lab02 stopped answering, so Lucia stopped waiting.", ["output"] = "partial" }),
+            CsTool("c5", "run_command", "output-available", CsInput("uptime"), new JsonObject { ["node"] = "lab02", ["exitCode"] = 0, ["output"] = "up 3 days" }),
+            CsTool("c6", "set_app", "output-denied", approval: new() { ["id"] = "ap6", ["approved"] = false, ["isAutomatic"] = true, ["reason"] = "Plan mode doesn't change anything." }),
+            CsTool("c7", "run_skill_script", "output-available", output: JsonValue.Create("Ran scripts/x.sh on lab02. Exit code 124.\n(no output)")),
+            CsTool("c8", "run_command", "output-error", error: "The command timed out after 120 seconds."),
+            CsTool("c9", "run_command", "approval-requested", approval: new() { ["id"] = "ap9" }),
+        ]),
+    ];
+    var csParts = CsMessages()[1].Parts.Where(part => part.Type == "dynamic-tool").ToList();
+    Check(string.Join(",", csParts.Select(part => ChatTranscripts.Outcome(part).Outcome)) == "declined,expired,failed,timedOut,ran,refused,timedOut,timedOut,expired"
+        && ChatTranscripts.Outcome(csParts[0]).Detail == "too risky",
+        "Calls are told apart: declined with the owner's reason, expired, failed, timed out (exit 124, running, stopped answering, a skill's exit 124, a timeout error), ran, and refused by policy.");
+    Check(ChatTranscripts.Count(CsMessages()) == new ChatIssues(1, 2, 1, 3), "Issues are counted per kind, and a policy refusal isn't one.");
+    var csCondensed = ChatTranscripts.Condense(CsMessages(), false);
+    var csCalls = csCondensed["messages"]![1]!["calls"]!.AsArray();
+    Check(csCondensed["messages"]!.AsArray().Count == 2 && (string)csCondensed["messages"]![0]!["role"]! == "user" && csCalls.Count == 9
+        && (string)csCalls[0]!["outcome"]! == "declined" && (string)csCalls[0]!["reason"]! == "too risky" && (string)csCalls[3]!["outcome"]! == "timedOut"
+        && (int)csCalls[3]!["exitCode"]! == 124 && (string)csCalls[4]!["outcome"]! == "ran" && (string)csCalls[2]!["error"]! == "boom"
+        && (string)csCalls[0]!["input"]!["DB_PASSWORD"]! == "••••••" && !csCondensed.ToJsonString().Contains("hunter2"),
+        "A condensed transcript keeps every call with its outcome, the owner's reason and masked input.");
+    var csOnly = ChatTranscripts.Condense(CsMessages(), true);
+    Check(csOnly["messages"]!.AsArray().Count == 2 && (string)csOnly["messages"]![0]!["role"]! == "user"
+        && csOnly["messages"]![1]!["calls"]!.AsArray().Select(call => (string)call!["outcome"]!).SequenceEqual(["declined", "expired", "failed", "timedOut", "timedOut", "timedOut", "expired"]),
+        "onlyIssues keeps the problem calls with the message before them.");
+    var csHuge = new List<UiMessage>();
+    for (var i = 0; i < 200; i++)
+    {
+        csHuge.Add(new($"u{i}", "user", [new UiPart("text", new string('q', 3000))]));
+        var hugeParts = new List<UiPart> { new UiPart("text", new string('w', 3000), "done") };
+        if (i % 50 == 0) hugeParts.Add(CsTool("h" + i, "run_command", "output-error", new JsonObject { ["command"] = new string('z', 5000) }, error: "boom"));
+        csHuge.Add(new($"a{i}", "assistant", hugeParts));
+    }
+    var csBounded = ChatTranscripts.Condense(csHuge, false);
+    Check(csBounded.ToJsonString().Length <= AssistantTool.MaxOutput && (int)csBounded["omitted"]! > 0
+        && csBounded["messages"]!.AsArray().Count(message => message!["calls"] is not null) == 4,
+        "A long chat is cut to the output budget by dropping its oldest turns without problems first, keeping every problem call.");
+
+    // The owner's chats: listed with issues, scoped, and marked reviewed.
+    const string csStranger = "fedcba9876543210";
+    var csJob = Guid.NewGuid().ToString("N");
+    void CsSave(string who, string id, string title, List<UiMessage> messages, DateTimeOffset updated, string? job = null)
+    {
+        var folder = Path.Combine(csDir, "users", who, id);
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "transcript.json"), JsonSerializer.Serialize(new AssistantTranscript(messages), AssistantStream.Json));
+        File.WriteAllText(Path.Combine(folder, "session.json"), JsonSerializer.Serialize(new AssistantSessionInfo(title, updated, null, job), AssistantStream.Json));
+    }
+    Directory.CreateDirectory(Path.Combine(csDir, "users", owner, "jobs"));
+    File.WriteAllText(Path.Combine(csDir, "users", owner, "jobs", csJob + ".json"), """{"name":"Nightly review"}""");
+    var (csA, csB, csJobChat, csX) = (Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
+    var csNow = DateTimeOffset.UtcNow;
+    CsSave(owner, csA, "Pool trouble", CsMessages(), csNow);
+    CsSave(owner, csB, "Clean chat", [new("u", "user", [new UiPart("text", "hi")])], csNow.AddHours(-3));
+    CsSave(owner, csJobChat, "Nightly run", CsMessages(), csNow.AddHours(-1), csJob);
+    CsSave(csStranger, csX, "Not yours", CsMessages(), csNow);
+    var csList = (await CsJson("list_chats", owner)).AsArray();
+    Check(csList.Select(item => (string)item!["id"]!).SequenceEqual([csA, csJobChat]) && (int)csList[0]!["issues"]!["timedOut"]! == 3 && (int)csList[0]!["issues"]!["declined"]! == 1
+        && (int)csList[0]!["issues"]!["expired"]! == 2 && (int)csList[0]!["issues"]!["failed"]! == 1 && csList[0]!["reviewedAt"] is null
+        && csList[0]!["job"] is null && (string)csList[1]!["job"]! == "Nightly review", "list_chats lists the owner's chats with problems, newest first, never another owner's.");
+    var csAll = (await CsJson("list_chats", owner, new() { ["onlyWithIssues"] = false, ["limit"] = 2 })).AsArray();
+    Check(csAll.Count == 2 && (string)csAll[0]!["id"]! == csA && (string)csAll[1]!["id"]! == csJobChat
+        && (await CsJson("list_chats", owner, new() { ["onlyWithIssues"] = false, ["since"] = csNow.AddMinutes(-30).ToString("o") })).AsArray().Count == 1
+        && (await CsJson("list_chats", csStranger)).AsArray().Single()!["id"]!.GetValue<string>() == csX,
+        "list_chats takes a limit and a since time, and gives each owner only their own.");
+    var csRead = await CsJson("read_chat_transcript", owner, new() { ["chatId"] = csA });
+    Check((string)csRead["title"]! == "Pool trouble" && csRead["messages"]!.AsArray().Count == 2 && (int)csRead["issues"]!["timedOut"]! == 3,
+        "read_chat_transcript returns the condensed chat with its issue counts.");
+    await Reject(() => CsCall("read_chat_transcript", owner, new() { ["chatId"] = csX }), 400, "tool_error", "Another owner's chat can't be read.");
+    Check((await CsJson("read_chat_transcript", csStranger, new() { ["chatId"] = csX, ["onlyIssues"] = true }))["messages"]!.AsArray().Count == 2, "That owner can read it.");
+    await Reject(() => CsCall("read_chat_transcript", owner, new() { ["chatId"] = "../" + csA }), 400, "tool_error", "A chat id can't climb out of the owner's folder.");
+    await Reject(() => CsCall("mark_chats_reviewed", owner, new() { ["chatIds"] = J(new[] { csA, csX }) }), 400, "tool_error", "Another owner's chat can't be marked reviewed.");
+    Check((await CsJson("mark_chats_reviewed", owner, new() { ["chatIds"] = J(new[] { csA }), ["note"] = "Nothing narrow enough." }))["marked"]!.GetValue<int>() == 1
+        && File.Exists(Path.Combine(csDir, "skill-reviews.json")), "mark_chats_reviewed records the review in assistant/skill-reviews.json.");
+    Check((await CsJson("list_chats", owner)).AsArray()[0]!["reviewedAt"] is not null && (await CsJson("list_chats", csStranger)).AsArray()[0]!["reviewedAt"] is null,
+        "list_chats shows reviewedAt for the owner's reviewed chats only.");
+    await using var csRuns = new AssistantRuns(runtime, csOptions, new StoppedLifetime(), NullLogger<AssistantRuns>.Instance, broker, chats: csLog);
+    var csSessions = Node(csRuns.List(owner))["sessions"]!.AsArray();
+    var csSession = csSessions.First(session => (string)session!["id"]! == csA)!;
+    Check((int)csSession["issues"]!["timedOut"]! == 3 && (int)csSession["issues"]!["declined"]! == 1 && csSession["reviewedAt"] is not null
+        && (int)csSessions.First(session => (string)session!["id"]! == csB)!["issues"]!["failed"]! == 0 && csSessions.First(session => (string)session!["id"]! == csB)!["reviewedAt"] is null,
+        "The sessions list carries each chat's issue counts and reviewedAt.");
+
+    // Drafting: always disabled, validated by the store, with provenance and review warnings.
+    var csScript = "#!/usr/bin/env bash\neval \"$LUCIA_SKILL_ARGS\"\nrm -rf /var/cache/x\ncurl https://example.com\n";
+    Dictionary<string, object?> CsDraft(string name, bool update = false, string tier = "read", string execution = "node", string? script = null, string[]? sources = null) => new()
+    {
+        ["name"] = name, ["description"] = "Checks pool health.", ["execution"] = execution, ["tier"] = tier, ["body"] = "# Pool\n\nRun the script.\n",
+        ["rationale"] = "Replaces the timed-out zpool status.", ["files"] = J(new[] { new { path = "scripts/check.sh", content = script ?? csScript } }),
+        ["sourceChats"] = J(sources ?? [csA]), ["update"] = update,
+    };
+    var csDrafted = await CsJson("draft_skill", owner, CsDraft("pool-health"));
+    var csDraftedSummary = (await csStore.ListAsync(default)).First(skill => skill.Name == "pool-health");
+    var csManifest = SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "pool-health", "SKILL.md")))!.Metadata();
+    Check((string)csDrafted["status"]! == "disabled" && (string)csDrafted["review"]! == "#/settings/assistant/skills?skill=pool-health" && !csDraftedSummary.Enabled
+        && csDraftedSummary is { Author: "assistant", NeedsReview: true, Rationale: "Replaces the timed-out zpool status." } && csDraftedSummary.SourceChats.SequenceEqual([csA])
+        && csManifest["lucia.author"]?.ToString() == "assistant" && csManifest["lucia.last-edit"]?.ToString() == "assistant" && csManifest["lucia.source-chats"]?.ToString() == csA
+        && csManifest["lucia.rationale"]?.ToString() == "Replaces the timed-out zpool status." && csManifest["lucia.review-warnings"]?.ToString()!.Contains("eval") == true
+        && csDrafted["warnings"]!.AsArray().Count >= 3 && csDraftedSummary.Warnings.Length == csDrafted["warnings"]!.AsArray().Count && csDraftedSummary.Hash == (string)csDrafted["hash"]!,
+        "A draft is saved disabled with its author, source chats, rationale and review warnings, and needs review.");
+    Check(!(await csStore.OfferedAsync(default)).Contains("pool-health"), "A draft is never offered to a turn.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("pool-health")), 400, "tool_error", "A taken name is refused without update.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("other-draft", sources: [csX])), 400, "tool_error", "A draft can only cite the owner's own chats.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("sand-box", execution: "sandbox")), 400, "tool_error", "The store's sandbox language lock applies to drafts.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("Bad Name")), 400, "tool_error", "The store's name rules apply to drafts.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("cs-built-in", update: true)), 400, "tool_error", "A built-in can't be drafted over, even with update.");
+    var csUpdated = await CsJson("draft_skill", owner, CsDraft("pool-health", update: true, script: "#!/usr/bin/env bash\nset -euo pipefail\nzpool status | head -n 20\n"));
+    Check((string)csUpdated["status"]! == "disabled" && (string)csUpdated["hash"]! != (string)csDrafted["hash"]! && csUpdated["warnings"]!.AsArray().Count == 0
+        && !(await csStore.FindAsync("pool-health", default))!.Enabled, "The assistant can improve its own disabled draft, which stays disabled and drops warnings it fixed.");
+    await csStore.CreateAsync(new("owner-made", "An owner skill.", "node", "read", null, null), default);
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("owner-made", update: true)), 400, "tool_error", "The owner's own skill can't be changed by a draft.");
+    await csStore.UpdateAsync("pool-health", new("Checks pool health, edited.", "node", "read", [], "# Pool\n\nOwner edited.\n"), default);
+    Check(csStore.DraftLocked("pool-health") && SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "pool-health", "SKILL.md")))!.Metadata()["lucia.last-edit"]?.ToString() == "owner"
+        && (await csStore.FindAsync("pool-health", default))!.NeedsReview, "An owner edit sets lucia.last-edit to owner and locks the draft, which still needs review.");
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("pool-health", update: true)), 400, "tool_error", "An owner-edited draft can't be updated by the assistant.");
+    await CsCall("draft_skill", owner, CsDraft("second-draft"));
+    await csStore.WriteFileAsync("second-draft", "references/note.md", "owner note", default);
+    Check(csStore.DraftLocked("second-draft"), "Any owner file write locks a draft as well.");
+    await CsCall("draft_skill", owner, CsDraft("third-draft"));
+    Check(!csStore.DraftLocked("third-draft"), "An untouched draft stays open to the assistant.");
+    await Reject(() => csStore.SetEnabledAsync("third-draft", true, default), 409, "skill_changed", "Enabling an assistant draft needs the hash of the version the owner reviewed.");
+    await Reject(() => csStore.SetEnabledAsync("third-draft", true, default, new string('0', 64)), 409, "skill_changed", "A draft that isn't the reviewed version isn't enabled.");
+    Check(!csStore.IsEnabled("third-draft"), "A refused enable leaves the draft disabled.");
+    await csStore.SetEnabledAsync("third-draft", true, default, csStore.HashOf("third-draft"));
+    var csEnabledDraft = (await csStore.FindAsync("third-draft", default))!;
+    Check(csEnabledDraft is { Enabled: true, NeedsReview: false, Author: "assistant" } && csStore.DraftLocked("third-draft") && csStore.IsEnabled("third-draft"),
+        "Enabling a draft clears needs-review and locks it against the assistant for good.");
+    await csStore.SetEnabledAsync("third-draft", false, default);
+    await Reject(() => CsCall("draft_skill", owner, CsDraft("third-draft", update: true)), 400, "tool_error", "A reviewed draft stays locked even if disabled again.");
+    Check(csStore.DraftLocked("cs-built-in") && csStore.DraftLocked("owner-made") && !csStore.DraftLocked("brand-new") && csStore.IsEnabled("cs-built-in") && !csStore.IsEnabled("pool-health"),
+        "Built-ins and the owner's skills are locked; a free name is open; a draft is not enabled.");
+    await csStore.DuplicateAsync("third-draft", "copied-draft", default);
+    Check((await csStore.FindAsync("copied-draft", default)) is { Author: "owner", NeedsReview: false }, "A copy of a draft is the owner's own skill.");
+
+    await csStore.CreateAsync(new("sbx", "A sandbox skill.", "sandbox", "read", null, null), default);
+    var csRevision = csStore.Revision;
+    await Reject(() => csStore.WriteFileAsync("sbx", "scripts/a.sh", "echo", default), 409, "sandbox_languages", "A refused write fails.");
+    Check(csStore.Revision > csRevision, "A change that fails still moves the revision, so nothing cached survives it.");
+    await csStore.DeleteAsync("sbx", default);
+
+    // Listing and reading: enabled and built-in by default; disabled ones only on request. Neither runs anything.
+    await csStore.SetEnabledAsync("owner-made", true, default);
+    var csDefault = (await CsJson("list_skills", owner)).AsArray().Select(skill => (string)skill!["name"]!).ToArray();
+    var csEvery = (await CsJson("list_skills", owner, new() { ["includeDisabled"] = true })).AsArray();
+    Check(csDefault.OrderBy(name => name).SequenceEqual(["cs-built-in", "owner-made"]) && csEvery.Count == 6
+        && csEvery.Any(skill => (string)skill!["name"]! == "pool-health" && (string)skill["status"]! == "disabled" && (string)skill["author"]! == "assistant")
+        && csEvery.Any(skill => (string)skill!["name"]! == "cs-built-in" && (string)skill["status"]! == "built-in" && (string)skill["author"]! == "lucia"),
+        "list_skills returns enabled and built-in skills by default, and every skill with includeDisabled.");
+    await Reject(() => CsCall("get_skill", owner, new() { ["name"] = "pool-health" }), 400, "tool_error", "get_skill refuses a disabled skill unless asked.");
+    var csGot = await CsJson("get_skill", owner, new() { ["name"] = "pool-health", ["includeDisabled"] = true });
+    Check((string)csGot["status"]! == "disabled" && (string)csGot["body"]!.ToString() != "" && csGot["files"]!.AsArray().Any(file => (string)file!["path"]! == "scripts/check.sh")
+        && (string)(await CsJson("get_skill", owner, new() { ["name"] = "pool-health", ["path"] = "scripts/check.sh", ["includeDisabled"] = true }))["content"]! is { Length: > 0 }
+        && (string)(await CsJson("get_skill", owner, new() { ["name"] = "cs-built-in" }))["status"]! == "built-in", "get_skill reads a disabled skill and its files when asked.");
+
+    // Review warnings.
+    string[] Lint(string execution, string tier, string path, string content) => SkillReviewLint.Check(execution, tier, [(path, content)]);
+    Check(Lint("node", "change", "scripts/a.sh", "eval \"$X\"").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.sh", "bash -c \"$CMD\"").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.py", "subprocess.run(x, shell=True)").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.py", "os.system(cmd)").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.js", "const { exec } = require('child_process'); exec(cmd)").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.js", "eval(input)").Any(w => w.Contains("run text it is given"))
+        && Lint("node", "change", "scripts/a.cs", "Process.Start(cmd + arg)").Any(w => w.Contains("run text it is given")),
+        "The lint flags command passthrough in shell, Python, JavaScript and C#.");
+    Check(Lint("node", "change", "scripts/a.sh", "bash -c 'echo hi'").Length == 0 && Lint("node", "change", "scripts/a.js", "/a/.exec(text)").Length == 0
+        && Lint("node", "read", "scripts/a.sh", "zpool status | head").Length == 0, "Fixed commands and regex.exec aren't flagged.");
+    Check(Lint("node", "read", "scripts/a.sh", "systemctl restart docker").Any(w => w.Contains("tier is read")) && Lint("node", "read", "scripts/a.sh", "docker rm x").Any(w => w.Contains("tier is read"))
+        && Lint("node", "read", "scripts/a.sh", "apt-get install jq").Any(w => w.Contains("tier is read")) && Lint("node", "read", "scripts/a.sh", "echo x > /etc/hosts").Any(w => w.Contains("tier is read"))
+        && Lint("node", "read", "scripts/a.sh", "rm -rf /x").Any(w => w.Contains("tier is read")) && Lint("node", "read", "scripts/a.sh", "reboot").Any(w => w.Contains("tier is read"))
+        && !Lint("node", "change", "scripts/a.sh", "systemctl restart docker").Any(w => w.Contains("tier is read")),
+        "A read skill whose script changes things is flagged; a change skill isn't.");
+    Check(Lint("node", "read", "scripts/a.py", "import os\nx = os.environ['LUCIA_SKILL_ARGS']\n").Any(w => w.Contains("without an obvious"))
+        && Lint("node", "read", "scripts/a.py", "import os, re\nx = os.environ['LUCIA_SKILL_ARGS']\nre.fullmatch('a', x)\n").Length == 0
+        && Lint("node", "read", "scripts/a.py", "print(1)").Length == 0, "Arguments used without a pattern or allow-list check are flagged, best effort.");
+    Check(Lint("node", "read", "scripts/a.sh", "curl https://x").Any(w => w.Contains("network")) && Lint("spark", "read", "scripts/a.sh", "curl https://x").Length == 0
+        && Lint("node", "read", "references/a.md", "eval x").Length == 0, "Network use is noted for node scripts; only scripts are scanned.");
+
+    // AGT: a disabled skill never runs or loads, whatever the grants or mode; drafts need no approval; edits always ask.
+    AssistantTool CsGov(string name, string tier) => new(AIFunctionFactory.Create((Func<string>)(() => "ok"), new AIFunctionFactoryOptions { Name = name }),
+        tier, (value, _) => Task.FromResult(value), NullLogger.Instance);
+    AssistantTool[] csGovTools = [CsGov("load_skill", ToolTier.Read), CsGov("read_skill_resource", ToolTier.Read), CsGov("run_skill_script", ToolTier.Change),
+        CsGov("draft_skill", ToolTier.Draft), CsGov("mark_chats_reviewed", ToolTier.Draft), CsGov("edit_skill", ToolTier.SkillEdit)];
+    var csGate = new SkillGate(name => name == "on-skill", name => name == "locked", (key, input) =>
+    {
+        if (input.TryGetProperty("name", out var gated) && gated.GetString() == "bad") throw new AssistantException(409, "skill_builtin", "Built-in skills are read-only.");
+        return new JsonObject { ["enabled"] = true, ["files"] = new JsonArray(new JsonObject { ["path"] = "SKILL.md", ["change"] = "changed", ["before"] = "a", ["after"] = "b" }) };
+    });
+    var csGrants = new AssistantJobGrants("Review", ["tool:run_skill_script", "tool:edit_skill"], _ => Task.CompletedTask, _ => Task.CompletedTask);
+    var csEditSettings = new AssistantSettings(["run_skill_script", "edit_skill"], []);
+    (AssistantStream Stream, AssistantRun Run, AssistantKit Kit) CsTurn(string mode = "execute", AssistantJobGrants? job = null)
+    {
+        var turnStream = new AssistantStream("m-cs", null);
+        var turnRun = new AssistantRun("m-cs", default);
+        return (turnStream, turnRun, broker.Kit(new AssistantTurn(owner, govKey, "Hi", null, mode), csEditSettings, csGovTools, turnStream, turnRun, job, csGate));
+    }
+    foreach (var (csMode, csJobGrants) in new (string, AssistantJobGrants?)[] { ("execute", null), ("plan", null), ("execute", csGrants) })
+    {
+        var (_, csRun, csKit) = CsTurn(csMode, csJobGrants);
+        foreach (var tool in new[] { "load_skill", "read_skill_resource", "run_skill_script" })
+        {
+            var offDecision = Verdict(await GovCall(csKit, tool, new { skillName = "off-skill" }));
+            Check(offDecision.StartsWith("reject: Refused: That skill is disabled") && offDecision.Contains("get_skill"),
+                $"{tool} on a disabled skill is refused in {csMode} mode{(csJobGrants is null ? "" : " even with a job grant")}: {offDecision}");
+            Check(Verdict(await GovCall(csKit, tool, null)).StartsWith("reject: Refused: That skill is disabled") && Verdict(await GovCall(csKit, tool, new { skillName = 5 })).StartsWith("reject:"),
+                $"{tool} naming no skill is refused.");
+        }
+        Check(Verdict(await GovCall(csKit, "load_skill", new { skillName = "on-skill" })) == "approve", "An enabled skill still loads.");
+        var denied = GovNew(csRun).Where(chunk => (string)chunk["type"]! == "tool-approval-response").ToList();
+        Check(denied.Count == 9 && denied.All(chunk => !(bool)chunk["approved"]!), "Refusals are recorded in the chat.");
+    }
+    var (_, csJobRun, csJobKit) = CsTurn("execute", csGrants);
+    Check(Verdict(await GovCall(csJobKit, "run_skill_script", new { skillName = "on-skill" })) == "approve", "A job's grant still runs an enabled skill's script.");
+    foreach (var csMode in new[] { "execute", "plan" })
+    {
+        var (csStream, csRun, csKit) = CsTurn(csMode);
+        Check(Verdict(await GovCall(csKit, "draft_skill", new { name = "fresh-draft" })) == "approve" && Verdict(await GovCall(csKit, "mark_chats_reviewed", new { chatIds = new[] { csA } })) == "approve"
+            && GovNew(csRun).Count == 0, $"Draft tools run in {csMode} mode with no approval card.");
+        var lockedDecision = Verdict(await GovCall(csKit, "draft_skill", new { name = "locked", update = true }));
+        Check(lockedDecision == "reject: Refused: Only your own disabled drafts can be updated. get_skill the existing skill, or pick another name for a new draft.", "Drafts never touch a locked skill: " + lockedDecision);
+    }
+    var (_, csJobRun2, csJobKit2) = CsTurn("execute", csGrants);
+    Check(Verdict(await GovCall(csJobKit2, "draft_skill", new { name = "fresh-draft" })) == "approve" && GovNew(csJobRun2).Count == 0, "Jobs draft without approval, so they never stall.");
+
+    var (csPlanStream, csPlanRun, csPlanKit) = CsTurn("plan");
+    Check(Verdict(await GovCall(csPlanKit, "edit_skill", new { name = "pool-health" })) == "reject: Refused: the chat is in Plan mode, which changes nothing. Describe the edit in your plan; the owner can switch to Execute to approve it.",
+        "edit_skill is refused in Plan mode.");
+    var (_, csJobRun3, csJobKit3) = CsTurn("execute", csGrants);
+    Check(Verdict(await GovCall(csJobKit3, "edit_skill", new { name = "pool-health" })) == "reject: Refused: scheduled jobs can't edit existing skills. Draft a new disabled skill with draft_skill instead.",
+        "edit_skill is refused in a job's chat even when the job was granted it.");
+    var (csEditStream, csEditRun, csEditKit) = CsTurn();
+    var csBad = await GovCall(csEditKit, "edit_skill", new { name = "bad" });
+    Check(Verdict(csBad) == "reject: Built-in skills are read-only." && GovNew(csEditRun).Count == 0, "An invalid edit is refused with its reason, without asking the owner.");
+    var csEditAsk = GovCall(csEditKit, "edit_skill", new { name = "on-skill", rationale = "Fix it" });
+    var csEditChunks = GovNew(csEditRun);
+    var csEditId = (string)csEditChunks[1]["approvalId"]!;
+    Check(!csEditAsk.IsCompleted && Types(csEditChunks) == "tool-input-available,tool-approval-request" && csEditChunks[1]["isAutomatic"] is null
+        && (string)csEditChunks[1]["reason"]! == "This edits the skill on-skill. See the changes below."
+        && (bool)csEditChunks[1]["approvalDescriptor"]!["enabled"]! && (string)csEditChunks[1]["approvalDescriptor"]!["files"]![0]!["path"]! == "SKILL.md" && csEditChunks[1]["diff"] is null,
+        "edit_skill asks every time, and the request carries the diff.");
+    var csStored = csEditStream.Message.Parts[^1].Approval!;
+    Check((bool)csStored["diff"]!["enabled"]! && (string)csStored["diff"]!["files"]![0]!["after"]! == "b" && (string)csStored["requestReason"]! is { Length: > 0 }
+        && csStored["alwaysAllow"]!.GetValue<bool>() == false, "The diff is stored with the approval in the transcript, alongside the reason.");
+    Check(runs.Respond(owner, chat, csEditId, true, null, always: true) && Verdict(await csEditAsk) == "approve", "The owner approves it once, even choosing 'always'.");
+    var csAgain = GovCall(csEditKit, "edit_skill", new { name = "on-skill", rationale = "Again" });
+    csEditChunks = GovNew(csEditRun);
+    Check(!csAgain.IsCompleted && csEditChunks.Any(chunk => (string)chunk["type"]! == "tool-approval-request" && chunk["isAutomatic"] is null),
+        "'Always allow' is never honoured: the next edit asks again, though the tool is on the settings' automatic list and the job was granted it.");
+    csEditRun.Stop.Cancel();
+    await csAgain;
+    await Reject(() => broker.SaveSettingsAsync(owner, new AssistantSettings(["edit_skill"], []), ["tweak"], default), 400, "invalid_settings", "edit_skill can't be made automatic.");
+    await Reject(() => broker.SaveSettingsAsync(owner, new AssistantSettings(["draft_skill"], []), ["tweak"], default), 400, "invalid_settings", "Draft tools aren't automatic-approval tools either.");
+
+    // Editing an existing skill: the diff, then the write, through the store.
+    var csBig = new string('x', 40 * 1024);
+    await csStore.WriteFileAsync("owner-made", "scripts/old.sh", "echo old\n", default);
+    await csStore.WriteFileAsync("owner-made", "scripts/run.sh", "echo one\n", default);
+    await csStore.WriteFileAsync("owner-made", "references/big.md", csBig, default);
+    var csBefore = csStore.HashOf("owner-made")!;
+    var csDiff = csStore.EditDiff(new("owner-made", "A better description.", null, null, "# Owner made\n\nNew body.\n",
+        [new("scripts/run.sh", "echo two\n"), new("scripts/new.sh", "echo new\n"), new("references/big.md", csBig + "y")], ["scripts/old.sh"], "Improve it"));
+    var csDiffFiles = csDiff["files"]!.AsArray();
+    Check(csStore.HashOf("owner-made") == csBefore && (bool)csDiff["enabled"]! && (string)csDiffFiles[0]!["path"]! == "SKILL.md" && (string)csDiffFiles[0]!["change"]! == "changed"
+        && ((string)csDiffFiles[0]!["before"]!).Contains("name: owner-made") && ((string)csDiffFiles[0]!["after"]!).Contains("New body.") && ((string)csDiffFiles[0]!["after"]!).Contains("lucia.last-edit: assistant")
+        && csDiffFiles.Select(file => $"{file!["path"]}:{file["change"]}").Skip(1).Order().SequenceEqual(["references/big.md:changed", "scripts/new.sh:added", "scripts/old.sh:removed", "scripts/run.sh:changed"])
+        && (string)csDiffFiles.First(file => (string)file!["path"]! == "scripts/new.sh")!["after"]! == "echo new\n" && csDiffFiles.First(file => (string)file!["path"]! == "scripts/new.sh")!["before"] is null
+        && (string)csDiffFiles.First(file => (string)file!["path"]! == "scripts/old.sh")!["before"]! == "echo old\n" && csDiffFiles.First(file => (string)file!["path"]! == "scripts/old.sh")!["after"] is null,
+        "The edit diff lists SKILL.md first, then each added, changed and removed file, with the skill's enabled state, and writes nothing.");
+    var csBigFile = csDiffFiles.First(file => (string)file!["path"]! == "references/big.md")!;
+    Check(((string)csBigFile["before"]!).Length == 32 * 1024 && ((string)csBigFile["after"]!).Length == 32 * 1024 && (bool)csBigFile["truncated"]! && (bool)csDiff["truncated"]!,
+        "Each side of a file in the diff is cut at 32 KiB and marked truncated.");
+    var csMany = Enumerable.Range(0, 10).Select(i => new SkillDraftFile($"references/m{i}.md", new string('a', 31 * 1024))).ToArray();
+    foreach (var file in csMany) await csStore.WriteFileAsync("owner-made", file.Path!, new string('b', 31 * 1024), default);
+    var csManyDiff = csStore.EditDiff(new("owner-made", null, null, null, null, csMany, null, "Rewrite them"));
+    Check(csManyDiff["files"]!.AsArray().Sum(item => (((string?)item!["before"])?.Length ?? 0) + (((string?)item["after"])?.Length ?? 0)) <= 192 * 1024 && (bool)csManyDiff["truncated"]!,
+        "A diff is cut at 192 KiB in all, and says so.");
+    foreach (var file in csMany) await csStore.DeleteFileAsync("owner-made", file.Path!, default);
+    await Reject(() => Task.FromResult(csStore.EditDiff(new("cs-built-in", "x", null, null, null, null, null, "Why"))), 409, "skill_builtin", "Built-in skills can't be edited.");
+    await Reject(() => Task.FromResult(csStore.EditDiff(new("nope", "x", null, null, null, null, null, "Why"))), 404, "skill_not_found", "An unknown skill can't be edited.");
+    await Reject(() => Task.FromResult(csStore.EditDiff(new("owner-made", "x", null, null, null, null, null, ""))), 400, "invalid_skill", "An edit needs a rationale.");
+    await Reject(() => Task.FromResult(csStore.EditDiff(new("owner-made", null, null, null, null, null, ["scripts/gone.sh"], "Why"))), 404, "file_not_found", "Removing a file that isn't there is refused.");
+    await Reject(() => Task.FromResult(csStore.EditDiff(new("owner-made", null, "sandbox", null, null, null, null, "Why"))), 409, "sandbox_languages", "An edit can't dodge the sandbox language lock.");
+    var csGrantBefore = AssistantSkills.Grant("owner-made", csStore.HashOf("owner-made")!);
+    var csKey = $"{owner}-{csCurrent}|tc";
+    JsonElement CsEditArgs(string name, object? files = null, string? description = null, string? body = null, string? rationale = "Improve it", object? removes = null) =>
+        J(new Dictionary<string, object?> { ["name"] = name, ["rationale"] = rationale, ["description"] = description, ["body"] = body, ["files"] = files, ["removeFiles"] = removes });
+    var csApprovedArgs = CsEditArgs("owner-made", new[] { new { path = "scripts/run.sh", content = "echo two\n" } }, "A better description.", "# Owner made\n\nNew body.\n", removes: new[] { "scripts/old.sh" });
+    csStore.EditDiff(SkillStore.ParseEdit(csApprovedArgs), csKey);
+    // What runs is what was approved, whatever arguments the tool is called with.
+    var csEdited = await CsJson("edit_skill", owner, new()
+    {
+        ["name"] = "owner-made", ["rationale"] = "Something else", ["description"] = "NOT WHAT WAS APPROVED", ["body"] = "# Other\n",
+        ["files"] = J(new[] { new { path = "scripts/run.sh", content = "echo evil\n" } }),
+    });
+    var csAfter = (await csStore.FindAsync("owner-made", default))!;
+    Check((string)csEdited["status"]! == "enabled" && csAfter is { Enabled: true, Description: "A better description.", Author: "owner" } && csAfter.Hash != csBefore
+        && AssistantSkills.Grant("owner-made", csAfter.Hash) != csGrantBefore && csStore.ReadFile("owner-made", "scripts/run.sh").Content == "echo two\n"
+        && !File.Exists(Path.Combine(csStore.Root, "owner-made", "scripts", "old.sh")) && csStore.ReadFile("owner-made", "references/big.md").Content == csBig
+        && SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "owner-made", "SKILL.md")))!.Metadata()["lucia.last-edit"]?.ToString() == "assistant",
+        "An approved edit keeps the skill enabled, changes its hash (so earlier 'always allow' grants stop applying), records lucia.last-edit: assistant, and writes the approved plan, not the call's arguments.");
+    await Reject(() => CsCall("edit_skill", owner, new() { ["name"] = "owner-made" }), 400, "tool_error", "An approval is used once: a second call with no new approval doesn't run.");
+    csStore.EditDiff(SkillStore.ParseEdit(CsEditArgs("second-draft", new[] { new { path = "scripts/check.sh", content = "eval \"$LUCIA_SKILL_ARGS\"\n" } }, rationale: "Fix it")), csKey);
+    var csDraftEdit = await CsJson("edit_skill", owner, new() { ["name"] = "second-draft", ["rationale"] = "Fix it" });
+    var csDraftAfter = (await csStore.FindAsync("second-draft", default))!;
+    Check((string)csDraftEdit["status"]! == "disabled" && csDraftAfter is { Enabled: false, Author: "assistant", NeedsReview: true } && csDraftAfter.Warnings.Any(w => w.Contains("run text it is given")),
+        "Editing a draft keeps it disabled and refreshes its review warnings.");
+    Check(csStore.DraftLocked("second-draft") && SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "second-draft", "SKILL.md")))!.Metadata()["lucia.last-edit"]?.ToString() == "owner",
+        "edit_skill doesn't unlock a draft the owner already edited: lucia.last-edit stays owner.");
+    await CsCall("draft_skill", owner, CsDraft("fourth-draft"));
+    csStore.EditDiff(SkillStore.ParseEdit(CsEditArgs("fourth-draft", rationale: "Tidy", description: "Tidied.")), csKey);
+    await CsCall("edit_skill", owner, new() { ["name"] = "fourth-draft", ["rationale"] = "Tidy" });
+    Check(!csStore.DraftLocked("fourth-draft") && SkillMarkdown.Parse(File.ReadAllText(Path.Combine(csStore.Root, "fourth-draft", "SKILL.md")))!.Metadata()["lucia.last-edit"]?.ToString() == "assistant",
+        "An untouched draft stays open to the assistant after an approved edit.");
+
+    // The approved edit is bound to the version the owner saw, and the arguments are read once, exactly.
+    await Reject(() => csStore.EditApprovedAsync("nobody|nothing", default), 409, "edit_not_approved", "An edit nobody approved doesn't run.");
+    csStore.EditDiff(SkillStore.ParseEdit(CsEditArgs("owner-made", description: "Late.")), "k1");
+    await csStore.WriteFileAsync("owner-made", "references/changed-meanwhile.md", "x", default);
+    await Reject(() => csStore.EditApprovedAsync("k1", default), 409, "skill_changed", "A skill that changed after approval isn't edited.");
+    await Reject(() => csStore.EditApprovedAsync("k1", default), 409, "edit_not_approved", "A refused approval is spent too.");
+    csStore.EditDiff(SkillStore.ParseEdit(CsEditArgs("owner-made", description: "On time.")), "k2");
+    Check((await csStore.EditApprovedAsync("k2", default)).Name == "owner-made" && (await csStore.FindAsync("owner-made", default))!.Description == "On time.", "An unchanged skill takes its approved edit.");
+    await Reject(() => csStore.EditApprovedAsync("k2", default), 409, "edit_not_approved", "An approval runs once.");
+    await csStore.DeleteFileAsync("owner-made", "references/changed-meanwhile.md", default);
+    foreach (var raw in new[] { """{"name":"a","name":"b","rationale":"r"}""", """{"Name":"a","rationale":"r"}""", """{"name":"a","rationale":"r","update":true}""",
+        """{"name":5,"rationale":"r"}""", """{"name":"a","rationale":"r","files":[{"path":"scripts/a.sh","path":"scripts/b.sh","content":"x"}]}""",
+        """{"name":"a","rationale":"r","files":[{"Path":"scripts/a.sh","content":"x"}]}""", """[1]""" })
+        await Reject(() => Task.FromResult(SkillStore.ParseEdit(JsonDocument.Parse(raw).RootElement)), 400, "invalid_skill", $"edit_skill arguments {raw} are refused.");
+    Check(SkillStore.ParseEdit(JsonDocument.Parse("""{"name":"a","rationale":"r","description":null,"files":[{"path":"scripts/a.sh","content":"x"}],"removeFiles":["scripts/b.sh"]}""").RootElement)
+        is { Name: "a", Rationale: "r", Description: null, Files: [{ Path: "scripts/a.sh", Content: "x" }], RemoveFiles: ["scripts/b.sh"] }, "Well-formed edit arguments are read once, exactly.");
+    var csSame = "echo same\n";
+    await csStore.WriteFileAsync("owner-made", "scripts/same.sh", csSame, default);
+    await csStore.WriteFileAsync("owner-made", "references/long.md", new string('q', 40 * 1024) + "a", default);
+    var csSameDiff = csStore.EditDiff(new("owner-made", null, null, null, null, [new("scripts/same.sh", csSame), new("references/long.md", new string('q', 40 * 1024) + "b")], null, "Check"));
+    Check(csSameDiff["files"]!.AsArray().All(file => (string)file!["path"]! != "scripts/same.sh") && csSameDiff["files"]!.AsArray().Any(file => (string)file!["path"]! == "references/long.md" && (bool)file["truncated"]!),
+        "A file is changed when its bytes differ, even if the shown text is cut identically; identical files aren't listed.");
+    await csStore.DeleteFileAsync("owner-made", "scripts/same.sh", default);
+    await csStore.DeleteFileAsync("owner-made", "references/long.md", default);
+
+    // /create-skill: the command, its sources and the turn's context.
+    var csContext = AssistantRuns.CommandContext("create-skill", [csA, csB]);
+    Check(csContext.Contains("Command: create-skill") && csContext.Contains($"Chats: {csA}, {csB}") && csContext.Contains("Load the skill-authoring skill and follow it for these chats.")
+        && AssistantRuns.CommandContext(null, [csA]) == "", "The turn's context block names the command, the chats and the skill to load.");
+    AssistantChatRequest CsAsk(string text, string session, string? command = "create-skill", string[]? sources = null) =>
+        new(session, "m1", text, "execute", "local:ai/qwen3", "/apps", Command: command, Sources: sources);
+    async Task<string> CsSaved(string session)
+    {
+        var transcript = Node(await csRuns.GetAsync(owner, session, default))["messages"]!.AsArray();
+        return (string)transcript[0]!["parts"]![0]!["text"]!;
+    }
+    var (csS1, csS2, csS3) = (Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
+    await (await csRuns.StartAsync(owner, CsAsk("/create-skill focus on immich", csS1, sources: [csA]), "tester via assistant", null, default)).Completion;
+    await (await csRuns.StartAsync(owner, CsAsk("/create-skill", csS2), "tester via assistant", null, default)).Completion;
+    await (await csRuns.StartAsync(owner, CsAsk("only a note", csS3, sources: [csA, csB]), "tester via assistant", null, default)).Completion;
+    Check(await CsSaved(csS1) == "/create-skill focus on immich" && await CsSaved(csS2) == "/create-skill" && await CsSaved(csS3) == "/create-skill only a note",
+        "The saved user message is /create-skill plus the owner's note, with the marker never doubled.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("/create-skill", Guid.NewGuid().ToString("N"), sources: [csX]), "tester via assistant", null, default), 400, "invalid_sources", "Sources must be the owner's own chats.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("/create-skill", Guid.NewGuid().ToString("N"), sources: [.. Enumerable.Range(0, 11).Select(_ => Guid.NewGuid().ToString("N"))]), "tester via assistant", null, default),
+        400, "invalid_sources", "At most ten sources.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("/create-skill", Guid.NewGuid().ToString("N"), sources: ["not-a-chat"]), "tester via assistant", null, default), 400, "invalid_sources", "Sources must be chat ids.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("/create-skill", Guid.NewGuid().ToString("N"), command: "delete-all"), "tester via assistant", null, default), 400, "invalid_request", "Only create-skill is a command.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("Hi", Guid.NewGuid().ToString("N"), command: null, sources: [csA]), "tester via assistant", null, default), 400, "invalid_request", "Sources need a command.");
+    await Reject(() => csRuns.StartAsync(owner, CsAsk("  ", Guid.NewGuid().ToString("N"), command: null), "tester via assistant", null, default), 400, "invalid_message", "A message with no command still needs text.");
+
+    // DI: the new services are registered, with everything their constructors need.
+    var csBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+    csBuilder.AddAssistant();
+    csBuilder.Services.AddSkills();
+    var csRegistered = csBuilder.Services.Select(service => service.ServiceType).ToHashSet();
+    var csMissing = new[] { typeof(AssistantChatLog), typeof(SkillAuthoring) }.SelectMany(type => type.GetConstructors().SelectMany(ctor => ctor.GetParameters()))
+        .Where(parameter => !parameter.HasDefaultValue && parameter.ParameterType.Namespace?.StartsWith("Lucia") == true && !csRegistered.Contains(parameter.ParameterType)).ToArray();
+    Check(csRegistered.Contains(typeof(AssistantChatLog)) && csRegistered.Contains(typeof(SkillAuthoring)) && csMissing.Length == 0, "AddAssistant registers the chat log and the skill-authoring tools with their dependencies.");
     Console.WriteLine($"Assistant checks passed ({checks} assertions). No Copilot runtime, GitHub token or network used.");
 }
 finally

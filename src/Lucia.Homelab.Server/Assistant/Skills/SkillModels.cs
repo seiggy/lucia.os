@@ -34,7 +34,34 @@ public sealed record SkillSettings(string Execution, string Tier, string[] Allow
 }
 
 public sealed record SkillSummary(string Name, string Description, string Execution, string Tier, bool Enabled, string Hash, DateTimeOffset Updated,
-    string? Source, int Scripts, string? Problem, bool BuiltIn = false);
+    string? Source, int Scripts, string? Problem, bool BuiltIn = false, string Author = SkillAuthors.Owner, bool NeedsReview = false,
+    string? Rationale = null, string[]? SourceChats = null, string[]? Warnings = null)
+{
+    public string[] SourceChats { get; init; } = SourceChats ?? [];
+    public string[] Warnings { get; init; } = Warnings ?? [];
+}
+
+/// <summary>Who wrote a skill: the owner, the assistant (a draft for the owner to review) or Lucia (built in), and the metadata keys that record it.</summary>
+public static class SkillAuthors
+{
+    public const string Owner = "owner", Assistant = "assistant", Lucia = "lucia";
+    public const string AuthorKey = "lucia.author", SourceChatsKey = "lucia.source-chats", RationaleKey = "lucia.rationale",
+        WarningsKey = "lucia.review-warnings", LastEditKey = "lucia.last-edit";
+}
+
+/// <param name="Update">Replace the assistant's own disabled draft of that name instead of refusing a name that is taken.</param>
+public sealed record SkillDraftRequest(string? Name, string? Description, string? Execution, string? Tier, string? Body, SkillDraftFile[]? Files,
+    string[]? SourceChats, string? Rationale, bool Update = false);
+
+public sealed record SkillDraftFile(string? Path, string? Content);
+
+public sealed record SkillDraftResult(string Name, string Status, string Hash, string[] Warnings, string Review, bool Updated);
+
+/// <summary>An edit to an existing skill; anything left out stays as it is. <paramref name="RemoveFiles"/> deletes files from the skill.</summary>
+public sealed record SkillEditRequest(string? Name, string? Description, string? Execution, string? Tier, string? Body, SkillDraftFile[]? Files,
+    string[]? RemoveFiles, string? Rationale);
+
+public sealed record SkillEditResult(string Name, bool Enabled, string Hash, string[] Warnings, string[] Files);
 
 public sealed record SkillFile(string Path, string Kind, long Size, string? Language, bool Editable);
 
@@ -46,7 +73,20 @@ public sealed record SkillDetail(string Name, string Description, string Executi
 {
     public SkillDetail(SkillSummary summary, string[] allowedDomains, string? license, string? compatibility, string body, SkillFile[] files)
         : this(summary.Name, summary.Description, summary.Execution, summary.Tier, summary.Enabled, summary.Hash, summary.Updated, summary.Source,
-            summary.Scripts, summary.Problem, allowedDomains, license, compatibility, body, files, null, SkillNetwork.None, summary.BuiltIn) { }
+            summary.Scripts, summary.Problem, allowedDomains, license, compatibility, body, files, null, SkillNetwork.None, summary.BuiltIn)
+    {
+        Author = summary.Author;
+        NeedsReview = summary.NeedsReview;
+        Rationale = summary.Rationale;
+        SourceChats = summary.SourceChats;
+        Warnings = summary.Warnings;
+    }
+
+    public string Author { get; init; } = SkillAuthors.Owner;
+    public bool NeedsReview { get; init; }
+    public string? Rationale { get; init; }
+    public string[] SourceChats { get; init; } = [];
+    public string[] Warnings { get; init; } = [];
 }
 
 public sealed record SkillCreateRequest(string? Name, string? Description, string? Execution, string? Tier, string[]? AllowedDomains, string? Body,
@@ -55,7 +95,8 @@ public sealed record SkillCreateRequest(string? Name, string? Description, strin
 public sealed record SkillUpdateRequest(string? Description, string? Execution, string? Tier, string[]? AllowedDomains, string? Body,
     string? Network = null);
 
-public sealed record SkillEnabledRequest(bool Enabled);
+/// <param name="Hash">The hash of the version the owner reviewed. Required to enable an assistant-authored skill.</param>
+public sealed record SkillEnabledRequest(bool Enabled, string? Hash = null);
 
 public sealed record SkillDuplicateRequest(string? Name);
 

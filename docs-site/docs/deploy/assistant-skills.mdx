@@ -39,11 +39,18 @@ The host keeps owner skills under `Assistant__Directory`, in a `skills` folder n
   <name>/scripts/...
   <name>/references/...
   <name>/assets/...
+
+/data/assistant/
+  skill-reviews.json      which chats each owner's assistant has reviewed for skills (up to 2,000 per owner)
 ```
 
-`index.json` holds what isn't part of a skill's package, so back it up with the rest of `/data`. The limits are 200 skills, 200 files per skill, 1 MiB per file, 5 MiB per skill and 256 KiB for each file edited in the web panel.
+`index.json` holds what isn't part of a skill's package, so back it up with the rest of `/data`. `skill-reviews.json` is one file for all owners, keyed by owner and then by chat. It records which chats the skill review has already looked at. The limits are 200 skills, 200 files per skill, 1 MiB per file, 5 MiB per skill and 256 KiB for each file edited in the web panel. Drafts from the assistant take at most 40 files.
 
 Built-in skills ship inside the host and aren't written to this folder. The panel marks them read-only.
+
+### Draft and edit notifications
+
+When the assistant creates a draft, or an owner-approved edit is applied, the host sends a push notification such as "New skill to review: <name>". The send is best effort. If the push fails, the host logs a warning with only the error type, and the draft or edit is still saved. The owner then finds it in the Needs review list on the Skills page.
 
 ## The Spark skill runner
 

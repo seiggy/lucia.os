@@ -2,10 +2,11 @@ import { Component, lazy, Suspense, useCallback, useEffect, useId, useRef, useSt
 import type { FormEvent, ReactNode } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest, responseError } from './managementApi'
+import { isChatId, openAssistantChat } from './assistant'
 import { Icon } from './Icon'
 import {
   copyName, executionLabel, executions, fileGroups, fileName, languageChoices, languageLabel, languageOf, maxDescriptionLength, maxNameLength, parseSkillCheck,
-  parseSkillDetail, parseSkillFile, parseSkillFileContent, parseSkillList, sandboxBlockers, shortHash, sizeText, starterScript, tierLabel, tiers,
+  parseSkillDetail, parseSkillFile, parseSkillFileContent, parseSkillList, sandboxBlockers, shortHash, sizeText, skillFromHash, skillsChangedEvent, splitSkills, starterScript, tierLabel, tiers,
   validateSkillName, validFileName,
 } from './skills'
 import type { SkillDetail, SkillDiagnostic, SkillExecution, SkillFile, SkillFileKind, SkillLanguage, SkillNetwork, SkillSummary, SkillTier } from './skills'
@@ -80,11 +81,21 @@ function DomainInput({ value, onChange, disabled, labelledBy }: { value: string[
 }
 
 export function AssistantSkills({ session, refreshSession }: Props) {
-  const [open, setOpen] = useState<string | null>(null)
+  const [open, setOpen] = useState<string | null>(() => skillFromHash(location.hash))
   const request: Request = useCallback((path, method = 'GET', body, signal) =>
     ownerRequest(session, refreshSession, `/api/assistant/skills${path}`, method, body, signal), [session, refreshSession])
+  // A review link from the chat or a notification adds ?skill=; the address drops it again once the skill closes.
+  useEffect(() => {
+    const linked = () => { const name = skillFromHash(location.hash); if (name) setOpen(name) }
+    window.addEventListener('hashchange', linked)
+    return () => window.removeEventListener('hashchange', linked)
+  }, [])
+  const close = useCallback(() => {
+    setOpen(null)
+    if (location.hash.includes('?')) history.replaceState(history.state, '', location.hash.split('?')[0])
+  }, [])
   if (!session.isOwner) return <div className="page-intro"><h1>Owner access is needed.</h1><p>Only lab owners can manage what the assistant can run.</p></div>
-  return open ? <SkillEditor key={open} name={open} request={request} session={session} refreshSession={refreshSession} onClose={() => setOpen(null)} onOpen={setOpen} />
+  return open ? <SkillEditor key={open} name={open} request={request} session={session} refreshSession={refreshSession} onClose={close} onOpen={setOpen} />
     : <SkillList request={request} session={session} refreshSession={refreshSession} onOpen={setOpen} />
 }
 
@@ -95,11 +106,12 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
   const [notice, setNotice] = useState('')
   const [panel, setPanel] = useState<'create' | 'github' | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [enabling, setEnabling] = useState<{ name: string; scripts: SkillFile[] } | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const [enabling, setEnabling] = useState<{ name: string; hash: string; scripts: SkillFile[] } | null>(null)
   const upload = useRef<HTMLInputElement>(null)
   const load = useCallback(async (signal?: AbortSignal) => {
     const value = parseSkillList(await (await request('', 'GET', undefined, signal)).json())
-    if (!signal?.aborted) { setSkills(value.skills); setKvmNodes(value.kvmNodes) }
+    if (!signal?.aborted) { setSkills(value.skills); setKvmNodes(value.kvmNodes); window.dispatchEvent(new CustomEvent(skillsChangedEvent, { detail: value.needsReview })) }
   }, [request])
   useEffect(() => {
     const controller = new AbortController()
@@ -107,14 +119,20 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
     return () => controller.abort()
   }, [load])
 
-  async function setEnabled(name: string, enabled: boolean) {
+  async function setEnabled(name: string, enabled: boolean, hash?: string) {
     setBusy(name); setError(null); setNotice('')
     try {
-      await request(`/${name}/enabled`, 'POST', { enabled })
+      await request(`/${name}/enabled`, 'POST', hash ? { enabled, hash } : { enabled })
       await load()
       setEnabling(null)
       setNotice(enabled ? `${name} is on. The assistant sees it from your next message.` : `${name} is off.`)
-    } catch (failure) { setError(failureText(failure, 'Lucia could not change this skill.')) }
+    } catch (failure) {
+      if ((failure as Failure).code === 'skill_changed') {
+        setEnabling(null)
+        setError('This draft changed since you opened it. Review it again.')
+        await load().catch(() => { /* The list refreshes on the next visit. */ })
+      } else setError(failureText(failure, 'Lucia could not change this skill.'))
+    }
     finally { setBusy(null) }
   }
   async function toggle(skill: SkillSummary) {
@@ -123,7 +141,7 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
     setBusy(skill.name); setError(null); setNotice('')
     try {
       const detail = parseSkillDetail(await (await request(`/${skill.name}`)).json())
-      setEnabling({ name: skill.name, scripts: detail.files.filter(file => file.kind === 'script') })
+      setEnabling({ name: skill.name, hash: detail.hash, scripts: detail.files.filter(file => file.kind === 'script') })
     } catch (failure) { setError(failureText(failure, 'Lucia could not read this skill.')) }
     finally { setBusy(null) }
   }
@@ -142,6 +160,25 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
     finally { setBusy(null); if (upload.current) upload.current.value = '' }
   }
 
+  async function removeDraft(name: string) {
+    setBusy(name); setError(null); setNotice('')
+    try {
+      await request(`/${name}`, 'DELETE')
+      await load()
+      setRemoving(null)
+      setNotice(`${name} is deleted.`)
+    } catch (failure) { setError(failureText(failure, 'Lucia could not delete this skill.')) }
+    finally { setBusy(null) }
+  }
+  const { review, rest } = splitSkills(skills ?? [])
+  const confirmEnable = (skill: SkillSummary) => enabling?.name === skill.name && <div className="job-confirm skills-confirm" role="group" aria-label={`Turn on ${skill.name}`}>
+    <p>{enabling.scripts.length ? <>Once on, the assistant can run {enabling.scripts.length === 1 ? 'this script' : `these ${enabling.scripts.length} scripts`}, with the approvals you set:</>
+      : 'This skill has no scripts, only instructions.'}</p>
+    {enabling.scripts.length > 0 && <ul className="skills-script-list">{enabling.scripts.map(file => <li key={file.path}><code>{file.path}</code></li>)}</ul>}
+    <button className="button secondary" disabled={busy === skill.name} onClick={() => void setEnabled(skill.name, true, enabling.hash)}>Turn on</button>
+    <button className="text-link" autoFocus onClick={() => setEnabling(null)}>Cancel</button>
+  </div>
+
   return <>
     <div className="page-intro network-overview-header job-header">
       <div><h1>Assistant skills</h1><p>A skill is a folder of instructions and scripts the assistant can load when it needs them. Skills start off; turn one on to let the assistant use it.</p></div>
@@ -157,15 +194,44 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
     <p className="network-notice" role="status">{skills ? notice : 'Reading your skills…'}</p>
     {panel === 'create' && <CreateSkill request={request} kvmNodes={kvmNodes} onDone={name => { setPanel(null); if (name) onOpen(name) }} />}
     {panel === 'github' && <ImportGitHub request={request} onDone={name => { setPanel(null); if (name) onOpen(name) }} />}
-    {skills && !skills.some(skill => !skill.builtIn) && <section className="surface network-section">
+    {review.length > 0 && <section className="surface network-section skills-review" aria-labelledby="skills-review-heading">
+      <h2 id="skills-review-heading">Needs review <span className="skills-count">{review.length}</span></h2>
+      <p className="section-note skills-tight">The assistant drafted {review.length === 1 ? 'this skill' : 'these skills'} from your chats. {review.length === 1 ? 'It stays' : 'They stay'} off until you read and turn {review.length === 1 ? 'it' : 'them'} on.</p>
+      <ul className="skills-review-list">{review.map(skill => <li key={skill.name} className="skills-draft">
+        <div className="skills-draft-head">
+          <button className="text-link skills-name" onClick={() => onOpen(skill.name)}>{skill.name}</button>
+          <ExecutionPill value={skill.execution} /><span className="network-cell-note">{tierLabel(skill.tier)} · {skill.scripts} {skill.scripts === 1 ? 'script' : 'scripts'}</span>
+        </div>
+        <p>{skill.description || 'No description yet.'}</p>
+        {skill.rationale && <p className="skills-draft-why"><strong>Why: </strong>{skill.rationale}</p>}
+        {skill.sourceChats.length > 0 && <p className="skills-draft-sources"><span>From {skill.sourceChats.length === 1 ? 'this chat' : 'these chats'}:</span>
+          {skill.sourceChats.map((chat, index) => isChatId(chat)
+            ? <button key={chat} className="text-link" onClick={() => openAssistantChat(chat)}>Chat {index + 1}<Hidden>{`for ${skill.name}`}</Hidden></button> : null)}</p>}
+        {skill.warnings.length > 0 && <div className="network-warning" role="note"><strong>Look at these before turning it on:</strong>
+          <ul>{skill.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></div>}
+        {skill.problem && <span className="skills-problem" role="note"><Icon name="attention" />{skill.problem}</span>}
+        <div className="network-actions">
+          <button className="button primary" disabled={busy === skill.name || !!skill.problem} onClick={() => void toggle(skill)}>Enable<Hidden>{skill.name}</Hidden></button>
+          <button className="button secondary" disabled={busy === skill.name} onClick={() => onOpen(skill.name)}>Open<Hidden>{skill.name}</Hidden></button>
+          <button className="text-link" aria-expanded={removing === skill.name} onClick={() => setRemoving(removing === skill.name ? null : skill.name)}>Delete<Hidden>{skill.name}</Hidden></button>
+        </div>
+        {confirmEnable(skill)}
+        {removing === skill.name && <div className="job-confirm skills-confirm" role="group" aria-label={`Delete ${skill.name}`}>
+          <p>Delete this draft and its files? This can’t be undone.</p>
+          <button className="button secondary" disabled={busy === skill.name} onClick={() => void removeDraft(skill.name)}>Delete draft</button>
+          <button className="text-link" autoFocus onClick={() => setRemoving(null)}>Cancel</button>
+        </div>}
+      </li>)}</ul>
+    </section>}
+    {skills && !skills.some(skill => !skill.builtIn && !skill.needsReview) && <section className="surface network-section">
       <h2>No skills of your own yet</h2>
       <p>A skill could explain how to check ZFS pool health on your servers, with a script that does the checking. Create one, upload a package, or import a folder from GitHub. Built-in skills are listed below, and you can duplicate one to start from it.</p>
     </section>}
-    {skills && skills.length > 0 && <section className="surface network-section">
+    {rest.length > 0 && <section className="surface network-section">
       <table className="network-table skills-table">
         <caption className="network-table-caption">Skills</caption>
         <thead><tr><th scope="col">Skill</th><th scope="col">Runs</th><th scope="col">Version</th><th scope="col">On</th></tr></thead>
-        <tbody>{skills.map(skill => <tr key={skill.name}>
+        <tbody>{rest.map(skill => <tr key={skill.name}>
           <th scope="row">
             <button className="text-link skills-name" onClick={() => onOpen(skill.name)}>{skill.name}</button>
             {skill.builtIn && <> <span className="skills-pill skills-pill-builtin">Built in</span></>}
@@ -177,13 +243,7 @@ function SkillList({ request, session, refreshSession, onOpen }: Props & { reque
           <td data-label="On">
             {skill.builtIn ? <span className="status status-green"><Icon name="check" />Always on<Hidden>{skill.name}</Hidden></span> : <label className="skills-switch"><input type="checkbox" role="switch" checked={skill.enabled} disabled={busy === skill.name || (!skill.enabled && !!skill.problem)}
               onChange={() => void toggle(skill)} /><span>{skill.enabled ? 'On' : 'Off'}<Hidden>{skill.name}</Hidden></span></label>}
-            {enabling?.name === skill.name && <div className="job-confirm skills-confirm" role="group" aria-label={`Turn on ${skill.name}`}>
-              <p>{enabling.scripts.length ? <>Once on, the assistant can run {enabling.scripts.length === 1 ? 'this script' : `these ${enabling.scripts.length} scripts`}, with the approvals you set:</>
-                : 'This skill has no scripts, only instructions.'}</p>
-              {enabling.scripts.length > 0 && <ul className="skills-script-list">{enabling.scripts.map(file => <li key={file.path}><code>{file.path}</code></li>)}</ul>}
-              <button className="button secondary" disabled={busy === skill.name} onClick={() => void setEnabled(skill.name, true)}>Turn on</button>
-              <button className="text-link" autoFocus onClick={() => setEnabling(null)}>Cancel</button>
-            </div>}
+            {confirmEnable(skill)}
           </td>
         </tr>)}</tbody>
       </table>
@@ -452,7 +512,7 @@ function SkillEditor({ name, request, refreshSession, onClose, onOpen }: Props &
 
   async function deleteSkill() {
     setBusy(true); setError(null)
-    try { await request(`/${name}`, 'DELETE'); onClose() }
+    try { await request(`/${name}`, 'DELETE'); window.dispatchEvent(new CustomEvent(skillsChangedEvent)); onClose() }
     catch (failure) { setError(failureText(failure, 'Lucia could not delete this skill.')); setBusy(false) }
   }
 
@@ -477,10 +537,14 @@ function SkillEditor({ name, request, refreshSession, onClose, onOpen }: Props &
           : <span className={`status status-${detail.enabled ? 'green' : 'muted'}`}><Icon name={detail.enabled ? 'check' : 'clock'} />{detail.enabled ? 'On' : 'Off'}</span>}
           {' · '}<ExecutionPill value={detail.execution} />{' · '}version <code className="skills-hash" title={detail.hash}>{shortHash(detail.hash)}</code></p>
         {builtIn && <p className="ssh-key-hint">Built-in skills ship with Lucia, are always on, and can’t be changed. Duplicate one to make your own version.</p>}
+        {detail.author === 'assistant' && <p className="ssh-key-hint">Drafted by the assistant{detail.needsReview ? '. It stays off until you review it and turn it on from the skills list.' : '.'}</p>}
+        {detail.needsReview && detail.rationale && <p className="ssh-key-hint"><strong>Why: </strong>{detail.rationale}</p>}
         {detail.enabled && detail.nodes.length > 0 && <p className="ssh-key-hint">Downloaded to {detail.nodes.filter(item => item.synced).length} of {detail.nodes.length} servers: {detail.nodes.map(item => `${item.node} (${item.synced ? 'ready' : 'waiting'})`).join(', ')}.</p>}
       </div>
     </div>
     {detail.problem && <p className="network-warning" role="note"><strong>The assistant can’t use this skill yet.</strong> {detail.problem}</p>}
+    {detail.needsReview && detail.warnings.length > 0 && <div className="network-warning" role="note"><strong>Look at these before turning it on:</strong>
+      <ul>{detail.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></div>}
     {error && <p className="network-error" role="alert">{error}</p>}
     <p className="network-notice" role="status">{notice}</p>
 

@@ -10,7 +10,12 @@ import './PortalNavigation.css'
 
 const areaIcons: Record<AreaId, IconName> = { overview: 'home', lab: 'devices', ai: 'spark', settings: 'settings' }
 
-export function PortalNavigation({ route, session, assistant }: { route: Route; session: AuthenticationSession; assistant?: { open: boolean; toggle: () => void; waiting: number } }) {
+// A small count beside a destination, such as the skills waiting for review.
+function Badge({ count, what }: { count?: number; what: string }) {
+  return count ? <><span className="nav-badge" aria-hidden="true">{count}</span><span className="visually-hidden"> ({count} {what})</span></> : null
+}
+
+export function PortalNavigation({ route, session, assistant, skillsToReview = 0 }: { route: Route; session: AuthenticationSession; assistant?: { open: boolean; toggle: () => void; waiting: number }; skillsToReview?: number }) {
   const [panel, setPanel] = useState<'areas' | 'search' | 'account' | null>(null)
   const [query, setQuery] = useState('')
   const dialog = useRef<HTMLDialogElement>(null)
@@ -92,7 +97,7 @@ export function PortalNavigation({ route, session, assistant }: { route: Route; 
         <span>{area.label}</span><Icon name="chevron" /><strong>{current?.label ?? 'Page not found'}</strong>
       </nav>
       <nav className="workspace-navigation" aria-label={`${area.label} navigation`}>
-        {siblings.map(item => <a key={item.page} href={item.href} aria-current={route.page === item.page ? 'page' : undefined}>{item.label}</a>)}
+        {siblings.map(item => <a key={item.page} href={item.href} aria-current={route.page === item.page ? 'page' : undefined}>{item.label}{item.page === 'assistant-skills' && <Badge count={skillsToReview} what="to review" />}</a>)}
       </nav>
     </div>
     <dialog className={`portal-dialog ${panel === 'account' ? 'portal-account-dialog' : ''}`} ref={dialog}
@@ -125,7 +130,7 @@ export function PortalNavigation({ route, session, assistant }: { route: Route; 
           return <section className="workspace-directory-section" key={area.id}>
             <div className="workspace-directory-heading"><Icon name={areaIcons[area.id]} /><div><h3>{area.label}</h3><p>{area.description}</p></div></div>
             <nav aria-label={`${area.label} tools`}>{tools.map(item => <a key={item.page} href={item.href} onClick={follow}
-              aria-current={route.page === item.page ? 'page' : undefined}>{item.label}<Icon name={route.page === item.page ? 'check' : 'arrow'} /></a>)}</nav>
+              aria-current={route.page === item.page ? 'page' : undefined}>{item.label}{item.page === 'assistant-skills' && <Badge count={skillsToReview} what="to review" />}<Icon name={route.page === item.page ? 'check' : 'arrow'} /></a>)}</nav>
           </section>
         })}</div>
       </>}

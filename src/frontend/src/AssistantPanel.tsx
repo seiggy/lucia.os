@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, ReactNode, RefObject } from 'react'
+import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
 import type { UIMessage } from 'ai'
@@ -17,12 +17,14 @@ import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationTitl
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool'
 import { SelectGroup, SelectLabel } from './components/ui/select'
 import {
-  approvalNote, askEvent, chatKey, chatTitle, chooseModel, chosenEffort, contextKey, currentTier, findModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, lastContext, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, takeAsk,
+  approvalNote, askEvent, chatKey, chatTitle, chooseModel, chosenEffort, commandBody, commandText, contextKey, currentTier, diffRows, draftedSkill, findModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, lastContext, matchCommands, maxCommandSources, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, skillDiffOf, sourceOptions, takeAsk,
   parseChoices, parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, reasoningKey, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
   waitingPart, waitingParts,
 } from './assistant'
-import type { AssistantMetadata, AssistantMode, AssistantModels, AssistantToolPart, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus } from './assistant'
+import type { SkillDiff, SkillDiffFile } from './assistant'
+import type { AssistantMetadata, AssistantMode, AssistantModels, AssistantToolPart, ChatSummary, DockLayout, DockSide, GitHubState, GitHubStatus, SlashCommand } from './assistant'
 import { ContextGauge, ModeButton, ReasoningMenu } from './AssistantTuning'
+import { MultiSelect } from './MultiSelect'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
 import { ownerRequest, responseError } from './managementApi'
@@ -98,6 +100,35 @@ function useAnswer(onAnswer: Answer, onDone: () => void) {
 
 const CardFailure = ({ children }: { children: string }) => <p className="assistant-failed" role="alert"><Icon name="attention" /><span>{children}</span></p>
 
+const changeWords = { added: 'Added', changed: 'Changed', removed: 'Removed' }
+
+function DiffFile({ file, open: initial }: { file: SkillDiffFile; open: boolean }) {
+  const [open, setOpen] = useState(initial)
+  const body = useId()
+  const diff = useMemo(() => open ? diffRows(file.before, file.after) : null, [open, file])
+  return <section className="assistant-diff-file" aria-label={`${file.path}, ${changeWords[file.change].toLowerCase()}`}>
+    <h4><button type="button" aria-expanded={open} aria-controls={body} onClick={() => setOpen(value => !value)}>
+      <Icon name="chevron" /><code>{file.path}</code><span data-change={file.change}>{changeWords[file.change]}</span>
+      {diff && <span className="assistant-diff-count"><span data-change="added">+{diff.added}</span> <span data-change="removed">−{diff.removed}</span></span>}</button></h4>
+    {diff && <div id={body} className="assistant-diff-lines" role="region" aria-label={`Changes to ${file.path}`} tabIndex={0}>
+      {diff.rows.length === 0 ? <p className="assistant-hint">No lines changed.</p> : diff.rows.map((row, index) => row.kind === 'gap'
+        ? <div key={index} className="assistant-diff-gap" aria-hidden="true">⋯</div>
+        : <div key={index} className="assistant-diff-line" data-kind={row.kind}>
+          <span aria-hidden="true">{row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '}</span>
+          <code>{row.text || ' '}</code>
+          {row.kind !== 'same' && <span className="visually-hidden">{row.kind === 'add' ? ' (added)' : ' (removed)'}</span>}</div>)}
+    </div>}
+  </section>
+}
+
+function SkillDiffView({ diff }: { diff: SkillDiff }) {
+  return <div className="assistant-diff">
+    {diff.enabled && <p className="assistant-risk">This skill is enabled, so the change applies as soon as you approve.</p>}
+    {diff.files.length === 0 ? <p className="assistant-hint">No file changes were listed.</p> : diff.files.map((file, index) => <DiffFile key={file.path} file={file} open={index === 0} />)}
+    {diff.truncated && <p className="assistant-hint">The host shortened this list, so more files may change than are shown.</p>}
+  </div>
+}
+
 function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
   const { working, failure, run } = useAnswer(onAnswer, onDone)
   const job = useContext(JobChat)
@@ -114,6 +145,7 @@ function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
   if (part.state !== 'approval-requested') return null
   const path = `approvals/${encodeURIComponent(part.approval.id)}`
   const grant = grantText(part, job)
+  const skillDiff = skillDiffOf(part)
   const risky = job && isDestructiveTool(part.toolName)
   function decline(event: FormEvent) {
     event.preventDefault()
@@ -121,7 +153,7 @@ function ApprovalCard({ part, title, onAnswer, onDone }: CardProps) {
   }
   return <Confirmation className="assistant-card" approval={part.approval} state={part.state} aria-label={`Approve: ${title}`}>
     <ConfirmationTitle>{part.approval.requestReason || 'This changes your lab.'}</ConfirmationTitle>
-    <ToolInput input={part.input} />
+    {skillDiff ? <SkillDiffView diff={skillDiff} /> : <ToolInput input={part.input} />}
     {declining ? <form ref={form} className="assistant-card-form" onSubmit={decline}>
       <label className="assistant-field">Tell the assistant why (optional)
         <textarea value={reason} rows={2} maxLength={500} autoFocus onChange={event => setReason(event.target.value)} /></label>
@@ -200,8 +232,23 @@ function SecretCard({ part, onAnswer, onDone }: CardProps) {
   </form>
 }
 
+function DraftedSkillCard({ skill }: { skill: NonNullable<ReturnType<typeof draftedSkill>> }) {
+  return <div className="assistant-tool assistant-drafted" role="group" aria-label={`Drafted skill ${skill.name}`}>
+    <Icon name="check" />
+    <div>
+      <p><strong>Drafted skill {skill.name}</strong></p>
+      {skill.description && <p className="assistant-drafted-note">{skill.description}</p>}
+      <p className="assistant-drafted-note" data-tone={skill.warnings ? 'warning' : undefined}>
+        {skill.warnings ? `${skill.warnings} ${skill.warnings === 1 ? 'warning' : 'warnings'} to look at. ` : ''}It’s off until you review and turn it on.</p>
+    </div>
+    <a className="text-link" href={skill.href}>Review</a>
+  </div>
+}
+
 function ToolCall({ part, live, onAnswer }: { part: AssistantToolPart; live: boolean; onAnswer: Answer }) {
   const header = useRef<HTMLButtonElement>(null)
+  const drafted = draftedSkill(part)
+  if (drafted) return <DraftedSkillCard skill={drafted} />
   const title = toolTitle(part.toolName, part.input)
   const { word, tone } = toolStatus(part, live)
   const note = toolNote(part)
@@ -538,19 +585,22 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
   }, [waiting, onWaiting])
   useEffect(() => () => onWaiting(0), [onWaiting])
   const card = findModel(models, model)
-  const request = () => ({
+  const request = (extra?: object) => ({
     body: {
       mode, model: model === signInModel ? undefined : model, route: pageRoute(location.hash),
       reasoning: chosenEffort(card, reasoning),
       // The first window is the standard one, which needs no request.
       contextTier: card?.tiers && currentTier(card, tier)?.id !== card.tiers[0].id ? currentTier(card, tier)?.id : undefined,
+      ...extra,
     },
     headers: { 'X-CSRF-TOKEN': auth.current.session.csrfToken ?? '' },
   })
-  function send(text: string) {
+  const lastCommand = useRef<object>(undefined)
+  function send(text: string, extra?: object) {
     if (!messages.length) onStarted(text)
     setSent(true)
-    void sendMessage({ text }, request())
+    lastCommand.current = extra
+    void sendMessage({ text }, request(extra))
   }
   const asked = useRef(false)
   useEffect(() => {
@@ -558,14 +608,70 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     asked.current = true
     send(prompt)
   })
+
+  // Typing "/" first offers the commands; picking one leaves a chip above the composer instead of text.
+  const [command, setCommand] = useState<{ command: SlashCommand; source: 'this' | 'choose'; chosen: string[] } | null>(null)
+  const [slashActive, setSlashActive] = useState(0)
+  const [slashClosed, setSlashClosed] = useState<string | null>(null)
+  const [chats, setChats] = useState<ChatSummary[] | null>(null)
+  const [chatsError, setChatsError] = useState<string | null>(null)
+  const menuId = useId()
+  const sourceLabel = useId()
+  const draftText = draft.textInput.value
+  const commands = command ? [] : matchCommands(draftText)
+  const menuOpen = commands.length > 0 && slashClosed !== draftText
+  const activeCommand = Math.min(slashActive, Math.max(commands.length - 1, 0))
+  const hasSaved = messages.length > 0
+  const source = command && (hasSaved ? command.source : 'choose')
+  const commandReady = !!command && (source === 'this' || command.chosen.length > 0)
+  const choosing = source === 'choose'
+  useEffect(() => {
+    if (!choosing || chats) return
+    const controller = new AbortController()
+    ownerRequest(auth.current.session, auth.current.refreshSession, '/api/assistant/sessions', 'GET', undefined, controller.signal)
+      .then(response => response.json())
+      .then(value => { if (!controller.signal.aborted) setChats(parseSessions(value)) })
+      .catch(failure => { if (!controller.signal.aborted) setChatsError(failureMessage(failure, 'Lucia could not list your chats.')) })
+    return () => controller.abort()
+  }, [auth, choosing, chats])
+  function pickCommand(chosen: SlashCommand) {
+    draft.textInput.setInput('')
+    setCommand({ command: chosen, source: 'this', chosen: [] })
+    input.current?.focus()
+  }
+  function slashKeys(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (menuOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSlashActive((activeCommand + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length)
+      } else if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault()
+        pickCommand(commands[activeCommand])
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        setSlashClosed(draftText)
+      }
+      return
+    }
+    if (command && event.key === 'Backspace' && !draftText) {
+      event.preventDefault()
+      setCommand(null)
+    } else if (event.key === 'Enter' && !event.shiftKey && busy) event.preventDefault()
+  }
   function submit({ text }: PromptInputMessage) {
     // Throwing keeps the draft in the composer.
+    if (command) {
+      if (!canAsk || !commandReady) throw new Error('This command cannot be sent yet.')
+      send(commandText(command.command.id, text), commandBody(command.command.id, id, source === 'choose' ? command.chosen : null))
+      setCommand(null)
+      return
+    }
     if (!canAsk || !text.trim()) throw new Error('This message cannot be sent yet.')
     send(text.trimEnd())
   }
   function retry() {
     setSent(true)
-    void regenerate(request())
+    void regenerate(request(last?.role === 'user' && messageText(last).startsWith('/') ? lastCommand.current : undefined))
   }
   function stopAnswer() {
     ownerRequest(auth.current.session, auth.current.refreshSession, `/api/assistant/sessions/${id}/stop`, 'POST').catch(failure => {
@@ -627,10 +733,40 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
     </Conversation>
     <div className="assistant-composer" ref={composer}>
       {models && needsGitHub && <GitHubGate github={github} onFocusInput={focusInput} />}
+      {menuOpen && <ul id={menuId} className="assistant-slash" role="listbox" aria-label="Commands">
+        {commands.map((item, index) => <li key={item.id} id={`${menuId}-${item.id}`} role="option" aria-selected={index === activeCommand}
+          className="assistant-slash-option" onMouseDown={event => event.preventDefault()} onMouseEnter={() => setSlashActive(index)}
+          onClick={() => pickCommand(item)}><strong>{item.name}</strong><span>{item.description}</span></li>)}
+      </ul>}
+      {command && <div className="assistant-command" role="group" aria-label={`${command.command.name} command`}>
+        <div className="assistant-command-head">
+          <span className="assistant-cmd-chip">{command.command.name}
+            <button type="button" aria-label={`Remove ${command.command.name}`} onClick={() => { setCommand(null); input.current?.focus() }}><Icon name="close" /></button></span>
+          <span id={sourceLabel} className="assistant-command-label">Look at</span>
+          <div className="assistant-segments" role="radiogroup" aria-labelledby={sourceLabel}>
+            <label className={source === 'this' ? 'on' : undefined}><input type="radio" name={`${menuId}-source`} checked={source === 'this'} disabled={!hasSaved}
+              onChange={() => setCommand({ ...command, source: 'this' })} />This chat</label>
+            <label className={source === 'choose' ? 'on' : undefined}><input type="radio" name={`${menuId}-source`} checked={source === 'choose'}
+              onChange={() => setCommand({ ...command, source: 'choose' })} />Choose chats…</label>
+          </div>
+        </div>
+        {!hasSaved && <p className="assistant-hint">This chat has no saved messages yet, so choose other chats.</p>}
+        {choosing && <div className="assistant-command-pick">
+          {chatsError ? <p className="assistant-failed" role="alert"><Icon name="attention" /><span>{chatsError}</span></p> : !chats
+            ? <p className="assistant-loading"><Loader2Icon className="animate-spin" />Loading your chats…</p>
+            : <MultiSelect labelledBy={sourceLabel} placeholder={chats.length ? 'Pick chats to look through…' : 'No saved chats yet'} disabled={!chats.length}
+              options={sourceOptions(chats)} selected={command.chosen}
+              onChange={chosen => setCommand({ ...command, chosen: chosen.slice(0, maxCommandSources) })} />}
+          <p className="assistant-hint">{command.chosen.length >= maxCommandSources ? `That’s the most you can pick: ${maxCommandSources} chats.`
+            : `Pick up to ${maxCommandSources}, newest first.`}</p>
+        </div>}
+      </div>}
       <PromptInput onSubmit={submit}>
         <PromptInputBody>
-          <PromptInputTextarea ref={input} aria-label="Message the assistant" placeholder="Ask about this page or your lab…" maxLength={maxMessageLength}
-            onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && busy) event.preventDefault() }} />
+          <PromptInputTextarea ref={input} aria-label="Message the assistant" placeholder={command ? 'Add a note (optional)…' : 'Ask about this page or your lab…'} maxLength={maxMessageLength}
+            role={menuOpen ? 'combobox' : undefined} aria-expanded={menuOpen || undefined} aria-controls={menuOpen ? menuId : undefined}
+            aria-autocomplete={menuOpen ? 'list' : undefined} aria-activedescendant={menuOpen ? `${menuId}-${commands[activeCommand].id}` : undefined}
+            onKeyDown={slashKeys} />
         </PromptInputBody>
         <PromptInputFooter className="assistant-footer">
           <PromptInputTools>
@@ -654,7 +790,7 @@ function ChatView({ id, fresh, hidden, auth, page, github, models, model, onMode
             <ReasoningMenu model={card} saved={reasoning} onChange={onReasoning} />
           </PromptInputTools>
           <PromptInputSubmit className="assistant-send" status={busy ? 'streaming' : undefined} onStop={stopAnswer}
-            disabled={!busy && !(canAsk && draft.textInput.value.trim())} aria-label={busy ? 'Stop answering' : 'Send message'}>
+            disabled={!busy && !(canAsk && (command ? commandReady : draft.textInput.value.trim()))} aria-label={busy ? 'Stop answering' : 'Send message'}>
             <Icon name={busy ? 'stop' : 'send'} />
           </PromptInputSubmit>
         </PromptInputFooter>

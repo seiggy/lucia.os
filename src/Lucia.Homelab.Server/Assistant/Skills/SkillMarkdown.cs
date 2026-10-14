@@ -46,7 +46,8 @@ internal sealed record SkillMarkdown(Dictionary<string, object?> Map, string Bod
     /// Writes a SKILL.md from a copy of <paramref name="previous"/>'s frontmatter: only name, description and the lucia.* metadata keys
     /// change, and every other value (license, version, list-valued allowed-tools, other metadata) passes through as it was parsed.
     /// </summary>
-    public static string Write(string name, string description, SkillSettings settings, string body, SkillMarkdown? previous)
+    public static string Write(string name, string description, SkillSettings settings, string body, SkillMarkdown? previous,
+        IReadOnlyDictionary<string, string?>? extra = null)
     {
         var map = new Dictionary<string, object?>(previous?.Map ?? [], StringComparer.Ordinal) { ["name"] = name, ["description"] = description };
         var metadata = new Dictionary<object, object?>();
@@ -58,6 +59,9 @@ internal sealed record SkillMarkdown(Dictionary<string, object?> Map, string Bod
         else metadata.Remove(SkillSettings.DomainsKey);
         if (settings.Network == SkillNetwork.Bridge) metadata[SkillSettings.NetworkKey] = SkillNetwork.Bridge;
         else metadata.Remove(SkillSettings.NetworkKey);
+        foreach (var (key, value) in extra ?? new Dictionary<string, string?>())
+            if (value is null) metadata.Remove(key);
+            else metadata[key] = value;
         map["metadata"] = metadata;
         return "---\n" + Writer.Serialize(map).ReplaceLineEndings("\n").TrimEnd('\n') + "\n---\n\n" + body.ReplaceLineEndings("\n").TrimStart('\n');
     }

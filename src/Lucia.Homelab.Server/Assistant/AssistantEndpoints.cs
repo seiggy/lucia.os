@@ -30,6 +30,8 @@ public static class AssistantEndpoints
         builder.Services.AddSingleton<AssistantRuntime>();
         builder.Services.AddSingleton<AssistantBroker>();
         builder.Services.AddSkills();
+        builder.Services.AddSingleton<AssistantChatLog>();
+        builder.Services.AddSingleton<SkillAuthoring>();
         builder.Services.AddSingleton<AssistantTools>();
         builder.Services.AddSingleton<AssistantRuns>();
         builder.Services.AddSingleton(services => ActivatorUtilities.CreateInstance<AssistantPush>(services, AssistantPush.CreateClient()));

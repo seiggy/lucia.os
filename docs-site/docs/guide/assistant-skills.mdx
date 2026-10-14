@@ -16,7 +16,7 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 A skill is a folder of instructions, with optional files and scripts, that the assistant reads when a task fits it. Think of it as a runbook. You write the steps once, and the assistant follows them the same way each time.
 
-Lucia ships four built-in skills. You can read them, but not change them. You can duplicate one to make your own version.
+Lucia ships five built-in skills. You can read them, but not change them. You can duplicate one to make your own version.
 
 | Built-in skill | What it covers |
 |---|---|
@@ -24,6 +24,7 @@ Lucia ships four built-in skills. You can read them, but not change them. You ca
 | Container image updates | Checking whether a newer image exists and what changing it involves |
 | Custom app authoring | Writing a custom app for the catalog |
 | OS security patching | Checking for and planning OS security updates |
+| Skill authoring | Turning commands you declined or that timed out into narrow skills for you to review |
 
 ## Find the skills
 
@@ -66,6 +67,37 @@ metadata:
 
 Run scripts/check-pools.sh on the storage server, then summarize any pool that is not ONLINE.
 ```
+
+## Turn declined commands into skills
+
+When the assistant asks to run a command and you decline it, or the answer never comes, that call stays in the chat. The sessions list shows a count for each chat, such as "2 declined · 1 timed out".
+
+To act on those calls, type `/` in the chat box and choose **/create-skill**. A chip appears. Choose **This chat**, or **Choose chats…** to pick up to 10 saved chats, newest first. Add an optional note, then send.
+
+The assistant reads the problem calls and drafts narrow skills. Each draft is saved **disabled**, so nothing runs until you enable it. When it drafts one, the chat shows a card with the skill's name and any warnings, and a link to review it.
+
+### Review a draft
+
+The Skills page has a **Needs review** section above the list. The Skills item in the menu shows how many drafts wait. Each draft shows the assistant's reason, links to the chats it came from, and any warnings.
+
+- **Open** shows the full skill, so you can read the script before you decide.
+- **Enable** turns the draft on. Lucia checks that the draft is the exact version you are looking at. If the assistant changed it since you opened the page, Enable fails with a message, and you need to review it again.
+- **Delete** removes the draft.
+
+Warnings come from a set of quick checks. They flag a command passed straight to the shell, a read-only script that seems to change something, arguments that are used without checking, and network calls. A warning is a prompt to look closer, not a verdict.
+
+Once you enable a draft, or edit it yourself, the assistant can no longer change it.
+
+{/* TODO screenshot: the Needs review section with one draft and its warnings. */}
+
+## Approve a change to a skill
+
+The assistant can change a skill you own, or a draft it wrote, through an edit. It never applies an edit on its own. The chat shows a diff for each changed file, and nothing is written until you approve it.
+
+- Each edit needs its own approval. There is no "always allow" for edits.
+- The assistant doesn't propose edits in Plan mode or in scheduled jobs.
+- Built-in skills can't be edited. Duplicate one instead.
+- An approval lasts 2 hours. If the skill changed while you were deciding, the edit is refused and the assistant has to ask again.
 
 ## Where a script runs
 
@@ -115,5 +147,8 @@ When you add or change a skill during a chat, say so in your message, for exampl
 | A server says it can't run sandboxed skills | That server has no KVM. Use a different server or put the script on a server or the Spark. |
 | "That skill no longer exists" | The skill was deleted or turned off during the chat. Turn it back on, or ask again. |
 | A script asks again after you edited it | The skill's version changed, so earlier "always allow" choices no longer apply. Review the change and approve again. |
+| Enable says the draft changed | The assistant updated the draft after you opened it. Open it again and review the new version. |
+| "The skill changed after you approved; ask again." | The edit was refused because the skill changed after the approval card appeared. Ask the assistant to make the change again. |
+| An edit to a built-in skill is refused | Built-in skills can't be edited. Duplicate the skill and edit the copy. |
 
 For the rest of the assistant, see [Assistant](./assistant.mdx).

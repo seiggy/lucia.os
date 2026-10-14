@@ -8,6 +8,7 @@ import { ModelManager } from './ModelManager'
 import { AuthenticationPanel } from './AccountAccess'
 import { PortalNavigation } from './PortalNavigation'
 import { AssistantDock } from './AssistantDock'
+import { useSkillsToReview } from './useSkillsToReview'
 import { askEvent, openAssistantChat, openChatEvent, parseDock } from './assistant'
 import type { DockState } from './assistant'
 import { AdGuardSettings } from './AdGuardSettings'
@@ -133,6 +134,7 @@ function App() {
   const [playgroundVisited, setPlaygroundVisited] = useState(false)
   const [dock, setDock] = useState(loadDock)
   const [assistantWaiting, setAssistantWaiting] = useState(0)
+  const skillsToReview = useSkillsToReview(authentication.session, authentication.refresh)
   const main = useRef<HTMLElement>(null)
   const firstRoute = useRef(true)
   const scheme = preferences.appearance === 'system' ? (systemDark ? 'dark' : 'light') : preferences.appearance
@@ -251,7 +253,7 @@ function App() {
   return <div className="app-shell portal-workspace">
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
     {!session.enabled && <div className="development-note"><strong>Development mode</strong><span>Browser sign-in is disabled on this development host.</span></div>}
-    <PortalNavigation route={route} session={session} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock, waiting: assistantWaiting } : undefined} />
+    <PortalNavigation route={route} session={session} skillsToReview={skillsToReview} assistant={assistantAvailable ? { open: dock.open, toggle: toggleDock, waiting: assistantWaiting } : undefined} />
     {storageNotice && <div className="storage-notice" role="alert"><Icon name="attention" /><p>{storageNotice}</p><button className="icon-button" aria-label="Dismiss appearance notice" onClick={() => setStorageNotice(null)}><Icon name="close" /></button></div>}
     {assistantAvailable && <NotificationPrompt session={session} refreshSession={authentication.refresh} />}
     <main id="main-content" ref={main} tabIndex={-1}>
