@@ -94,6 +94,13 @@ internal static class StackChecks
             && open["http"]!["routers"]!["app-obs-grafana"]!["entryPoints"]!.AsArray().Count == 1
             && System.Text.Json.Nodes.JsonNode.Parse(AppGateway.Build(publicRoutes, "homelab.example.com")!)!["http"]!["routers"]!["app-immich-photos-public"] is null,
             "Only routes with a public name, and only while public access is on, may answer on the public entrypoint.");
+        var openHeaders = open["http"]!["middlewares"]!["app-immich-photos-public-forwarded"]!["headers"]!["customRequestHeaders"]!;
+        check(open["http"]!["routers"]!["app-immich-photos-public"]!["middlewares"]![0]!.GetValue<string>() == "app-immich-photos-public-forwarded"
+            && openHeaders["X-Forwarded-Host"]!.GetValue<string>() == "images.example.com" && openHeaders["X-Forwarded-Port"]!.GetValue<string>() == "443"
+            && new[] { "Forwarded", "X-Real-Ip", "X-Forwarded-Server", "X-Forwarded-Prefix", "X-Forwarded-Uri" }.All(name => openHeaders[name]!.GetValue<string>() == "")
+            && openHeaders["X-Forwarded-For"] is null && openHeaders["X-Forwarded-Proto"] is null
+            && open["http"]!["routers"]!["app-obs-grafana"]!["middlewares"] is null && gateway["http"]!["middlewares"] is null,
+            "A public route keeps Cloudflare's X-Forwarded-For and -Proto, drops the visitor's other proxy headers and pins its real host and port.");
         var publicNaming = Lucia.Homelab.Server.Domains.DomainNames.WithPublic(
             Lucia.Homelab.Server.Domains.DomainNames.Plan(new("example.com", "homelab", "atlas"), "example.com"), true);
         var publicDns = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(publicNaming, [], "192.168.0.222", publicRoutes, "example.com");

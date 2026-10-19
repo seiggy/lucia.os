@@ -192,6 +192,7 @@ public static class AppGateway
     {
         var routers = new Dictionary<string, object>();
         var services = new Dictionary<string, object>();
+        var middlewares = new Dictionary<string, object>();
         foreach (var (stack, route, address) in routes.OrderBy(item => item.Route.Host, StringComparer.Ordinal))
         {
             var id = $"app-{stack}-{route.Host}";
@@ -199,8 +200,12 @@ public static class AppGateway
             routers[id] = new { entryPoints = new[] { "host" }, rule, service = id, tls = new { } };
             services[id] = Service($"http://{address}:{route.Port}");
             if (zone is not null && route.Public is { } name)
+            {
+                var forwarded = DomainIngressConfiguration.PublicHeadersName(id + "-public");
+                middlewares[forwarded] = DomainIngressConfiguration.PublicHeaders($"{name}.{zone}");
                 routers[id + "-public"] = new { entryPoints = new[] { "host", DomainIngressConfiguration.PublicEntryPoint },
-                    rule = $"Host(`{name}.{zone}`)", service = id, tls = new { } };
+                    rule = $"Host(`{name}.{zone}`)", service = id, middlewares = new[] { forwarded }, tls = new { } };
+            }
             if (route.GrpcPort is { } grpc)
             {
                 routers[id + "-grpc"] = new
@@ -210,7 +215,10 @@ public static class AppGateway
                 services[id + "-grpc"] = Service($"h2c://{address}:{grpc}");
             }
         }
-        return routers.Count == 0 ? null : JsonSerializer.Serialize(new { http = new { routers, services } });
+        if (routers.Count == 0) return null;
+        return middlewares.Count == 0
+            ? JsonSerializer.Serialize(new { http = new { routers, services } })
+            : JsonSerializer.Serialize(new { http = new { routers, services, middlewares } });
     }
 
     private static object Service(string url) => new { loadBalancer = new { servers = new[] { new { url } } } };

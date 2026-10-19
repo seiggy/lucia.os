@@ -200,10 +200,20 @@ class Provisioner:
             write_file(self.state / "config" / name, (ROOT / "deployment/identity" / name).read_text(encoding="utf-8"))
         write_file(self.state / "trust" / "install-node-trust.sh",
                    (ROOT / "deployment/identity/install-node-trust.sh").read_text(encoding="utf-8"), 0o644)
+        self.gateway_files()
+        emit("prepare", "Identity inputs are ready. Existing trust and credentials were preserved.", state=str(self.state))
+
+    def gateway_files(self):
+        # Every entrypoint runs forwarded-strip (the gateway's static configuration names it). Traefik already replaces an
+        # untrusted client's X-Forwarded-*, but not RFC 7239 Forwarded or these older scheme headers, which apps also read.
+        # deploy() writes these too, so a gateway restarted with the new static configuration always finds the middleware.
+        forwarded = {name: "" for name in ("Forwarded", "X-Forwarded-Ssl", "X-Forwarded-Scheme", "X-Url-Scheme",
+                                           "X-Original-Url", "X-Rewrite-Url")}
         routes = {
             "http": {
                 "routers": {"authentik": {"entryPoints": ["authentik"], "rule": "PathPrefix(`/`)", "service": "authentik", "tls": {}}},
                 "services": {"authentik": {"loadBalancer": {"servers": [{"url": "http://identity-server:9000"}]}}},
+                "middlewares": {"forwarded-strip": {"headers": {"customRequestHeaders": forwarded}}},
             },
             "tcp": {
                 "routers": {"ldap": {"entryPoints": ["ldaps"], "rule": "HostSNI(`*`)", "service": "ldap", "tls": {}}},
@@ -217,7 +227,6 @@ class Provisioner:
         }}
         write_file(self.state / "gateway" / "routes.yml", json.dumps(routes, indent=2) + "\n")
         write_file(self.state / "gateway" / "tls.yml", json.dumps(tls, indent=2) + "\n")
-        emit("prepare", "Identity inputs are ready. Existing trust and credentials were preserved.", state=str(self.state))
 
     def load_existing(self):
         settings = json.loads((self.state / "settings.json").read_text())
@@ -255,6 +264,7 @@ class Provisioner:
         if sys.platform != "linux":
             raise RuntimeError("Apply identity provisioning on the Linux Spark over SSH; local prepare/publish do not deploy.")
         self.collision_check()
+        self.gateway_files()
         emit("deploy", "Applying the isolated persistent identity stack; existing Lucia development services are not stopped.")
         result = self.run(["aspire", "deploy", "--apphost", str(APPHOST), "--output-path",
                            str(self.state / "deployment"), "--environment", "Production", "--non-interactive"], cwd=self.state)

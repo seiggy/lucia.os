@@ -345,13 +345,17 @@ var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
     .WithEntrypoint("/bin/sh")
     .WithArgs("-c",
         "while ! (cd /certificates && sha256sum -c ready.sha256 >/dev/null 2>&1); do sleep 1; done; " +
-        "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.ldaps.address=:8636 " +
+        "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.authentik.http.middlewares=forwarded-strip@file " +
+        "--entrypoints.ldaps.address=:8636 " +
         // No read timeout on the host entrypoint: a stack move's upload can wait minutes for its receiver and then stream for
         // hours. Kestrel still enforces header timeouts and minimum body rates on every other route.
+        // forwarded-strip (routes.yml) removes proxy headers Traefik doesn't already replace for untrusted clients.
         (hostSettings is not null ? "--entrypoints.host.address=:8444 --entrypoints.host.transport.respondingTimeouts.readTimeout=0 " +
+            "--entrypoints.host.http.middlewares=forwarded-strip@file " +
             // Internet traffic arrives here through Cloudflare's proxy and the router's port forward. Only public routes join
             // this entrypoint, and its public-sources middleware (published with public access) admits only Cloudflare.
-            "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file " +
+            // Cloudflare's X-Forwarded-For and -Proto are trusted; each public route drops the other proxy headers.
+            "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file,forwarded-strip@file " +
             "--entrypoints.public.forwardedHeaders.trustedIPs=" + CloudflareRanges + " " : "") +
         accessLogs + "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
     .WithBindMount(StatePath("gateway"), "/config", isReadOnly: true)

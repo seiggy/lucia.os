@@ -51,6 +51,12 @@ Check(DomainNames.WithPublic(publicNaming, false).CertificateNames.SequenceEqual
         && closed["http"]!["middlewares"]?["public-sources"] is null
         && closed["http"]!["routers"]!["domain-authentik"]!["entryPoints"]!.AsArray().Count == 1,
         "Only Authentik may answer on the public entrypoint, and only from Cloudflare.");
+    var authHeaders = ingress["http"]!["middlewares"]!["domain-authentik-forwarded"]!["headers"]!["customRequestHeaders"]!;
+    Check(ingress["http"]!["routers"]!["domain-authentik"]!["middlewares"]![0]!.GetValue<string>() == "domain-authentik-forwarded"
+        && "Host(`" + authHeaders["X-Forwarded-Host"]!.GetValue<string>() + "`)" == ingress["http"]!["routers"]!["domain-authentik"]!["rule"]!.GetValue<string>()
+        && authHeaders["X-Forwarded-Port"]!.GetValue<string>() == "443" && authHeaders["X-Real-Ip"]!.GetValue<string>() == ""
+        && authHeaders["X-Forwarded-For"] is null && closed["http"]!["routers"]!["domain-authentik"]!["middlewares"] is null,
+        "Public Authentik keeps Cloudflare's X-Forwarded-For and -Proto and drops the visitor's other proxy headers.");
 }
 var custom = DomainNames.Plan(new("example.com", "lab", "atlas",
     new("https://dashboard.example.com", "https://login.nested.lab.example.com", "https://atlas.lab.example.com")), "example.com");

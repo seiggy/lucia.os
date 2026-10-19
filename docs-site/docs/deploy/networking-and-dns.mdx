@@ -135,7 +135,8 @@ While it is on, `PublicIngress` re-checks every 5 minutes and whenever routes ch
 
 - proxied Cloudflare A records for Authentik and each public app name, pointing at the WAN address that `https://1.1.1.1/cdn-cgi/trace` reports, with the comment `Managed by Lucia`. Lucia changes or deletes only records with that comment. It adopts an existing record only if it already answers with the WAN address.
 - a UniFi port forward named `Lucia public ingress`, TCP 443 to the Spark's port 8445. Without UniFi you forward it yourself.
-- Traefik's `public` entrypoint accepts connections only from Cloudflare's published ranges (`ipAllowList`), and trusts their `X-Forwarded-For`. Only the Authentik router and routes with a public name join it.
+- Traefik's `public` entrypoint accepts connections only from Cloudflare's published ranges (`ipAllowList`), and trusts Cloudflare's `X-Forwarded-For` and `X-Forwarded-Proto`. Only the Authentik router and routes with a public name join it.
+- Each public router gets a `<router>-forwarded` header middleware. It clears the proxy headers a visitor could send (`Forwarded`, `X-Forwarded-Host`, `X-Real-Ip` and the other `X-Forwarded-*` and rewrite headers), then sets `X-Forwarded-Host` to the public name and `X-Forwarded-Port` to 443.
 
 Turning it off deletes Lucia's records, disables its forward and moves Authentik back under the namespace.
 

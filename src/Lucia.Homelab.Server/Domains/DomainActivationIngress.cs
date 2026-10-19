@@ -20,6 +20,31 @@ public static class DomainIngressConfiguration
         "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
     ];
 
+    /// <summary>
+    /// Every entrypoint runs the always-present <c>forwarded-strip@file</c> middleware (routes.yml), and Traefik already
+    /// replaces an untrusted client's X-Forwarded-*. The public entrypoint trusts Cloudflare, so only Cloudflare's own
+    /// X-Forwarded-For and X-Forwarded-Proto survive there: these headers pass through Cloudflare from the visitor and are
+    /// removed, and the route pins the real host and port.
+    /// </summary>
+    internal static readonly string[] VisitorHeaders =
+    [
+        "Forwarded", "X-Forwarded-Host", "X-Forwarded-Port", "X-Forwarded-Server", "X-Forwarded-Prefix", "X-Forwarded-Uri",
+        "X-Forwarded-Method", "X-Forwarded-Ssl", "X-Forwarded-Scheme", "X-Forwarded-Tls-Client-Cert", "X-Forwarded-Tls-Client-Cert-Info",
+        "X-Real-Ip", "X-Url-Scheme", "X-Original-Url", "X-Rewrite-Url",
+    ];
+
+    /// <summary>A public route's header middleware: visitor-supplied proxy headers removed, the real host and port set.</summary>
+    internal static object PublicHeaders(string host)
+    {
+        var headers = VisitorHeaders.ToDictionary(name => name, _ => "");
+        headers["X-Forwarded-Host"] = host;
+        headers["X-Forwarded-Port"] = "443";
+        return new { headers = new { customRequestHeaders = headers } };
+    }
+
+    /// <summary>The middleware name for a public route's headers.</summary>
+    internal static string PublicHeadersName(string router) => router + "-forwarded";
+
     public static string Build(DomainNamingPlan plan, string publishedCertificatesRoot, string certificatePath, string privateKeyPath,
         bool publicAccess = false)
     {
@@ -40,7 +65,11 @@ public static class DomainIngressConfiguration
                 replacement = "https://" + lucia + "/", permanent = false
             } }
         };
-        if (publicAccess) middlewares["public-sources"] = new { ipAllowList = new { sourceRange = CloudflareRanges } };
+        if (publicAccess)
+        {
+            middlewares["public-sources"] = new { ipAllowList = new { sourceRange = CloudflareRanges } };
+            middlewares[PublicHeadersName("domain-authentik")] = PublicHeaders(authentik);
+        }
         return JsonSerializer.Serialize(new
         {
             http = new
@@ -48,8 +77,10 @@ public static class DomainIngressConfiguration
                 routers = new Dictionary<string, object>
                 {
                     ["domain-lucia"] = new { entryPoints = new[] { "host" }, rule = $"Host(`{lucia}`)", service = "domain-lucia", tls = new { } },
-                    ["domain-authentik"] = new { entryPoints = publicAccess ? new[] { "host", PublicEntryPoint } : ["host"],
-                        rule = $"Host(`{authentik}`)", service = "domain-authentik", tls = new { } },
+                    ["domain-authentik"] = publicAccess
+                        ? new { entryPoints = new[] { "host", PublicEntryPoint }, rule = $"Host(`{authentik}`)", service = "domain-authentik",
+                            middlewares = new[] { PublicHeadersName("domain-authentik") }, tls = new { } }
+                        : (object)new { entryPoints = new[] { "host" }, rule = $"Host(`{authentik}`)", service = "domain-authentik", tls = new { } },
                     ["domain-spark"] = new { entryPoints = new[] { "host" }, rule = $"Host(`{spark}`)", service = "noop@internal",
                         middlewares = new[] { "domain-spark-redirect" }, tls = new { } }
                 },
