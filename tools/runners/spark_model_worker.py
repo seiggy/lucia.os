@@ -38,6 +38,8 @@ HOST_CONTAINER = "lucia-homelab-host"
 PORT = 8888
 # Keep PARALLEL and CONTEXT in step with SparkModel.cs.
 SETTINGS = {"PARALLEL": "4", "CONTEXT": "200000", "TENSORFOLD_MEMORY_RESERVE_GIB": "4", "PORT": str(PORT)}
+# Structured output (response_format / text.format) needs TensorFold's grammar extra, which is exactly this requirement.
+GRAMMAR = "xgrammar>=0.2.8,<0.3"
 FIELDS = {"schemaVersion", "generation", "desired"}
 HOME = pathlib.Path.home() / ".local" / "share" / "lucia"
 SHARED = HOME / "host" / "data" / "spark-model"
@@ -68,8 +70,9 @@ def request():
     return value
 
 
-def run(*args, timeout=60, cwd=None):
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def run(*args, timeout=60, cwd=None, env=None, stdin=None):
+    result = subprocess.run(args, cwd=cwd, env=None if env is None else {**os.environ, **env}, input=stdin,
+                            capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout).strip()[-300:] or f"{args[0]} failed.")
     return result.stdout.strip()
@@ -98,6 +101,29 @@ def running():
         return run("docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", CONTAINER).split()
     except RuntimeError:
         return ["false", "missing"]
+
+
+def inspect(image, template):
+    try:
+        return run("docker", "image", "inspect", "-f", template, image)
+    except RuntimeError:
+        return None
+
+
+def grammar_dockerfile(base, stamp):
+    """tensorfold[grammar] is only xgrammar; installing the extra from PyPI would replace the recipe's patched TensorFold."""
+    return (f"FROM {base}\n"
+            f'RUN pip install --no-cache-dir "{GRAMMAR}" && python -c "import xgrammar, tensorfold"\n'
+            f'LABEL lucia.grammar="{stamp}"\n')
+
+
+def recipe_image(env):
+    """The image name the recipe's config picks for these settings, and the patches hash it labels a ready image with."""
+    lines = run("bash", "-c", '. scripts/config.sh >/dev/null 2>&1; printf "%s\\n%s\\n" "$IMAGE" "$(patches_hash)"',
+                cwd=str(CHECKOUT), env=env).splitlines()
+    if len(lines) != 2 or not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+", lines[0]) or not lines[1]:
+        raise RuntimeError("The recipe's image settings could not be read.")
+    return lines[0], lines[1]
 
 
 class Worker:
@@ -145,13 +171,32 @@ class Worker:
             errors = [line for line in shown if "ERROR" in line]
             raise RuntimeError((errors or shown or [f"{name} failed."])[-1][:300])
 
+    def grammar_image(self, env):
+        """The recipe's image plus TensorFold's grammar extra, rebuilt only when the recipe's image or GRAMMAR changes."""
+        base, patches = recipe_image(env)
+        if inspect(base, '{{index .Config.Labels "tf.patches"}}') != patches:
+            self.script("scripts/prepare.sh", env, timeout=12 * 3600)  # builds or pulls the recipe's image and the checkpoint
+        base_id = inspect(base, "{{.Id}}")
+        if not base_id:
+            raise RuntimeError(f"The recipe's image {base} is missing after preparing it.")
+        image, stamp = base + "-grammar", f"{base_id} {GRAMMAR}"
+        if inspect(image, '{{index .Config.Labels "lucia.grammar"}}') != stamp:
+            self.report(message="Adding structured output support to the TensorFold image")
+            run("docker", "build", "-t", image, "-", stdin=grammar_dockerfile(base, stamp), timeout=1800)
+        return image
+
     def apply(self, value):
         self.report(generation=value["generation"], state="starting" if value["desired"] == "running" else "stopping",
                     message=None)
         if value["desired"] == "running":
             checkout()
             host = bridge()
-            self.script("start.sh", {**SETTINGS, "HOST": host}, timeout=12 * 3600)
+            env = {**SETTINGS, "HOST": host}
+            env["IMAGE"] = self.grammar_image(env)
+            # start.sh leaves a running model alone, so a model on an older image is stopped first.
+            if running()[0] == "true" and run("docker", "inspect", "-f", "{{.Config.Image}}", CONTAINER) != env["IMAGE"]:
+                self.script("stop.sh", {**SETTINGS, "STOP_TIMEOUT": "60"}, timeout=300)
+            self.script("start.sh", env, timeout=12 * 3600)
             self.report(state="running", since=now().isoformat(), message=None, url=f"http://{host}:{PORT}/")
         else:
             if (CHECKOUT / "stop.sh").exists():

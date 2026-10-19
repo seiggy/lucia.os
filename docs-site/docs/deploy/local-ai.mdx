@@ -123,6 +123,8 @@ TensorFold has no authentication, so it never listens on the LAN. The `lucia-spa
 
 <Source path="tools/runners/spark_model_worker.py" /> owns the recipe, pinned to one commit of its git repository, and its settings (`PARALLEL=4`, `CONTEXT=200000`, `TENSORFOLD_MEMORY_RESERVE_GIB=4`, `PORT=8888`). The host can only ask for `running` or `stopped`.
 
+Structured output (`response_format` and `text.format`) needs the `xgrammar` package in the TensorFold image. The worker does not install TensorFold's `[grammar]` extra from PyPI, because that would replace the patched TensorFold in the recipe. It builds a second image, `<recipe image>-grammar`, on top of the recipe's image. That image adds `xgrammar>=0.2.8,<0.3` and checks that `xgrammar` and `tensorfold` both import. The build runs on the first start and again whenever the recipe's image or that pin changes. The build can take up to 30 minutes, and the status message reads "Adding structured output support to the TensorFold image" while it runs.
+
 The bootstrap installs the service but leaves it stopped. It needs `docker` and `git`, a non-root user and persistent user services (`loginctl` linger). It runs as `systemctl --user` unit `lucia-spark-model.service`.
 
 ```mermaid
@@ -135,7 +137,7 @@ sequenceDiagram
   H->>H: Pause Lucia models, unload both
   H->>F: request.json generation N, desired running
   S->>F: status.json state starting
-  S->>S: git checkout pinned commit, start.sh
+  S->>S: git checkout pinned commit, build grammar image, start.sh
   S->>F: status.json state running, url
   O->>H: Call /v1
   H->>S: Forward to the bridge address
@@ -153,7 +155,7 @@ The files sit in `<data>/spark-model/`:
 
 `status.json` echoes the `generation` it applied, with `state` (`starting`, `running`, `stopping`, `stopped`, `failed`), `since`, `message`, `url` and `checkedAt`. The host ignores a status whose generation does not match the request, and treats the worker as unavailable when `checkedAt` is older than one minute. The first start downloads about 125 GB. The worker reports the last line of the recipe's output while it waits, which keeps the heartbeat fresh.
 
-After a reboot the worker resets its remembered generation, so it re-applies the current request. Starting a running model again leaves it alone. If the container dies while `state` is `running`, the status becomes `failed` with its exit code.
+After a reboot the worker resets its remembered generation, so it re-applies the current request. Starting a running model again leaves it alone, unless the container runs an image other than the grammar image. Then the worker stops it, giving it 60 seconds, and starts it on the new image. If the container dies while `state` is `running`, the status becomes `failed` with its exit code.
 
 While the model runs, the worker writes `telemetry/spark-model.json`, a Prometheus file-based service-discovery file. The Spark's relay reads it and scrapes TensorFold's `/metrics`. See [Observability](./observability.mdx).
 
