@@ -24,8 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.15.3-beta.1" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.19.1-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
     <PackageReference Include="TensorSharp.Models" Version="$(TensorSharpVersion)" />
     <PackageReference Include="TensorSharp.Server" Version="$(TensorSharpVersion)" />
     <PackageReference Include="TensorSharp.Native.Cuda" Version="$(TensorSharpVersion)" Condition="'$(CudaLine)' == '13'" />

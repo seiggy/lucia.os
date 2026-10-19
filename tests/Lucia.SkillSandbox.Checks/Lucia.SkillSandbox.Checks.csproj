@@ -10,6 +10,6 @@
     <!-- The sandbox is a self-contained linux-x64 app, which a Windows or arm64 check can't reference, so its logic is compiled in. -->
     <Compile Include="..\..\src\Lucia.SkillSandbox\SandboxRequest.cs" Link="SandboxRequest.cs" />
     <Compile Include="..\..\src\Lucia.SkillSandbox\SandboxMain.cs" Link="SandboxMain.cs" />
-    <PackageReference Include="Microsoft.Agents.AI.Hyperlight" Version="1.23.0-preview.260928.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hyperlight" Version="1.25.0-preview.261014.1" />
   </ItemGroup>
 </Project>
