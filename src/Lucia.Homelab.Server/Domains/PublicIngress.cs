@@ -8,11 +8,12 @@ namespace Lucia.Homelab.Server.Domains;
 public sealed record PublicRecordStatus(string Name, string State, string? Detail = null);
 /// <param name="Forward">The router's HTTPS forward: Forwarding, Adopted, Off, or null without UniFi.</param>
 public sealed record PublicIngressStatus(DateTimeOffset CheckedAt, bool Enabled, string? WanAddress, string? Forward, string? ForwardError,
-    PublicRecordStatus[] Records, string? RecordsError);
+    PublicRecordStatus[] Records, string? RecordsError, int WanPort = PublicIngress.DefaultWanPort);
 
 /// <summary>
 /// While public access is on, keeps the internet's way in: proxied Cloudflare A records for Authentik and every public app
-/// name at the network's WAN address, and the router's TCP 443 forward to the gateway's public entrypoint. Lucia changes
+/// name at the network's WAN address, and the router's TCP forward (443, or the owner's port where the ISP blocks 443) to the
+/// gateway's public entrypoint. Lucia changes
 /// or removes only records carrying its comment; an existing record is adopted only when it already answers with the WAN
 /// address. Off removes Lucia's records and disables its forward.
 /// </summary>
@@ -21,6 +22,8 @@ public sealed class PublicIngress(DomainOnboardingStore domains, CloudflareDomai
 {
     public const string Comment = "Managed by Lucia";
     public const int Port = 8445;
+    /// <summary>The internet port Cloudflare connects to unless an origin rule picks another (some ISPs block 443).</summary>
+    public const int DefaultWanPort = 443;
     private static readonly HttpClient Http = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false })
     { Timeout = TimeSpan.FromSeconds(10) };
     private readonly SemaphoreSlim _wake = new(0, 1);
@@ -51,9 +54,10 @@ public sealed class PublicIngress(DomainOnboardingStore domains, CloudflareDomai
         var job = await ManagedNodeDns.ActiveJob(domains, ct);
         if (job is null || job.Phase == "Amending") return;
         var enabled = job.Public;
+        var wanPort = job.PublicPort ?? DefaultWanPort;
         string? wan = null, forward = null, forwardError = null, recordsError = null;
         var records = new List<PublicRecordStatus>();
-        try { forward = await unifi.SetPublicForwardAsync(enabled, job.Plan.IngressAddress, Port, ct); }
+        try { forward = await unifi.SetPublicForwardAsync(enabled, job.Plan.IngressAddress, Port, wanPort, ct); }
         catch (UniFiException error) { forwardError = error.Message; }
         try
         {
@@ -72,7 +76,7 @@ public sealed class PublicIngress(DomainOnboardingStore domains, CloudflareDomai
         {
             recordsError = error is CloudflareDomainException known ? known.Message : "Lucia couldn't find this network's internet address.";
         }
-        Status = new(DateTimeOffset.UtcNow, enabled, wan, forward, forwardError, [.. records], recordsError);
+        Status = new(DateTimeOffset.UtcNow, enabled, wan, forward, forwardError, [.. records], recordsError, wanPort);
     }
 
     private async Task<List<PublicRecordStatus>> Reconcile(string zoneId, string[] wanted, string? wan, CancellationToken ct)

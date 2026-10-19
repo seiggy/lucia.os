@@ -55,6 +55,8 @@
 .external-route { display: grid; grid-template-columns: 1fr 1fr 7rem 1fr auto; gap: 16px; align-items: end; margin: 0; padding: 0 0 20px; border: 0; border-bottom: 1px solid var(--line); }
 .external-route label { display: block; margin-top: 20px; font-size: 14px; font-weight: 650; }
 .external-route .text-link { min-height: 48px; }
+.network-port { margin-top: 28px; }
+.network-port-form label { display: block; max-width: 14rem; margin-top: 16px; font-size: 14px; font-weight: 650; }
 .network-table-caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 700px) {
   .network-section { padding: 24px 21px; }

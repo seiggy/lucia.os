@@ -95,9 +95,11 @@ Lucia checks the certificate every 12 hours and renews it when it is close to ex
 Public access is off until you ask for it, and it is meant for things like sharing photos from Immich with family. When you turn it on:
 
 - Lucia adds public records at Cloudflare for the sign-in page and for each app you chose to share.
-- If UniFi is connected, Lucia sets up the router's port 443 forward. Otherwise you forward TCP 443 to the Spark's port 8445 yourself.
+- If UniFi is connected, Lucia sets up the router's forward from the internet port, which is 443 unless you change it. Otherwise you forward that port to the Spark's port 8445 yourself.
 - Only Cloudflare's servers can reach that entry point.
 - The sign-in page moves to `auth.example.com`, so Lucia restarts and everyone signs in again.
+
+Most home connections allow port 443, so the default is fine. Some providers block it. If yours does, open **Internet port** under public access and enter another number. Then add a Cloudflare Origin Rule that sends your public names to that port. Lucia moves its router forward to match. A forward you already have on that port is taken over, and it keeps its source limits.
 
 Turning it off removes Lucia's records and disables its forward. Pick which apps are public on each app's page under [Apps](./apps.mdx). Anything you make public should have its own login.
 

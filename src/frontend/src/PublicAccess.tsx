@@ -6,8 +6,8 @@ import type { DomainJob, ExternalRoute, PublicIngressStatus } from './networkMan
 
 type Props = { job: DomainJob; ingressAddress: string | null; session: AuthenticationSession; refreshSession: () => Promise<void> }
 const failed = (failure: unknown, fallback: string) => failure instanceof Error ? failure.message : fallback
-const forwards: Record<string, string> = {
-  Forwarding: 'Forwards HTTPS (TCP 443) to Lucia', Adopted: 'Took over the existing HTTPS forward', Off: 'Lucia’s forward is off',
+const forwards: Record<string, (port: number) => string> = {
+  Forwarding: port => `Forwards TCP ${port} to Lucia`, Adopted: port => `Took over your existing forward on TCP ${port}`, Off: () => 'Lucia’s forward is off',
 }
 
 export function PublicAccess({ job, ingressAddress, session, refreshSession }: Props) {
@@ -57,11 +57,12 @@ export function PublicAccess({ job, ingressAddress, session, refreshSession }: P
       : <div className="network-actions"><button className="button secondary" disabled={changing || job.phase !== 'Active'}
         onClick={() => { setConfirm(true); setError(null) }}>{job.public ? 'Turn off…' : 'Turn on public access…'}</button></div>}
     {error && <p className="network-error" role="alert">{error}</p>}
+    <InternetPort port={job.publicPort} disabled={job.phase !== 'Active'} session={session} refreshSession={refreshSession} onSaved={() => void load()} />
     {job.public && status && <>
       <dl className="network-facts">
         <div><dt>Internet address</dt><dd>{status.wanAddress ?? 'Not found'}</dd></div>
         <div><dt>Router</dt><dd className={status.forwardError ? 'network-error' : undefined}>{status.forwardError
-          ?? (status.forward ? forwards[status.forward] ?? status.forward : `UniFi isn’t connected. Forward TCP 443 to ${ingressAddress ?? 'Lucia'}:8445 on your router.`)}</dd></div>
+          ?? (status.forward ? forwards[status.forward]?.(status.wanPort) ?? status.forward : `UniFi isn’t connected. Forward TCP ${status.wanPort} to ${ingressAddress ?? 'Lucia'}:8445 on your router.`)}</dd></div>
       </dl>
       {status.recordsError && <p className="network-error">{status.recordsError}</p>}
       {status.records.length > 0 && <table className="network-table"><caption className="network-table-caption">Public names in Cloudflare</caption>
@@ -77,6 +78,41 @@ export function PublicAccess({ job, ingressAddress, session, refreshSession }: P
   </section>
     <ExternalRoutes zone={job.zone} publicOn={job.public} session={session} refreshSession={refreshSession} />
   </>
+}
+
+/** The internet port Cloudflare reaches the router on. 443 unless the internet provider blocks hosting on it. */
+function InternetPort({ port: current, disabled, session, refreshSession, onSaved }: { port: number; disabled: boolean; session: AuthenticationSession
+  refreshSession: () => Promise<void>; onSaved: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  // The domain status the parent polls catches up later; until then show what was saved.
+  const [saved, setSaved] = useState<{ value: number; from: number } | null>(null)
+  const port = saved && saved.from === current ? saved.value : current
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  async function save() {
+    const value = Number(draft)
+    if (!Number.isInteger(value) || value < 1 || value > 65535) { setError('Use a port from 1 to 65535.'); return }
+    setBusy(true); setError(null)
+    try {
+      await ownerRequest(session, refreshSession, '/api/host/domains/public/port', 'PUT', { port: value })
+      setSaved({ value, from: current }); setDraft(null); onSaved()
+    } catch (failure) { setError(failed(failure, 'The internet port could not be saved.')) } finally { setBusy(false) }
+  }
+  return <div className="network-port">
+    <dl className="network-facts"><div><dt>Internet port</dt><dd>TCP {port}{port === 443 ? ' (standard)' : ''}</dd></div></dl>
+    {port !== 443 && draft === null && <p className="section-note">Cloudflare connects on 443 unless told otherwise, so keep a Cloudflare Origin Rule that sends your public names to port {port}.</p>}
+    {draft === null
+      ? <div className="network-actions"><button className="text-link" disabled={disabled} onClick={() => { setDraft(String(port)); setError(null) }}>Change port…</button></div>
+      : <form className="network-port-form" onSubmit={event => { event.preventDefault(); void save() }}>
+        <p className="section-note">Leave this at 443 unless your internet provider blocks hosting on it. On another port, add a Cloudflare Origin Rule that connects to that port for your public names; Lucia moves its router forward to match and keeps any forward you already have on that port, including its source limits.</p>
+        <label>Internet port<input type="number" min={1} max={65535} value={draft} onChange={event => setDraft(event.target.value)} required disabled={busy} /></label>
+        <div className="network-actions">
+          <button className="button primary" disabled={busy}>{busy ? 'Saving…' : 'Save port'}</button>
+          <button type="button" className="text-link" disabled={busy} onClick={() => { setDraft(null); setError(null) }}>Cancel</button>
+        </div>
+      </form>}
+    {error && <p className="network-error" role="alert">{error}</p>}
+  </div>
 }
 
 type Row = { host: string; address: string; port: string; public: string }

@@ -134,9 +134,11 @@ Off by default. `PUT /api/host/domains/public` with `{"enabled": true}` (owner c
 While it is on, `PublicIngress` re-checks every 5 minutes and whenever routes change:
 
 - proxied Cloudflare A records for Authentik and each public app name, pointing at the WAN address that `https://1.1.1.1/cdn-cgi/trace` reports, with the comment `Managed by Lucia`. Lucia changes or deletes only records with that comment. It adopts an existing record only if it already answers with the WAN address.
-- a UniFi port forward named `Lucia public ingress`, TCP 443 to the Spark's port 8445. Without UniFi you forward it yourself.
+- a UniFi port forward named `Lucia public ingress`, from TCP `wanPort` (443 by default) to the Spark's port 8445. Without UniFi you forward it yourself.
 - Traefik's `public` entrypoint accepts connections only from Cloudflare's published ranges (`ipAllowList`), and trusts Cloudflare's `X-Forwarded-For` and `X-Forwarded-Proto`. Only the Authentik router and routes with a public name join it.
 - Each public router gets a `<router>-forwarded` header middleware. It clears the proxy headers a visitor could send (`Forwarded`, `X-Forwarded-Host`, `X-Real-Ip` and the other `X-Forwarded-*` and rewrite headers), then sets `X-Forwarded-Host` to the public name and `X-Forwarded-Port` to 443.
+
+The internet port defaults to 443. `PUT /api/host/domains/public/port` with `{"port": 8443}` (owner credentials, active domain only) stores another one, and `null` or `443` restores the default. It wakes `PublicIngress`, so the forward moves at once. Use this only when the ISP blocks 443 and a Cloudflare Origin Rule connects to the new port. `PlanPublicForward` disables Lucia's forwards on other ports, so the old port never stays open. A forward already on the new port is adopted with its protocol, source limit and interface kept.
 
 Turning it off deletes Lucia's records, disables its forward and moves Authentik back under the namespace.
 
@@ -188,6 +190,7 @@ The same checks are visible in **Settings → Domains**, from `GET /api/host/dom
 | Activation stuck in `ActivationCheck` | The restarted host cannot confirm the new URLs | It retries each minute; legacy API access stays available |
 | `409` changing the AdGuard or Cloudflare connection | A setup, renewal or public change is running | Wait for it to finish |
 | Renewal shows `Failed` | Token expired, deleted, or the account changed | Replace the token in **Settings → Domains** |
+| Public names time out after a port change | The Cloudflare Origin Rule does not send traffic to the new internet port | Point the Origin Rule at the port shown under **Internet port**, or set it back to 443 |
 
 Failed setup keeps the job and a confirmed diagnosis. Cleanup is ownership-checked: Lucia removes only rewrites it created and the gateway file it published, and anything that changed in the meantime is left for you. When it cannot be sure, `recoveryRequired` stays set and `POST /api/host/domains/jobs/{id}/recover` retries the cleanup. Authentik registration is rolled back through the activation helper.
 

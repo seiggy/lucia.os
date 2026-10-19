@@ -7,6 +7,8 @@ namespace Lucia.Homelab.Server.Domains;
 
 public sealed record StartDomainSetupRequest(Guid PlanId, string ReviewHash, bool AcceptTerms, bool AcceptDnsChanges);
 public sealed record SetPublicAccessRequest(bool Enabled);
+/// <param name="Port">The internet port the router forwards to Lucia; null or 443 for the default.</param>
+public sealed record SetPublicPortRequest(int? Port);
 
 public sealed class DomainOnboardingService(
     DomainOnboardingOptions options, DomainOnboardingStore store, CloudflareDomainService cloudflare,
@@ -31,12 +33,26 @@ public sealed class DomainOnboardingService(
                 job.Id, job.State, job.Phase, job.Message, job.CreatedAt, job.UpdatedAt, job.Events,
                 job.RecoveryRequired, pendingRewrites = job.PendingRewrites ?? [], job.Diagnosis, job.Support, job.Failure,
                 serviceUrls = job.Plan.Naming.ServiceUrls, job.NextRenewalAt, job.RenewalError, job.RenewalCheckedAt, job.RenewalOutcome,
-                job.Public, job.PublicRequested, job.PublicError, zone = job.Plan.Naming.Domain,
+                job.Public, job.PublicRequested, job.PublicError, publicPort = job.PublicPort ?? PublicIngress.DefaultWanPort, zone = job.Plan.Naming.Domain,
                 certificate = job.Certificate is { } certificate ? new
                 { certificate.NotAfter, certificate.DnsNames, certificate.CertificateSha256 } : null
             } : null,
             active
         };
+    }
+
+    /// <summary>
+    /// Sets the internet port the router forwards to the gateway's public entrypoint. 443 unless the ISP blocks hosting on it,
+    /// in which case a Cloudflare origin rule must connect to the same port. Takes effect on the next public-access check.
+    /// </summary>
+    public async Task SetPublicPort(int? port, CancellationToken ct)
+    {
+        if (port is < 1 or > 65535) throw new ArgumentException("The internet port must be from 1 to 65535.");
+        await store.Update(current =>
+        {
+            if (current.Job is not { State: "Active" } job) throw new InvalidOperationException("Public access needs an active domain.");
+            return current with { Job = job with { PublicPort = port is null or PublicIngress.DefaultWanPort ? null : port } };
+        }, ct);
     }
 
     /// <summary>Requests public access on or off; the domain worker applies it and restarts Lucia.</summary>

@@ -190,7 +190,17 @@ The contract says what the caller owns: AdGuard has no conditional write, so dur
 if (same.Length == 1 && same[0].Type == "A" && (same[0].Comment == Comment || same[0].Content == wan))
 ```
 
-The router side is `UniFiConnectionService.SetPublicForwardAsync`, which returns `Forwarding`, `Adopted` or `Off`.
+The router side is `UniFiConnectionService.SetPublicForwardAsync`, which returns `Forwarding`, `Adopted` or `Off`. It takes the internet port (`wanPort`, from `PublicIngress.DefaultWanPort` unless the job sets `PublicPort`) and delegates the decision to `PlanPublicForward`, a pure function that returns the forwards to disable, the one to create or update, and the state. Lucia's forwards on other ports are disabled. The forward on the internet port is adopted if one exists:
+
+```csharp title="src/Lucia.Homelab.Server/Host/UniFiConnection.cs"
+var onPort = forwards.Where(item => F(item, "dst_port") == wan && F(item, "proto") is "tcp" or "tcp_udp").ToArray();
+var target = onPort.FirstOrDefault(item => F(item, "name") == PublicForwardName);
+if (target.ValueKind != JsonValueKind.Object) target = onPort.FirstOrDefault();
+```
+
+An adopted forward keeps its protocol, source restriction and interface. A new one is plain TCP from anywhere, because the gateway's public entrypoint admits only Cloudflare.
+
+The port is stored on the job as `PublicPort` (null means 443). `PUT /api/host/domains/public/port` calls `DomainOnboardingService.SetPublicPort`, which needs an active domain, and then wakes `PublicIngress`.
 
 ## Extension points
 

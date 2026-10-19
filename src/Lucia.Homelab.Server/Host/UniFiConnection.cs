@@ -216,52 +216,74 @@ public sealed class UniFiConnectionService : IDhcpReservations
     public const string PublicForwardName = "Lucia public ingress";
 
     /// <summary>
-    /// Keeps the router's HTTPS port forward (TCP 443 from the internet) pointed at the gateway's public entrypoint, adopting
-    /// an existing 443 forward the first time. Off disables Lucia's forward. Returns its state, or null without UniFi.
+    /// Keeps the router's port forward from the internet (TCP <paramref name="wanPort"/>: 443, or another port where the ISP
+    /// blocks 443 and a Cloudflare origin rule connects there) pointed at the gateway's public entrypoint. Off disables Lucia's
+    /// forward. Returns its state, or null without UniFi.
     /// </summary>
-    public async Task<string?> SetPublicForwardAsync(bool enabled, string address, int port, CancellationToken ct = default)
+    public async Task<string?> SetPublicForwardAsync(bool enabled, string address, int port, int wanPort, CancellationToken ct = default)
     {
         if (!IPAddress.TryParse(address, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork || !AdGuardTransport.IsPrivate(ip))
             throw new UniFiException(400, "invalid_unifi_forward", "The public ingress needs a private IPv4 address.");
+        if (wanPort is < 1 or > 65535) throw new UniFiException(400, "invalid_unifi_forward", "The internet port must be from 1 to 65535.");
         await _gate.WaitAsync(ct);
         try
         {
             if (Read() is not { } record) return null;
             return await _transport.RunAsync(record.BaseUrl, record.ApiKey, record.CertificateSha256, async (session, token) =>
             {
-                var forwards = await session.PortForwardsAsync(record.Site, token);
-                var ours = forwards.FirstOrDefault(item => UniFiSession.Field(item, "name") == PublicForwardName);
-                var https = forwards.Where(item => UniFiSession.Field(item, "dst_port") == "443"
-                    && UniFiSession.Field(item, "proto") is "tcp" or "tcp_udp").ToArray();
-                if (!enabled)
-                {
-                    if (ours.ValueKind == JsonValueKind.Object && UniFiSession.Field(ours, "enabled") != "false")
-                        await session.SavePortForwardAsync(record.Site, UniFiSession.Field(ours, "_id"), new() { ["enabled"] = false }, token);
-                    return "Off";
-                }
-                var target = ours.ValueKind == JsonValueKind.Object ? ours : https.FirstOrDefault();
-                if (target.ValueKind == JsonValueKind.Object && UniFiSession.Field(target, "name") == PublicForwardName
-                    && UniFiSession.Field(target, "enabled") == "true" && UniFiSession.Field(target, "fwd") == address
-                    && UniFiSession.Field(target, "fwd_port") == port.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    && UniFiSession.Field(target, "dst_port") == "443" && UniFiSession.Field(target, "proto") == "tcp")
-                    return "Forwarding";
-                var body = new Dictionary<string, object>
-                {
-                    ["name"] = PublicForwardName, ["enabled"] = true, ["proto"] = "tcp", ["dst_port"] = "443", ["fwd"] = address,
-                    ["fwd_port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture), ["src"] = "any", ["log"] = false,
-                };
-                if (target.ValueKind != JsonValueKind.Object)
-                {
-                    body["pfwd_interface"] = "wan";
-                    body["destination_ip"] = "any";
-                }
-                await session.SavePortForwardAsync(record.Site, target.ValueKind == JsonValueKind.Object ? UniFiSession.Field(target, "_id") : null, body, token);
-                return target.ValueKind == JsonValueKind.Object && UniFiSession.Field(target, "name") != PublicForwardName ? "Adopted" : "Forwarding";
+                var plan = PlanPublicForward(await session.PortForwardsAsync(record.Site, token), enabled, address, port, wanPort);
+                foreach (var id in plan.Disable)
+                    await session.SavePortForwardAsync(record.Site, id, new() { ["enabled"] = false }, token);
+                if (plan.Body is not null) await session.SavePortForwardAsync(record.Site, plan.TargetId, plan.Body, token);
+                return plan.State;
             }, ct);
         }
         finally { _gate.Release(); }
     }
 
+    /// <summary>The router changes for public access: Lucia's forwards to disable, and the forward to create or update.</summary>
+    internal sealed record PublicForwardPlan(string State, string[] Disable, string? TargetId, Dictionary<string, object>? Body);
+
+    /// <summary>
+    /// Lucia's own forward is moved to the internet port. Another forward already on that port is adopted: pointed at the
+    /// gateway and named Lucia's, but its source and interface choices, such as a Cloudflare-only source, are left alone.
+    /// Lucia's forwards on other ports are disabled, so a changed port never leaves the old one open.
+    /// </summary>
+    internal static PublicForwardPlan PlanPublicForward(IReadOnlyList<JsonElement> forwards, bool enabled, string address, int port, int wanPort)
+    {
+        static string? F(JsonElement item, string name) => UniFiSession.Field(item, name);
+        var wan = wanPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var fwd = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var ours = forwards.Where(item => F(item, "name") == PublicForwardName).ToArray();
+        string[] Live(string? keep) => [.. ours.Where(item => F(item, "enabled") != "false" && F(item, "_id") != keep).Select(item => F(item, "_id")!)];
+        if (!enabled) return new("Off", Live(null), null, null);
+        var onPort = forwards.Where(item => F(item, "dst_port") == wan && F(item, "proto") is "tcp" or "tcp_udp").ToArray();
+        var target = onPort.FirstOrDefault(item => F(item, "name") == PublicForwardName);
+        if (target.ValueKind != JsonValueKind.Object) target = onPort.FirstOrDefault();
+        if (target.ValueKind != JsonValueKind.Object) target = ours.FirstOrDefault();
+        var found = target.ValueKind == JsonValueKind.Object;
+        var targetId = found ? F(target, "_id") : null;
+        var disable = Live(targetId);
+        if (found && F(target, "name") == PublicForwardName && F(target, "enabled") == "true" && F(target, "fwd") == address
+            && F(target, "fwd_port") == fwd && F(target, "dst_port") == wan && F(target, "proto") is "tcp" or "tcp_udp")
+            return new("Forwarding", disable, null, null);
+        var adopted = found && F(target, "name") != PublicForwardName;
+        var body = new Dictionary<string, object>
+        {
+            ["name"] = PublicForwardName, ["enabled"] = true, ["dst_port"] = wan, ["fwd"] = address, ["fwd_port"] = fwd,
+        };
+        // An existing forward, Lucia's or adopted, keeps its protocol, source restriction (such as Cloudflare only) and
+        // interface. A new one is plain TCP from anywhere, since the gateway's public entrypoint admits only Cloudflare.
+        if (!found)
+        {
+            body["proto"] = "tcp";
+            body["src"] = "any";
+            body["log"] = false;
+            body["pfwd_interface"] = "wan";
+            body["destination_ip"] = "any";
+        }
+        return new(adopted ? "Adopted" : "Forwarding", disable, targetId, body);
+    }
     private async Task<string> VerifyAsync(string origin, string key, string site, string? pin, CancellationToken ct) =>
         await _transport.RunAsync(origin, key, pin, async (session, token) =>
         {

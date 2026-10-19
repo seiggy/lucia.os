@@ -33,7 +33,7 @@ public sealed record DomainSetupJob(
     string? IngressPublished = null, bool RegistrationRequested = false, DateTimeOffset? NextActivationCheckAt = null,
     DomainDiagnosis? Diagnosis = null, DomainSupportReport? Support = null, DomainFailure? Failure = null,
     DateTimeOffset? RenewalCheckedAt = null, string? RenewalOutcome = null, bool Public = false, bool? PublicRequested = null,
-    string? PublicError = null);
+    string? PublicError = null, int? PublicPort = null);
 public sealed record DomainSetupDocument(int Version, DomainSetupPlan? Plan, DomainSetupJob? Job);
 
 public sealed class DomainOnboardingStore : IDisposable

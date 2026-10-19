@@ -77,6 +77,12 @@ public static class DomainOnboardingEndpoints
             await service.SetPublic((await Read<SetPublicAccessRequest>(context, ct)).Enabled, ct);
             return Results.Accepted("/api/host/domains/status");
         });
+        group.MapPut("/public/port", async (HttpContext context, DomainOnboardingService service, PublicIngress ingress, CancellationToken ct) =>
+        {
+            await service.SetPublicPort((await Read<SetPublicPortRequest>(context, ct)).Port, ct);
+            ingress.Wake();
+            return Results.Accepted("/api/host/domains/public");
+        });
         group.MapPost("/jobs/{id:guid}/recover", async (Guid id, DomainOnboardingService service, CancellationToken ct) =>
         {
             await service.Recover(id, ct);

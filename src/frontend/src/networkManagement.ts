@@ -25,7 +25,7 @@ export interface DomainJob {
   diagnosis: DomainDiagnosis | null; support: DomainSupport | null
   renewalCheckedAt: string | null; renewalOutcome: 'Renewed' | 'NotDue' | 'Failed' | null
   /** Public access: on, the change waiting for the worker (null when none), and why the last change failed. */
-  public: boolean; publicRequested: boolean | null; publicError: string | null; zone: string | null
+  public: boolean; publicRequested: boolean | null; publicError: string | null; publicPort: number; zone: string | null
 }
 export interface DomainState {
   adguardConfigured: boolean; cloudflareConfigured: boolean; workerReady: boolean; configured: boolean
@@ -189,7 +189,7 @@ export function parseDomainState(value: unknown): DomainState {
         renewalCheckedAt: 'renewalCheckedAt' in j ? optional(j.renewalCheckedAt, date) : null,
         renewalOutcome: 'renewalOutcome' in j ? optional(j.renewalOutcome, value => choice(value, ['Renewed', 'NotDue', 'Failed'] as const)) : null,
         public: j.public === true, publicRequested: 'publicRequested' in j ? optional(j.publicRequested, boolean) : null,
-        publicError: 'publicError' in j ? optional(j.publicError, text) : null, zone: 'zone' in j ? optional(j.zone, text) : null,
+        publicError: 'publicError' in j ? optional(j.publicError, text) : null, publicPort: 'publicPort' in j ? port(j.publicPort) : 443, zone: 'zone' in j ? optional(j.zone, text) : null,
         certificate: optional(j.certificate, value => { const c = object(value); return { notAfter: date(c.notAfter), dnsNames: strings(c.dnsNames), certificateSha256: text(c.certificateSha256) } }) }
     }),
   }
@@ -230,15 +230,20 @@ export function parseDomainOperations(value: unknown): DomainOperations {
         }) }
     }) }
 }
+/** A TCP port: a whole number from 1 to 65535. */
+export function port(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) throw invalid()
+  return value
+}
 export interface PublicIngressStatus {
-  checkedAt: string; enabled: boolean; wanAddress: string | null; forward: string | null; forwardError: string | null
+  checkedAt: string; enabled: boolean; wanAddress: string | null; wanPort: number; forward: string | null; forwardError: string | null
   records: { name: string; state: 'Published' | 'Adopted' | 'Updated' | 'Conflict' | 'Removed'; detail: string | null }[]; recordsError: string | null
 }
 export function parsePublicIngress(value: unknown): PublicIngressStatus | null {
   return optional(object(value).status ?? null, value => {
     const x = object(value)
     if (!Array.isArray(x.records) || x.records.length > 100) throw invalid()
-    return { checkedAt: date(x.checkedAt), enabled: boolean(x.enabled), wanAddress: optional(x.wanAddress ?? null, text),
+    return { checkedAt: date(x.checkedAt), enabled: boolean(x.enabled), wanAddress: optional(x.wanAddress ?? null, text), wanPort: x.wanPort === undefined ? 443 : port(x.wanPort),
       forward: optional(x.forward ?? null, text), forwardError: optional(x.forwardError ?? null, text), recordsError: optional(x.recordsError ?? null, text),
       records: x.records.map(value => { const r = object(value); return { name: text(r.name),
         state: choice(r.state, ['Published', 'Adopted', 'Updated', 'Conflict', 'Removed'] as const), detail: optional(r.detail ?? null, text) } }) }

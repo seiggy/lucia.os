@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { domainFailureSummary, parseAdGuardCertificate, parseAdGuardFleet, parseAdGuardStatus, parseDomainPlan, parseDomainState, parseDomainZones, parseDomainOperations, parseUniFiStatus, parseDhcpReservations } from '../.checks/networkManagement.js'
+import { domainFailureSummary, parseAdGuardCertificate, parseAdGuardFleet, parseAdGuardStatus, parseDomainPlan, parseDomainState, parseDomainZones, parseDomainOperations, parseUniFiStatus, parseDhcpReservations, parsePublicIngress, port } from '../.checks/networkManagement.js'
 
 const plan = {
   id: '11111111-1111-4111-8111-111111111111', reviewHash: 'a'.repeat(64), expiresAt: '2026-09-23T18:00:00Z',
@@ -105,3 +105,11 @@ const dhcp = { enabled: true, checkedAt: '2026-09-23T18:00:00Z', error: null,
   nodes: [{ hostname: 'lab01', address: '192.168.0.241', mac: 'a0:36:bc:ad:d8:29', state: 'Reserved', host: false }] }
 assert.equal(parseDhcpReservations(dhcp).nodes[0].state, 'Reserved')
 assert.throws(() => parseDhcpReservations({ ...dhcp, nodes: [{ ...dhcp.nodes[0], state: 'Pretend' }] }))
+
+const ingress = { status: { checkedAt: '2026-09-23T18:00:00Z', enabled: true, wanAddress: '203.0.113.7', wanPort: 10050, forward: 'Adopted',
+  forwardError: null, records: [], recordsError: null } }
+assert.equal(parsePublicIngress(ingress).wanPort, 10050)
+assert.equal(parsePublicIngress({ status: { ...ingress.status, wanPort: undefined } }).wanPort, 443, 'An older host without wanPort means 443.')
+assert.throws(() => parsePublicIngress({ status: { ...ingress.status, wanPort: 70000 } }))
+assert.equal(port(8445), 8445)
+for (const bad of [0, 65536, 1.5, '443', null]) assert.throws(() => port(bad))
