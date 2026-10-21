@@ -161,7 +161,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 11, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 12, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -222,8 +222,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 11, "Local A
 
     private static readonly Dictionary<int, string> LlamaImages = new()
     {
-        [12] = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11206@sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe",
-        [13] = "ghcr.io/ggml-org/llama.cpp:server-cuda13-b11206@sha256:91ac61def9ed19af96b9b2d2a0c1570a0903046f4e2dcbac7e3d965e5917b4ba",
+        [12] = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11783@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce",
+        [13] = "ghcr.io/ggml-org/llama.cpp:server-cuda13-b11783@sha256:7ace076c9ffdbc18e94e4b47255c7eff853adb59089fdf5c5b7dc60a2c1ac5fc",
     };
 
     public override bool ServerBound => true;

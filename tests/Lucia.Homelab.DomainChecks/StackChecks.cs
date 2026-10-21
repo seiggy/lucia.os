@@ -683,7 +683,7 @@ internal static class StackChecks
         var llamaSettings = new Dictionary<string, string>(vllmSettings) { ["engine"] = "llamacpp", ["vllm-model"] = "", ["vllm-name"] = "" };
         var llama = localAi.Render(llamaSettings, gpuNode, env).Compose;
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-llama-compose.yml"), llama);
-        check(llama.Contains("llama.cpp:server-cuda13-b11206@sha256:") && llama.Contains("\"8080:8080\"") && llama.Contains("\"8081:8080\"")
+        check(llama.Contains("llama.cpp:server-cuda13-b11783@sha256:") && llama.Contains("\"8080:8080\"") && llama.Contains("\"8081:8080\"")
             && llama.Contains("command: [\"--models-preset\", \"/cache/llama-models.ini\", \"--models-max\", \"1\", \"--host\", \"0.0.0.0\", \"--port\", \"8080\"]")
             && llama.Contains("HostPlatform__LlamaCache: /cache") && llama.Contains("- llama-cache:/cache\n") && llama.Contains("- llama-cache:/cache:ro")
             && llama.Contains("\n  llama-cache:") && llama.Split("/models").Length == 3 && llama.Contains("condition: service_healthy")
