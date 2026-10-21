@@ -255,15 +255,34 @@ try
     handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3ForCausalLM", FileEntry("config.json", 1), FileEntry("model.safetensors", 1)).TrimEnd('}') + ",\"library_name\":\"mlx\"}");
     Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "mlx", Choices: [] },
         "An MLX conversion was offered to vLLM.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3_5Model", FileEntry("config.json", 1), FileEntry("model-00001-of-00001.safetensors", 100),
+        FileEntry("readout.safetensors", 5), FileEntry("decision_config.json", 3), FileEntry("chat_template.jinja", 2), FileEntry("merges.txt", 2),
+        FileEntry("vocab.json", 2), FileEntry("preprocessor_config.json", 1), FileEntry("video_preprocessor_config.json", 1), FileEntry("README.md", 9)));
+    repository = await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors);
+    Check(repository is { Availability: "available", RequiresNightly: true, Choices: [{ } d3] } && d3.Files.Count == 9
+        && new[] { "decision_config.json", "readout.safetensors", "chat_template.jinja", "merges.txt", "video_preprocessor_config.json" }.All(name => d3.Files.Any(file => file.Path == name))
+        && repository.Warnings.Any(warning => warning.Contains("Needs vLLM nightly")),
+        "A Decision 3.0 repository wasn't offered as needing nightly with all its files.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("Qwen3_5Model", FileEntry("config.json", 1), FileEntry("model.safetensors", 100)));
+    Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "unsupported_architecture", RequiresNightly: false, Choices: [] } plain
+        && plain.Warnings.Any(warning => warning.Contains("0.32.0")), "Qwen3_5Model without decision_config.json was offered.");
+    handler.Respond = _ => FakeHandler.Json(Snapshot("AliceAIForCausalLM", FileEntry("config.json", 1), FileEntry("model.safetensors", 1)));
+    Check((await browser.GetRepositoryAsync("owner/model", format: ModelFormat.Safetensors)) is { Availability: "available", RequiresNightly: true },
+        "A nightly-only architecture wasn't marked as needing nightly.");
+    Check(VllmArchitectures.Supported.Count == 266 && VllmArchitectures.Supported.Contains("Qwen3ForCausalLM") && VllmArchitectures.Supported.Contains("PhiForCausalLM")
+        && VllmArchitectures.NightlyOnly.SetEquals(new[] { "AliceAIForCausalLM", "BeamForCausalLM", "D3ForSequenceClassification", "Kolibri1ForCausalLM" })
+        && !VllmArchitectures.NightlyOnly.Overlaps(VllmArchitectures.Supported), "The vLLM architecture lists aren't 0.32.0 plus the nightly additions.");
     await Reject(() => browser.GetRepositoryAsync("owner/model", kind: ModelKind.Embedding, format: ModelFormat.Safetensors), "invalid_format", 400);
     handler.Respond = _ => FakeHandler.Json("""
         [{"id":"owner/runs","config":{"architectures":["LlamaForCausalLM"]},"safetensors":{"total":8000000000}},
          {"id":"owner/unknown","config":{"architectures":["MadeUpForCausalLM"]}},{"id":"owner/bare"},
          {"id":"mlx-community/runs-4bit","library_name":"mlx","config":{"architectures":["LlamaForCausalLM"]}},
-         {"id":"owner/tagged-mlx","tags":["safetensors","mlx"],"config":{"architectures":["LlamaForCausalLM"]}}]
+         {"id":"owner/tagged-mlx","tags":["safetensors","mlx"],"config":{"architectures":["LlamaForCausalLM"]}},
+         {"id":"owner/newer","config":{"architectures":["BeamForCausalLM"]}}]
         """);
     search = await browser.SearchAsync("model", ModelKind.Chat, format: ModelFormat.Safetensors);
-    Check(search.Items is [{ Repository: "owner/runs", Architecture: "LlamaForCausalLM", Parameters: 8000000000 }]
+    Check(search.Items is [{ Repository: "owner/runs", Architecture: "LlamaForCausalLM", Parameters: 8000000000, RequiresNightly: false },
+            { Repository: "owner/newer", RequiresNightly: true }]
         && handler.Requests.Last().Uri.Query.Contains("filter=safetensors") && handler.Requests.Last().Uri.Query.Contains("expand=config"),
         "vLLM search kept repositories it can't run or didn't ask for their configs.");
     handler.Respond = _ => FakeHandler.Json(Repository(Enumerable.Range(1, 128)

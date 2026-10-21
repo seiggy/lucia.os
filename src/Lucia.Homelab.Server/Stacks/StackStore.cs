@@ -33,7 +33,8 @@ public sealed record CatalogPreviewRequest(string Node, Dictionary<string, strin
 public sealed record MoveStackRequest(string Node);
 /// <param name="ModelId">A downloaded safetensors model for vLLM to serve, or null to serve nothing.</param>
 /// <param name="Context"><c>auto</c> (the most the GPUs fit) or a token count.</param>
-public sealed record ServeModelRequest(Guid? ModelId, string? Context = null);
+/// <param name="RequiresNightly">The portal read this from the model's repository: serving it needs the vLLM nightly image, which Serve then selects.</param>
+public sealed record ServeModelRequest(Guid? ModelId, string? Context = null, bool? RequiresNightly = null);
 public sealed record LoadOnStartupRequest(string[]? Models);
 /// <summary>A move in progress: the source stops the stack and streams its data to the target, which then starts it.</summary>
 public sealed record StackMove(Guid Id, string From, string To, string Desired, DateTimeOffset StartedAt, string StartedBy);
@@ -646,6 +647,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                 throw new HardwareOnboardingException(409, "model_not_servable", "vLLM serves downloaded safetensors models. Choose one that has finished downloading.");
             (settings["vllm-model"], settings["vllm-name"], settings["vllm-context"], settings["vllm-file"]) = (id.ToString(), model.Source.Repository,
                 string.IsNullOrWhiteSpace(request.Context) ? "auto" : request.Context.Trim(), "");
+            // The stable image would fail to load such a model, so switch the app to the nightly one (Render refuses it off CUDA 13).
+            if (request.RequiresNightly == true) settings["vllm-image"] = "nightly";
         }
         else (settings["vllm-model"], settings["vllm-name"], settings["vllm-file"]) = ("", "", "");
         return await Save(stack.Name, new SaveStackRequest(null, null,

@@ -249,6 +249,26 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
       if (alive.current && !controller.signal.aborted) setActionError(failure instanceof Error ? failure.message : 'The repository could not be read.')
     } finally { if (alive.current && !controller.signal.aborted) setSearching(false) }
   }
+  // A model that only vLLM's nightly image runs needs the app switched to it, which Serve does when told.
+  async function confirmServe(model: LocalModel) {
+    setActionError(null); setSearching(true)
+    let nightly = false
+    try {
+      const parameters = new URLSearchParams({ repository: model.source.repository, revision: model.source.revision, kind: 'Chat', format: 'Safetensors' })
+      nightly = parseRepository(await (await request('/api/host/huggingface/repository?' + parameters, 'GET')).json()).requiresNightly
+    } catch { /* The check is advisory: serving still works for models the release runs. */ }
+    finally { if (alive.current) setSearching(false) }
+    if (!alive.current) return
+    const name = title(model)
+    setConfirmation({
+      label: 'Serve model', path: server!.serving, method: 'POST', body: { modelId: model.id, context: serveContext || 'auto', ...(nightly ? { requiresNightly: true } : {}) },
+      successMessage: `Saved. ${engineName} restarts with this model within about 20 seconds, then loads it.`,
+      description: (serving?.name
+        ? `Serve ${name} instead of ${serving.name}? ${engineName} restarts, so apps get errors until the new model is ready. Loading takes a few minutes.`
+        : `Serve ${name}? ${engineName} starts and loads it, which takes a few minutes.`)
+        + (nightly ? ' This model needs vLLM nightly, so Local AI switches to the nightly image (CUDA 13 servers only).' : ''),
+    })
+  }
   async function inspect(model: LocalModel) {
     estimate.current?.abort()
     const controller = new AbortController()
@@ -419,7 +439,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
         : results.map(item => <button key={item.repository} className="model-search-result" disabled={busy || searching} onClick={() => void browse(item.repository)}>
           <span><strong>{item.repository}</strong><small>{[item.parameters ? `${parameterCount(item.parameters)} parameters` : null,
             item.downloads === null ? 'Downloads not reported' : `${item.downloads.toLocaleString()} downloads`,
-            item.gated ? 'Access approval may be required' : null, item.private ? 'Private' : null].filter(Boolean).join(' · ')}</small></span><Icon name="chevron" /></button>)}
+            item.requiresNightly ? 'Needs vLLM nightly' : null, item.gated ? 'Access approval may be required' : null, item.private ? 'Private' : null].filter(Boolean).join(' · ')}</small></span><Icon name="chevron" /></button>)}
         {limitReached && <p className="section-note">Showing the first 30 matches. Refine the query to narrow the results.</p>}</div>}
       {repository && <div className="model-repository">
         <h3>{repository.repository}</h3><p className="model-revision">Pinned revision {repository.revision}</p>
@@ -492,13 +512,7 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
                 aria-describedby={`serve-help-${model.id}`} disabled={disabled} onChange={event => setServeContext(event.target.value.replace(/\D/g, ''))} /></label>
             <p id={`serve-help-${model.id}`} className="section-note">Leave it blank and {engineName} uses the longest context its GPU memory fits, up to the model’s own limit. Set a lower limit if the model doesn’t start with its full context.</p>
             <div className="model-actions">
-              <button className="button primary" disabled={disabled || (serveContext !== '' && Number(serveContext) < 256)} onClick={() => setConfirmation({
-                label: 'Serve model', path: server!.serving, method: 'POST', body: { modelId: model.id, context: serveContext || 'auto' },
-                successMessage: `Saved. ${engineName} restarts with this model within about 20 seconds, then loads it.`,
-                description: serving?.name
-                  ? `Serve ${title(model)} instead of ${serving.name}? ${engineName} restarts, so apps get errors until the new model is ready. Loading takes a few minutes.`
-                  : `Serve ${title(model)}? ${engineName} starts and loads it, which takes a few minutes.`,
-              })}>Serve this model <Icon name="spark" /></button>
+              <button className="button primary" disabled={disabled || (serveContext !== '' && Number(serveContext) < 256)} onClick={() => void confirmServe(model)}>Serve this model <Icon name="spark" /></button>
               <button className="button secondary" disabled={busy} onClick={() => setSelected(null)}>Not now</button>
             </div>
             {serveContext !== '' && Number(serveContext) < 256 && <p className="section-note">Use at least 256 tokens.</p>}

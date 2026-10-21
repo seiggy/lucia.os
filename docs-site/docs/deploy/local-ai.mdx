@@ -192,6 +192,8 @@ docker build --platform linux/amd64 -f deployment/inference/Dockerfile -t lucia-
 
 With the vLLM or llama.cpp engine, the app sets `Worker__LibraryOnly=true`. The worker then only keeps the model library, mounts no GPU, and sets `RequireTensorSharp` to false so GGUFs that TensorSharp cannot run still become `Ready`. For llama.cpp, `HostPlatform__LlamaCache` points at a local directory that Ready GGUFs are copied into, with a `llama-models.ini` preset file that its router reads. `HostPlatform__LlamaLoadOnStartup` lists the model names it loads at start. Loading 40 GB from a 1 GbE share takes minutes. From local NVMe it takes seconds.
 
+The vLLM app has two image settings. `vllm-image` picks `stable`, which is `vllm/vllm-openai:v0.32.0` (`v0.32.0-cu129` on CUDA 12), or `nightly`, a pinned build of vLLM main at commit `e68efc685ab1` from 2026-10-19. The nightly image runs CUDA 13 only. Lucia sets it when a model needs architectures that 0.32.0 does not support. `vllm-quantization` picks `none` or `fp8`. FP8 adds `--quantization fp8` and needs a GPU with compute capability 8.9 or newer (Ada or Hopper).
+
 ## Metrics
 
 TensorSharp logs each finished chat request. Lucia reads those entries with a logger provider and records the numbers as OpenTelemetry metrics under the meter `Lucia.Inference`, without the prompt or answer text. They are `lucia.inference.input_tokens`, `cached_tokens`, `output_tokens`, `time_to_first_token` and `duration`, tagged with `model` and `outcome`. The Observability app charts them next to vLLM, llama.cpp and TensorFold on its Inference dashboard.
@@ -212,5 +214,7 @@ ls -l ~/.local/share/lucia/host/data/spark-model/
 | Startup message "Startup model loading failed" | The saved selection could not load. The management API stays up so an owner can fix it. |
 | Recipe `state: failed` | Read `status.json` `message`, then `journalctl --user -u lucia-spark-model` |
 | Another Lucia host fails on `/models` | The lease file is held. Stop the other host. |
+| 409 `vllm_nightly_needs_cuda13` | `vllm-image` is `nightly` on a server without CUDA 13. Use `stable`, or move the model to a CUDA 13 host. |
+| 409 `vllm_fp8_unsupported` | `vllm-quantization` is `fp8` on a GPU below compute 8.9. Use `none`. |
 
 All settings are listed in [Configuration](./configuration.mdx). The code behind this page is in [Local AI (code)](../code/local-ai.mdx).

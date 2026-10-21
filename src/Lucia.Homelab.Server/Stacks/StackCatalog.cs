@@ -161,7 +161,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 10, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -185,6 +185,16 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
         new("vllm-model", "Served model", "hidden", Optional: true),
         new("vllm-name", "Served model name", "hidden", Optional: true),
         new("vllm-context", "Served context", "hidden", "auto"),
+        new("vllm-image", "vLLM image", "choice", "stable", Options:
+        [
+            new("stable", "vLLM 0.32.0", "The tested release."),
+            new("nightly", "vLLM nightly (Oct 19, 2026)", "Newest models such as Decision 3.0 (vllm-sr/d3-flash), less tested. Needs a CUDA 13 server."),
+        ], When: "engine=vllm"),
+        new("vllm-quantization", "Weight precision", "choice", "none", Options:
+        [
+            new("none", "Model's own precision", "Loads the weights as the model ships them."),
+            new("fp8", "FP8", "About half the GPU memory, so a model fits with more room for context. Needs an Ada, Hopper or newer GPU (compute 8.9 or newer), and a model that isn't already quantized."),
+        ], When: "engine=vllm"),
         new("vllm-file", "Served GGUF file", "hidden", Optional: true),
         // llama.cpp model names, comma-separated, loaded when it starts. Set from the Models page.
         new("llama-load", "Loaded at start", "hidden", Optional: true, Max: 1024),
@@ -199,9 +209,13 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
 
     private static readonly Dictionary<int, string> VllmImages = new()
     {
-        [12] = "vllm/vllm-openai:v0.30.0-cu129@sha256:a67f8f186d4567612ac37a55bd82295006002b18858eb12a8af2f05f86c2ae3f",
-        [13] = "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
+        [12] = "vllm/vllm-openai:v0.32.0-cu129@sha256:bc0445dac61accbf1c3b17fbb524a71eee0b1b32f55ba45952095e3be8991c3f",
+        [13] = "vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
     };
+
+    // Opt-in, CUDA 13 only (there is no CUDA 12.9 nightly): vLLM main at commit e68efc685ab1 (2026-10-19). It carries Decision 3.0
+    // (vllm-sr/d3-flash, merged after v0.32.0) and other models the release lacks. Keep VllmArchitectures.NightlyOnly in step.
+    private const string VllmNightly = "vllm/vllm-openai:nightly-e68efc685ab1e6f1eda004ced7157e3ca411da2f@sha256:1ff6716fe240a922d0d518b8884261e25b0c02eda8e2ce90888e364978249cad";
 
     private static readonly Dictionary<int, string> LlamaImages = new()
     {
@@ -282,7 +296,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
             """;
         var server = engine switch
         {
-            "vllm" when settings["vllm-model"].Length > 0 => Vllm(settings, node, line, gpus.Length, root, volume, devices),
+            "vllm" when settings["vllm-model"].Length > 0 => Vllm(settings, node, line, gpus, root, volume, devices),
             "llamacpp" => Llama(settings, node, line, devices),
             _ => "",
         };
@@ -312,13 +326,18 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
     }
 
     /// <summary>vLLM serving the chosen library model read-only, under its repository name.</summary>
-    private static string Vllm(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, int line, int gpus, string root,
+    private static string Vllm(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, int line, CatalogGpu[] gpus, string root,
         string volume, string devices)
     {
         var (model, name, context) = Served(settings, node, line, "vLLM", new System.Version(12, 9));
+        var nightly = settings.GetValueOrDefault("vllm-image") == "nightly";
+        if (nightly && line != 13)
+            throw new HardwareOnboardingException(409, "vllm_nightly_needs_cuda13", $"The vLLM nightly image is built for CUDA 13 only, and {node.Hostname} is on CUDA {line}. Choose the stable vLLM image.");
+        var fp8 = settings.GetValueOrDefault("vllm-quantization") == "fp8";
+        if (fp8) RequireFp8(node, gpus);
         return $$"""
               vllm:
-                image: {{VllmImages[line]}}
+                image: {{(nightly ? VllmNightly : VllmImages[line])}}
                 restart: unless-stopped
                 ports:
                   - "{{settings["port"]}}:8000"
@@ -328,7 +347,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
                   HF_HUB_OFFLINE: "1"
                   VLLM_NO_USAGE_STATS: "1"
                   DO_NOT_TRACK: "1"
-                command: ["{{root}}/{{model:N}}/files", "--served-model-name", "{{name}}", "--max-model-len", "{{context}}", "--tensor-parallel-size", "{{gpus}}"]
+                command: ["{{root}}/{{model:N}}/files", "--served-model-name", "{{name}}", "--max-model-len", "{{context}}", "--tensor-parallel-size", "{{gpus.Length}}"{{(fp8 ? ", \"--quantization\", \"fp8\"" : "")}}]
                 volumes:
                   - {{volume}}:/models:ro{{(volume == "library" ? ",nocopy" : "")}}
                   - vllm-cache:/root/.cache/vllm
@@ -396,6 +415,22 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 9, "Local AI
             throw new HardwareOnboardingException(400, "invalid_setting", $"The {engine} context must be auto or a token count from 256.");
         DriverRuns(node, line, engine, cuda12);
         return (model, name, context);
+    }
+
+    /// <summary>
+    /// vLLM's online FP8 quantizes the weights as they load, and the GPU's FP8 math needs compute 8.9 (Ada) or newer. It errors on
+    /// a repository that is already quantized, which Lucia can't tell from its library entry.
+    /// </summary>
+    private static void RequireFp8(ManagedNodeFacts node, CatalogGpu[] gpus)
+    {
+        var known = node.Status?.Runtime?.Gpus ?? [];
+        foreach (var gpu in gpus)
+        {
+            var compute = known.FirstOrDefault(item => item.Uuid == gpu.Uuid)?.ComputeCapability;
+            if (!double.TryParse(compute, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || value < 8.9)
+                throw new HardwareOnboardingException(409, "vllm_fp8_unsupported",
+                    $"FP8 needs a GPU with compute 8.9 or newer (Ada, Hopper). The {gpu.Model} is {(compute ?? "unknown")}. Choose the model's own precision.");
+        }
     }
 
     // The CUDA 12 images are built for a newer CUDA 12 than the line's floor.

@@ -41,7 +41,7 @@ export interface ModelStatus { backend: string; chat: LoadedModel | null; embedd
 export interface ProviderStatus { configured: boolean; accountName: string | null; source: string; validatedAt: string | null }
 export interface SearchItem {
   repository: string; pipelineTag: string | null; downloads: number | null; likes: number | null; gated: boolean; private: boolean
-  architecture: string | null; parameters: number | null
+  architecture: string | null; parameters: number | null; requiresNightly: boolean
 }
 export interface ModelChoice {
   file: string; totalSizeBytes: number; quantization: string | null; labelSource: string; compatibility: string
@@ -50,6 +50,8 @@ export interface ModelChoice {
 export interface RepositoryModels {
   repository: string; requestedRevision: string; revision: string; kind: ModelKind; gated: boolean; private: boolean
   availability: string; choices: ModelChoice[]; warnings: string[]
+  /** vLLM serves it only on the nightly image. */
+  requiresNightly: boolean
   ggufMetadata: { source: string; scope: string; architecture: string | null; contextLength: number | null } | null
 }
 
@@ -180,7 +182,8 @@ export function parseSearch(value: unknown): { items: SearchItem[]; limitReached
     const item = record(value)
     return { repository: text(item.repository), pipelineTag: nullable(item.pipelineTag, text),
       downloads: nullable(item.downloads, number), likes: nullable(item.likes, number), gated: boolean(item.gated), private: boolean(item.private),
-      architecture: nullable(item.architecture ?? null, text), parameters: nullable(item.parameters ?? null, number) }
+      architecture: nullable(item.architecture ?? null, text), parameters: nullable(item.parameters ?? null, number),
+      requiresNightly: item.requiresNightly === true }
   }, 30) }
 }
 export function parseRepository(value: unknown): RepositoryModels {
@@ -198,7 +201,7 @@ export function parseRepository(value: unknown): RepositoryModels {
   return {
     repository: text(x.repository), requestedRevision: text(x.requestedRevision), revision, kind: kind(x.kind),
     gated: boolean(x.gated), private: boolean(x.private), availability: text(x.availability), choices,
-    warnings: array(x.warnings, text),
+    warnings: array(x.warnings, text), requiresNightly: x.requiresNightly === true,
     ggufMetadata: nullable(x.ggufMetadata, value => {
       const metadata = record(value)
       return { source: text(metadata.source), scope: text(metadata.scope), architecture: nullable(metadata.architecture, text),

@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 namespace Lucia.Homelab.Server.Host;
 
 public sealed record HuggingFaceSearchItem(string Repository, string? PipelineTag, long? Downloads, long? Likes, bool Gated, bool Private,
-    string? Architecture = null, long? Parameters = null, string? Quantization = null);
+    string? Architecture = null, long? Parameters = null, string? Quantization = null, bool RequiresNightly = false);
 public sealed record HuggingFaceSearchResult(string Query, ModelKind Kind, IReadOnlyList<HuggingFaceSearchItem> Items,
     int Limit, bool LimitReached, string Compatibility);
 public sealed record HuggingFaceFile(string Path, long SizeBytes);
@@ -13,7 +13,7 @@ public sealed record HuggingFaceModelChoice(string File, IReadOnlyList<HuggingFa
     string? Quantization, string LabelSource, string Compatibility, ModelDownloadRequest Download);
 public sealed record HuggingFaceRepositoryResult(string Repository, string RequestedRevision, string Revision,
     ModelKind Kind, bool Gated, bool Private, string Availability, IReadOnlyList<HuggingFaceModelChoice> Choices,
-    HuggingFaceGgufMetadata? GgufMetadata, IReadOnlyList<string> Warnings);
+    HuggingFaceGgufMetadata? GgufMetadata, IReadOnlyList<string> Warnings, bool RequiresNightly = false);
 
 public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService credentials, HttpClient http)
 {
@@ -53,16 +53,18 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
             if (!ValidRepository(repository) || !seen.Add(repository!)) continue;
             string? architecture = null, quantization = null;
             long? parameters = null;
+            var nightly = false;
             if (vllm)
             {
                 // vLLM loads by architecture, so a repository whose config names one the image lacks can't run.
                 (architecture, quantization) = Config(item);
-                if (architecture is null || !VllmArchitectures.Supported.Contains(architecture) || IsMlx(item)) continue;
+                nightly = architecture is not null && VllmArchitectures.NightlyOnly.Contains(architecture);
+                if (architecture is null || !(nightly || VllmArchitectures.Supported.Contains(architecture)) || IsMlx(item)) continue;
                 if (item.TryGetProperty("safetensors", out var weights)) parameters = NonnegativeNumber(weights, "total");
             }
             items.Add(new(repository!, SafeLabel(HuggingFaceManagementHttp.String(item, "pipeline_tag"), 80),
                 NonnegativeNumber(item, "downloads"), NonnegativeNumber(item, "likes"), IsGated(item), IsTrue(item, "private"),
-                architecture, parameters, quantization));
+                architecture, parameters, quantization, nightly));
         }
         return new(query, kind, items, SearchLimit, document.RootElement.GetArrayLength() >= SearchLimit, Compatibility);
     }
@@ -196,10 +198,12 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
         var total = files.Sum(file => file.SizeBytes);
         var gated = IsGated(root);
         var warnings = new List<string>();
+        var nightly = architecture is not null && (VllmArchitectures.NightlyOnly.Contains(architecture)
+            || VllmArchitectures.IsDecisionModel(architecture, files.Select(file => file.Path)));
         var availability = weights.Length == 0 || files.All(file => file.Path != "config.json") ? "no_safetensors"
             : IsMlx(root) ? "mlx"
             : architecture is null ? "unknown_architecture"
-            : !VllmArchitectures.Supported.Contains(architecture) ? "unsupported_architecture"
+            : !nightly && !VllmArchitectures.Supported.Contains(architecture) ? "unsupported_architecture"
             : gated ? "gated" : "available";
         warnings.Add(availability switch
         {
@@ -208,6 +212,7 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
             "unknown_architecture" => "Its config doesn't name a model architecture, so Lucia can't tell whether vLLM supports it.",
             "unsupported_architecture" => $"vLLM {VllmVersion} doesn't support the {architecture} architecture.",
             "gated" => "This repository is gated. Servers download without a Hugging Face account, so only public models are available.",
+            _ when nightly => "Needs vLLM nightly. Choose it in the Local AI app's vLLM image setting. vLLM loads the whole repository into GPU memory, so the weights need to fit with room left for context.",
             _ => "vLLM loads the whole repository into GPU memory. The weights need to fit, with room left for context.",
         });
         var choices = availability == "available" && total > 0
@@ -216,10 +221,10 @@ public sealed class HuggingFaceBrowserService(HuggingFaceCredentialService crede
                     Format: ModelFormat.Safetensors)) }
             : [];
         return new(repository, revision, sha, ModelKind.Chat, gated, IsTrue(root, "private"), availability, choices,
-            architecture is null ? null : new("huggingface_api", "repository", architecture, null), warnings);
+            architecture is null ? null : new("huggingface_api", "repository", architecture, null), warnings, nightly);
     }
 
-    public const string VllmVersion = "0.30.0";
+    public const string VllmVersion = "0.32.0";
 
     private static HuggingFaceGgufMetadata? Metadata(JsonElement root)
     {

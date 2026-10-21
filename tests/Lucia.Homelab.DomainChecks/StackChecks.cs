@@ -627,12 +627,36 @@ internal static class StackChecks
         });
         var library = localAi.Render(vllmSettings, gpuNode, env).Compose;
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-vllm-compose.yml"), library);
-        check(library.Contains("vllm/vllm-openai:v0.30.0@sha256:") && library.Contains("\"8080:8000\"") && library.Contains("\"8081:8080\"")
+        check(library.Contains("vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34") && library.Contains("\"8080:8000\"") && library.Contains("\"8081:8080\"")
             && library.Contains($"command: [\"/models/lucialab01/{model:N}/files\", \"--served-model-name\", \"Qwen/Qwen3-0.6B\", \"--max-model-len\", \"auto\", \"--tensor-parallel-size\", \"1\"]")
             && library.Contains("device: \":/var/nfs/shared/Models\"") && library.Contains("addr=192.168.0.172,nfsvers=3")
             && library.Contains("- library:/models:ro,nocopy") && library.Contains("- library:/models:nocopy") && library.Contains("Worker__LibraryOnly: \"true\"") && library.Contains("  vllm-cache:")
             && library.Split("device_ids").Length == 2 && !library.Contains("\n\n\n"),
             "vLLM rendered the wrong image, ports, command, NFS library or GPU reservation.");
+        check(settings["vllm-image"] == "stable" && settings["vllm-quantization"] == "none" && !library.Contains("nightly") && !library.Contains("--quantization"),
+            "vLLM defaults aren't the stable image at the model's own precision.");
+        var nightlyLibrary = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-image"] = "nightly" }, gpuNode, env).Compose;
+        check(nightlyLibrary.Contains("vllm/vllm-openai:nightly-e68efc685ab1e6f1eda004ced7157e3ca411da2f@sha256:1ff6716fe240a922d0d518b8884261e25b0c02eda8e2ce90888e364978249cad")
+            && !nightlyLibrary.Contains("v0.32.0"), "The vLLM nightly setting didn't render the nightly image.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "vllm", ["vllm-image"] = "beta" }), "An unknown vLLM image was accepted.");
+        try
+        {
+            localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-image"] = "nightly" }, gpuNode with { Gpu = new(12) }, env);
+            throw new InvalidOperationException("The vLLM nightly image on CUDA 12 was accepted.");
+        }
+        catch (HardwareOnboardingException error) when (error.Code == "vllm_nightly_needs_cuda13") { check(true, "nightly on CUDA 12"); }
+        var cuda12 = localAi.Render(vllmSettings, gpuNode with { Gpu = new(12) }, env).Compose;
+        check(cuda12.Contains("vllm/vllm-openai:v0.32.0-cu129@sha256:bc0445dac61accbf1c3b17fbb524a71eee0b1b32f55ba45952095e3be8991c3f"), "vLLM on CUDA 12 isn't the 0.32.0 cu129 image.");
+        var fp8 = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-quantization"] = "fp8" }, gpuNode, env).Compose;
+        check(fp8.Contains("\"--tensor-parallel-size\", \"1\", \"--quantization\", \"fp8\"]"), "FP8 didn't add --quantization fp8 to the vLLM command.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "vllm", ["vllm-quantization"] = "int4" }), "An unknown vLLM quantization was accepted.");
+        var ampere = cudaHost with { Runtime = cudaRuntime with { Gpus = [.. cudaRuntime.Gpus!.Select(gpu => gpu with { ComputeCapability = "8.6" })] } };
+        try
+        {
+            localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-quantization"] = "fp8" }, gpuNode with { Status = ampere }, env);
+            throw new InvalidOperationException("FP8 on a compute 8.6 GPU was accepted.");
+        }
+        catch (HardwareOnboardingException error) when (error.Code == "vllm_fp8_unsupported") { check(true, "fp8 on Ampere"); }
         var idle = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-model"] = "" }, gpuNode, env).Compose;
         check(!idle.Contains("vllm:") && !idle.Contains("vllm-cache") && idle.Contains("\"8081:8080\""), "vLLM without a model still rendered a vLLM service.");
         foreach (var (key, value, why) in new[] {
