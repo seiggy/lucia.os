@@ -628,7 +628,7 @@ internal static class StackChecks
         var library = localAi.Render(vllmSettings, gpuNode, env).Compose;
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-vllm-compose.yml"), library);
         check(library.Contains("vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34") && library.Contains("\"8080:8000\"") && library.Contains("\"8081:8080\"")
-            && library.Contains($"command: [\"/models/lucialab01/{model:N}/files\", \"--served-model-name\", \"Qwen/Qwen3-0.6B\", \"--max-model-len\", \"auto\", \"--tensor-parallel-size\", \"1\"]")
+            && library.Contains($"command: [\"/models/lucialab01/{model:N}/files\", \"--served-model-name\", \"Qwen/Qwen3-0.6B\", \"--max-model-len\", \"auto\", \"--tensor-parallel-size\", \"1\", \"--gpu-memory-utilization\", \"0.90\"]")
             && library.Contains("device: \":/var/nfs/shared/Models\"") && library.Contains("addr=192.168.0.172,nfsvers=3")
             && library.Contains("- library:/models:ro,nocopy") && library.Contains("- library:/models:nocopy") && library.Contains("Worker__LibraryOnly: \"true\"") && library.Contains("  vllm-cache:")
             && library.Split("device_ids").Length == 2 && !library.Contains("\n\n\n"),
@@ -648,7 +648,12 @@ internal static class StackChecks
         var cuda12 = localAi.Render(vllmSettings, gpuNode with { Gpu = new(12) }, env).Compose;
         check(cuda12.Contains("vllm/vllm-openai:v0.32.0-cu129@sha256:bc0445dac61accbf1c3b17fbb524a71eee0b1b32f55ba45952095e3be8991c3f"), "vLLM on CUDA 12 isn't the 0.32.0 cu129 image.");
         var fp8 = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-quantization"] = "fp8" }, gpuNode, env).Compose;
-        check(fp8.Contains("\"--tensor-parallel-size\", \"1\", \"--quantization\", \"fp8\"]"), "FP8 didn't add --quantization fp8 to the vLLM command.");
+        check(fp8.Contains("\"--tensor-parallel-size\", \"1\", \"--gpu-memory-utilization\", \"0.90\", \"--quantization\", \"fp8\"]"), "FP8 didn't add --quantization fp8 to the vLLM command.");
+        var shared = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-memory"] = "45" }, gpuNode, env).Compose;
+        check(settings["vllm-memory"] == "90" && shared.Contains("\"--gpu-memory-utilization\", \"0.45\""),
+            "vLLM must claim 90% of the GPU by default and the owner's lower share on a shared GPU.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "vllm", ["vllm-memory"] = "99" }), "A vLLM GPU memory share above 95% was accepted.");
+        Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "vllm", ["vllm-memory"] = "5" }), "A vLLM GPU memory share below 10% was accepted.");
         Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "vllm", ["vllm-quantization"] = "int4" }), "An unknown vLLM quantization was accepted.");
         var ampere = cudaHost with { Runtime = cudaRuntime with { Gpus = [.. cudaRuntime.Gpus!.Select(gpu => gpu with { ComputeCapability = "8.6" })] } };
         try

@@ -86,7 +86,7 @@ Do not start it while you are mid-conversation in the Playground. Your own model
 
 If a managed server has its own NVIDIA graphics card, you can install the **Local AI** app on it from **Apps** and manage its models from the same Models page. See [Apps](./apps.mdx).
 
-Some models need a newer vLLM than the stable one. On **Models**, these show a **Needs vLLM nightly** label. Pressing **Serve** asks you to confirm, then switches the app's vLLM image to nightly. The nightly image only runs on servers with CUDA 13. The **Weight precision** choice in the app settings can use FP8 on newer graphics cards (compute 8.9 or newer). Leave it on **none** if you are unsure.
+Some models need a newer vLLM than the stable one. On **Models**, these show a **Needs vLLM nightly** label. Pressing **Serve** asks you to confirm, then switches the app's vLLM image to nightly. The nightly image only runs on servers with CUDA 13. The **Weight precision** choice in the app settings can use FP8 on newer graphics cards (compute 8.9 or newer). Leave it on **none** if you are unsure. **GPU memory** is how much of the card vLLM takes when it starts, 90% by default. If another app such as ComfyUI is using the same card, vLLM stops with a "Free memory on device" error. Lower this setting until it fits in what's free.
 
 ## When updates pause Local AI
 
@@ -104,6 +104,7 @@ Platform updates on the Spark, such as a new graphics driver, unload your models
 | An app says the model is not found | Use the exact model name from the Playground's **Hosted model** panel. |
 | Everything is slow | A bigger context and a bigger model are slower. Try a smaller one. |
 | "The vLLM nightly image is built for CUDA 13 only" | Choose the stable vLLM image, or serve the model on a server with CUDA 13. |
+| "Free memory on device ... is less than desired GPU memory utilization" | Another app is using the card. Lower **GPU memory** in the app settings, or stop the other app. |
 | "FP8 needs a GPU with compute 8.9 or newer" | Set **Weight precision** back to **none** in the app settings. |
 
 ## For operators and developers

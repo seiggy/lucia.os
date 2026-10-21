@@ -161,7 +161,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 10, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 11, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -195,6 +195,9 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 10, "Local A
             new("none", "Model's own precision", "Loads the weights as the model ships them."),
             new("fp8", "FP8", "About half the GPU memory, so a model fits with more room for context. Needs an Ada, Hopper or newer GPU (compute 8.9 or newer), and a model that isn't already quantized."),
         ], When: "engine=vllm"),
+        new("vllm-memory", "GPU memory", "range", "90", "The share of each GPU's memory, in percent, that vLLM claims when it starts, "
+            + "for the model and its context. vLLM won't start unless that much is free, so lower it when other apps, such as ComfyUI "
+            + "or Immich, use the same GPU.", When: "engine=vllm", Min: 10, Max: 95),
         new("vllm-file", "Served GGUF file", "hidden", Optional: true),
         // llama.cpp model names, comma-separated, loaded when it starts. Set from the Models page.
         new("llama-load", "Loaded at start", "hidden", Optional: true, Max: 1024),
@@ -335,6 +338,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 10, "Local A
             throw new HardwareOnboardingException(409, "vllm_nightly_needs_cuda13", $"The vLLM nightly image is built for CUDA 13 only, and {node.Hostname} is on CUDA {line}. Choose the stable vLLM image.");
         var fp8 = settings.GetValueOrDefault("vllm-quantization") == "fp8";
         if (fp8) RequireFp8(node, gpus);
+        // vLLM claims this share of each GPU at start and refuses to start unless it's free; the default 0.92 assumes a GPU to itself.
+        var memory = (int.Parse(settings.GetValueOrDefault("vllm-memory") ?? "90", CultureInfo.InvariantCulture) / 100.0).ToString("0.00", CultureInfo.InvariantCulture);
         return $$"""
               vllm:
                 image: {{(nightly ? VllmNightly : VllmImages[line])}}
@@ -347,7 +352,7 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 10, "Local A
                   HF_HUB_OFFLINE: "1"
                   VLLM_NO_USAGE_STATS: "1"
                   DO_NOT_TRACK: "1"
-                command: ["{{root}}/{{model:N}}/files", "--served-model-name", "{{name}}", "--max-model-len", "{{context}}", "--tensor-parallel-size", "{{gpus.Length}}"{{(fp8 ? ", \"--quantization\", \"fp8\"" : "")}}]
+                command: ["{{root}}/{{model:N}}/files", "--served-model-name", "{{name}}", "--max-model-len", "{{context}}", "--tensor-parallel-size", "{{gpus.Length}}", "--gpu-memory-utilization", "{{memory}}"{{(fp8 ? ", \"--quantization\", \"fp8\"" : "")}}]
                 volumes:
                   - {{volume}}:/models:ro{{(volume == "library" ? ",nocopy" : "")}}
                   - vllm-cache:/root/.cache/vllm
