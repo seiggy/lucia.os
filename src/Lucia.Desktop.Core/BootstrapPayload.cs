@@ -29,6 +29,7 @@ internal static class BootstrapPayload
         "tools/packages/package_worker.py",
         "tools/runners/spark_runner_worker.py",
         "tools/runners/spark_model_worker.py",
+        "tools/runners/tensorfold/0017-engine-systemone.patch",
         "tools/skills/skill_worker.py",
         "deployment/skill-runner/Dockerfile",
         "deployment/host/Dockerfile",

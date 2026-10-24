@@ -58,7 +58,7 @@
     },
     {
       "name": "Local AI and inference",
-      "paths": ["src/Lucia.Inference.Worker/**", "src/Lucia.Homelab.Server/Host/**", "tools/host/**", "deployment/inference/**", "src/frontend/src/LocalAI.tsx", "src/frontend/src/ModelManager.tsx", "src/frontend/src/modelManagement.ts", "src/frontend/src/Playground*.tsx", "src/Lucia.Homelab.Server/Stacks/StackCatalog.cs", "tests/Lucia.Homelab.HuggingFaceChecks/**"],
+      "paths": ["src/Lucia.Inference.Worker/**", "src/Lucia.Homelab.Server/Host/**", "tools/host/**", "tools/runners/spark_model_worker.py", "tools/runners/tensorfold/**", "deployment/inference/**", "src/frontend/src/LocalAI.tsx", "src/frontend/src/ModelManager.tsx", "src/frontend/src/modelManagement.ts", "src/frontend/src/Playground*.tsx", "src/Lucia.Homelab.Server/Stacks/StackCatalog.cs", "tests/Lucia.Homelab.HuggingFaceChecks/**"],
       "docs": ["guide/local-ai", "code/local-ai", "deploy/local-ai"]
     },
     {

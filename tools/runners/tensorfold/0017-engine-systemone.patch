@@ -1,0 +1,2509 @@
+diff --git a/docs/api.md b/docs/api.md
+index 3032adb4..48c92308 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -11,7 +11,7 @@ The server stores SHA-256 digests and compares every configured digest for each
+ 
+ Send `Authorization: Bearer KEY` from OpenAI-compatible clients, or `x-api-key: KEY` from Messages clients.
+ Missing or invalid credentials return HTTP 401 with `WWW-Authenticate: Bearer` and the route's error format.
+-All `/v1/*`, tokenization, metrics and their inference aliases require a key; `--metrics-open` opens both metrics
++All `/v1/*`, tokenization, metrics and their inference aliases (`/systemone` included) require a key; `--metrics-open` opens both metrics
+ routes. `/health` remains open and returns only `{"status":"ok"}` when keys are configured.
+ With no keys, the existing open routes and health details stay unchanged; a non-loopback bind prints a warning.
+ 
+@@ -44,6 +44,7 @@ Prefer a restricted file over command-line keys, which can appear in the operati
+ | `POST /v1/responses` | OpenAI's Responses API, run as the equivalent chat completion; streamed or non-streamed |
+ | `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}` | A stored response, or remove it |
+ | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
++| `POST /v1/systemone`, `POST /systemone` | llama-server's System One questions (`noul`, `choice`, `score`) about a state, read the same way |
+ 
+ On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
+ take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given.
+@@ -60,8 +61,8 @@ Unsupported image input, audio, video and non-text output requests receive HTTP
+ 
+ ## Decisions
+ 
+-`POST /v1/decisions` is served by the MLX server and by the CUDA GLM engine.
+-Another CUDA engine, one without label scoring, returns HTTP 400.
++`POST /v1/decisions` is served by the MLX server, by the CUDA GLM engine and by Flash Next on one CUDA GPU.
++Another CUDA engine, one without label scoring, returns HTTP 400. Flash Next at `--tp 2` has no label scoring.
+ The prompt wording is SGLang's decision prompt format version 1: the input, a blank line, the question, one line per
+ option, level, or described yes or no answer, and a closing instruction to answer with one label. Choice labels are
+ `A` to `Z`, score labels are `0` to `9`, and a yes/no question uses `yes` and `no`. Each label must be one distinct
+@@ -72,6 +73,23 @@ question id, and `usage.completion_tokens` 0. `probabilities` are a softmax over
+ For decisions, `chat_template_kwargs` may be omitted, null, or an object containing only
+ `enable_thinking: false`; other types, keys, or thinking values return HTTP 400.
+ 
++`POST /v1/systemone` (any path ending in `/systemone`) takes llama-server's System One body: a `state` (text, JSON
++or a message list; null when the question says it all) and `questions`, an object of id to `noul` (yes or no),
++`choice` (options as single-token codes) or `score` (2 to 10 levels) questions with their `instructions` and
++`criteria`. Each question is one user turn rendered by the model's chat template with thinking off and the
++assistant's generation prompt appended (main writes a literal LFM header instead): the state, `QUESTION:`, the
++instructions and the options, levels or yes/no instruction. A label form counts only when it is one distinct token
++right after that prompt: a choice code must be, a `noul` needs one of `yes`/`Yes`/`YES` and of `no`/`No`/`NO`,
++a `score` its digits; otherwise HTTP 400. The labels are read there, nothing generated. The reply has `model`, `answers` keyed by id and `usage`: `input_tokens`
++counts the prompts' shared start once, `output_tokens` is 0. Image parts and `images` or `files` are refused with HTTP 400
++("this checkpoint has no vision tower"): no native engine here reads a decision's pictures. On an engine without label
++scoring the path is unknown (HTTP 404).
++
++On Flash Next (one CUDA GPU) a decision is a request in the lanes like any other: its prompt prefills beside the
++replies that are decoding, from the start (it neither resumes nor keeps a prompt-cache state), and where a reply
++would draw its first token the server reads that row's logits at the labels, with the row's logsumexp for
++`label_mass`. No token is drawn, no draft is made, and the lane is freed at once.
++
+ ## Request fields
+ 
+ | Field | Meaning | Backend |
+diff --git a/zig/src/core/engine_api.zig b/zig/src/core/engine_api.zig
+index f695a791..2fc8709a 100644
+--- a/zig/src/core/engine_api.zig
++++ b/zig/src/core/engine_api.zig
+@@ -56,6 +56,9 @@ pub const grammar = lanes.grammar;
+ /// A prompt's images and video frames, prepared by the vision frontend (rows, rotary positions, features).
+ pub const Media = lanes.Media;
+ 
++/// A decision's labels and what its read of the prompt's last row gives back (``Request.score``).
++pub const Score = lanes.Score;
++
+ /// A reply to decode. The request and every slice in it stay valid until its ``finished`` event.
+ pub const Request = struct {
+     prompt: []const u32,
+@@ -86,6 +89,8 @@ pub const Request = struct {
+     loop_guard: bool = false,
+     /// The prompt's images and videos (``Info.media`` engines only); such a prompt is never kept or resumed.
+     media: ?*const Media = null,
++    /// A decision: no reply, the prompt's last row read at the labels (``Engine.score``); never kept or resumed.
++    score: ?*Score = null,
+ };
+ 
+ pub const Reason = enum { stop, length, cancelled, failed };
+@@ -181,6 +186,8 @@ pub const Engine = struct {
+         status: *const fn (ctx: *anyopaque, out: *Status, stream_tokens: []u32) void,
+         /// Device memory in bytes, the peak since the last reset; null when the backend keeps no count.
+         memory: *const fn (ctx: *anyopaque, reset_peak: bool) ?Memory,
++        /// One logit per label at the row after `prompt`, and the vocabulary logsumexp when `mass` (else 0).
++        score: ?*const fn (ctx: *anyopaque, prompt: []const u32, labels: []const u32, logits: []f64, mass: bool) error{Failed}!f64 = null,
+     };
+ 
+     pub fn info(e: Engine) Info {
+@@ -198,6 +205,12 @@ pub const Engine = struct {
+     pub fn memory(e: Engine, reset_peak: bool) ?Memory {
+         return e.vtable.memory(e.ctx, reset_peak);
+     }
++
++    /// The decision hook, or Unsupported when this engine does not score.
++    pub fn score(e: Engine, prompt: []const u32, labels: []const u32, logits: []f64, mass: bool) error{ Failed, Unsupported }!f64 {
++        const f = e.vtable.score orelse return error.Unsupported;
++        return f(e.ctx, prompt, labels, logits, mass);
++    }
+ };
+ 
+ /// A backend's own driver for a lone greedy stream (the GPU round), which LaneHost runs while the stream is alone.
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index 2d7da143..f3cbeae9 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -42,6 +42,8 @@ pub const LaneHost = struct {
+     t_deliver: i96 = 0,
+     t_steps: u64 = 0,
+     admit_wait_ms: u32 = 0, // an idle engine waits this long after a first arrival for requests sent together (a burst prefills in one pass)
++    scored: std.Io.Condition = .init, // a decision finished (scoreFn's waiters, under `mutex`)
++    next_score: std.atomic.Value(u64) = .init(0),
+ 
+     const Mark = struct { at: i96, tokens: u64 };
+     const window_ns: i96 = 2 * std.time.ns_per_s;
+@@ -116,8 +118,49 @@ pub const LaneHost = struct {
+         h.live_tokens.deinit(h.gpa);
+     }
+ 
++    /// The engine served; it scores decisions when the backend reads them (two ranks: their leader passes none).
+     pub fn engine(h: *LaneHost) Engine {
+-        return .{ .ctx = h, .vtable = &.{ .info = infoFn, .submit = submitFn, .cancel = cancelFn, .status = statusFn, .memory = memoryFn } };
++        return .{ .ctx = h, .vtable = if (h.core.backend.vtable.score != null) &scoring_vt else &plain_vt };
++    }
++
++    const plain_vt: Engine.VTable = .{ .info = infoFn, .submit = submitFn, .cancel = cancelFn, .status = statusFn, .memory = memoryFn };
++    const scoring_vt: Engine.VTable = .{ .info = infoFn, .submit = submitFn, .cancel = cancelFn, .status = statusFn, .memory = memoryFn, .score = scoreFn };
++
++    /// Decisions' ids, apart from the server's (which count up from 1).
++    const score_ids: Id = 1 << 63;
++
++    /// A decision's wait for its `finished` (on the stack of the thread that asked).
++    const Waiter = struct {
++        host: *LaneHost,
++        done: bool = false,
++        reason: Reason = .failed,
++
++        fn event(ctx: *anyopaque, _: Id, e: *const Event) void {
++            const w: *Waiter = @ptrCast(@alignCast(ctx));
++            if (e.* != .finished) return;
++            const h = w.host;
++            h.lock();
++            defer h.unlock();
++            w.reason = e.finished.reason;
++            w.done = true;
++            h.scored.broadcast(h.io);
++        }
++    };
++
++    /// A decision as a request in the lanes: its prompt prefilled as any other (fresh, nothing kept or resumed),
++    /// then read at the labels where its first token would be drawn; the asking thread waits for it.
++    fn scoreFn(ctx: *anyopaque, prompt: []const u32, labels: []const u32, logits: []f64, mass: bool) error{Failed}!f64 {
++        const h = self(ctx);
++        var sc: lanes.Score = .{ .labels = labels, .logits = logits, .mass = mass };
++        const request: Request = .{ .prompt = prompt, .max_tokens = 0, .drafts = false, .score = &sc };
++        var w: Waiter = .{ .host = h };
++        const id = score_ids | h.next_score.fetchAdd(1, .monotonic);
++        submitFn(ctx, id, &request, .{ .ctx = &w, .event = Waiter.event }) catch return error.Failed;
++        h.lock();
++        while (!w.done) h.scored.waitUncancelable(h.io, &h.mutex);
++        h.unlock();
++        if (w.reason != .stop) return error.Failed;
++        return sc.logsumexp;
+     }
+ 
+     fn self(ctx: *anyopaque) *LaneHost {
+@@ -304,8 +347,8 @@ pub const LaneHost = struct {
+         const r = job.request;
+         var reuse: lanes.stream.Reuse = .{};
+         // the entry stays alive until the backend restores it: nothing keeps between here and this stream's own pass
+-        // a prompt with images or video is neither resumed nor kept (Python keeps token-only states)
+-        if (r.media == null) if (h.cache) |store| if (store.lookup(h.gpa, r.prompt, r.history_len, r.shared_prefixes, r.chunks)) |l| {
++        // a prompt with images or video is neither resumed nor kept (Python keeps token-only states), nor a decision's
++        if (r.media == null and r.score == null) if (h.cache) |store| if (store.lookup(h.gpa, r.prompt, r.history_len, r.shared_prefixes, r.chunks)) |l| {
+             job.entry = l.entry;
+             job.kept0 = store.counts.kept;
+             job.marks = l.marks;
+@@ -343,6 +386,7 @@ pub const LaneHost = struct {
+             .reuse = reuse,
+             .media = r.media,
+             .grammar = grammar,
++            .score = r.score,
+         }) catch {
+             if (grammar) |g| g.deinit(h.gpa);
+             job.proposer.deinit();
+@@ -375,7 +419,7 @@ pub const LaneHost = struct {
+             .job => |job| {
+                 if (h.loneFits(job)) {
+                     _ = h.runLone(job, job.began);
+-                } else if (n < burst.len and h.core.batches() and job.stream.media == null and job.stream.grammar == null and job.stream.reuse.at == 0 and job.stream.reuse.marks.len == 0) {
++                } else if (n < burst.len and h.core.batches() and job.stream.media == null and job.stream.grammar == null and job.stream.score == null and job.stream.reuse.at == 0 and job.stream.reuse.marks.len == 0) {
+                     burst[n] = job;
+                     n += 1;
+                 } else _ = h.startOne(job);
+@@ -434,17 +478,18 @@ pub const LaneHost = struct {
+         job.prefilled = done;
+         h.unlock();
+         job.reported();
+-        if (h.cache) |store| {
++        // a decision's pass is neither a hit nor a miss, and serves no prompt a later turn repeats
++        if (h.cache) |store| if (job.request.score == null) {
+             store.report(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0);
+             if (job.request.media == null) store.noteServed(job.request.prompt);
+-        }
++        };
+         emit(job, .{ .prefilled = job.stream.cached });
+     }
+ 
+     /// A greedy drafted request alone in the engine, with nothing waiting: the backend's own driver takes it.
+     fn loneFits(h: *LaneHost, job: *Job) bool {
+         const r = job.request;
+-        if (h.lone == null or r.sampling != null or !r.drafts or r.think_budget > 0 or r.loop_guard or r.call != null or r.structure != null or r.media != null) return false;
++        if (h.lone == null or r.sampling != null or !r.drafts or r.think_budget > 0 or r.loop_guard or r.call != null or r.structure != null or r.media != null or r.score != null) return false;
+         h.lock();
+         defer h.unlock();
+         return h.admitted.items.len == 1 and h.queued.items.len == 0 and h.cancels.items.len == 0 and h.core.activeCount() == 0 and h.core.fillingCount() == 0;
+diff --git a/zig/src/core/lane_host_reuse_test.zig b/zig/src/core/lane_host_reuse_test.zig
+index 3855da58..03163006 100644
+--- a/zig/src/core/lane_host_reuse_test.zig
++++ b/zig/src/core/lane_host_reuse_test.zig
+@@ -258,3 +258,125 @@ test "a lane host fills prompts between rounds: requests arriving together fill
+     }
+     try std.testing.expect(target.fill_steps > 0);
+ }
++
++test "a decision through the lane host, beside a live reply: read fresh from the prompt's start, nothing kept or resumed" {
++    const gpa = std.testing.allocator;
++    var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .gpu_tokens = true, .hidden_rows = true }, 8, 7);
++    defer cfg.deinit(gpa);
++    var target: lanes.fake.Fake = .{ .gpa = gpa };
++    defer target.deinit();
++    var clock: lanes.fake.FixedClock = .{};
++    var core = lanes.Engine.init(gpa, &cfg, target.backend(), clock.clock());
++    defer core.deinit();
++    const Snaps = struct {
++        fn bytes(_: *anyopaque, at: u32) u64 {
++            return 64 + 4 * @as(u64, at);
++        }
++        fn save(ptr: *anyopaque, owner: ?*anyopaque, at: u32) anyerror!pc.Saved {
++            const f: *lanes.fake.Fake = @ptrCast(@alignCast(ptr));
++            return f.save(@ptrCast(@alignCast(owner.?)), at);
++        }
++        fn restore(_: *anyopaque, _: ?*anyopaque, _: pc.Saved) anyerror!void {
++            return error.BackendRestores;
++        }
++        fn drop(ptr: *anyopaque, saved: pc.Saved) void {
++            const f: *lanes.fake.Fake = @ptrCast(@alignCast(ptr));
++            f.drop(saved);
++        }
++    };
++    var store = pc.Store.init(gpa, .{ .ptr = &target, .vtable = &.{ .bytes = Snaps.bytes, .save = Snaps.save, .restore = Snaps.restore, .drop = Snaps.drop } }, .{ .min_gap = 4, .min_prompt = 0 }, 1 << 20);
++    defer store.deinit();
++    var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 2 });
++    host.cache = &store;
++    try host.start();
++    defer host.stop();
++    const Box = struct {
++        mutex: std.Io.Mutex = .init,
++        tokens: std.ArrayList(u32) = .empty,
++        cached: ?u32 = null,
++        done: ?Reason = null,
++        fn event(ctx: *anyopaque, _: Id, e: *const Event) void {
++            const b: *@This() = @ptrCast(@alignCast(ctx));
++            b.mutex.lockUncancelable(std.testing.io);
++            defer b.mutex.unlock(std.testing.io);
++            switch (e.*) {
++                .prefilled => |c| b.cached = c,
++                .tokens => |t| b.tokens.appendSlice(gpa, t) catch {},
++                .finished => |f| b.done = f.reason,
++            }
++        }
++        fn prefilled(b: *@This()) void {
++            while (true) {
++                b.mutex.lockUncancelable(std.testing.io);
++                const c = b.cached;
++                b.mutex.unlock(std.testing.io);
++                if (c != null) return;
++                std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
++            }
++        }
++        fn wait(b: *@This()) Reason {
++            while (true) {
++                b.mutex.lockUncancelable(std.testing.io);
++                const d = b.done;
++                b.mutex.unlock(std.testing.io);
++                if (d) |r| return r;
++                std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
++            }
++        }
++    };
++    const e = host.engine();
++    try std.testing.expect(e.vtable.score != null);
++    const prompt = [_]u32{ 3, 1, 4, 1, 5, 9, 2, 6, 5, 3 };
++    var reply: Box = .{};
++    defer reply.tokens.deinit(gpa);
++    const r1: Request = .{ .prompt = &prompt, .max_tokens = 400, .history_len = 8 };
++    try e.submit(1, &r1, .{ .ctx = &reply, .event = Box.event });
++    reply.prefilled(); // its state kept at 8 tokens; it decodes while the decisions run
++    const before = store.counts;
++    const entries = store.entries.items.len;
++    const labels = [_]u32{ 3, 40, 96 };
++    for (0..3) |_| {
++        var logits: [labels.len]f64 = undefined;
++        const mass = try e.score(&prompt, &labels, &logits, true);
++        for (labels, logits) |t, x| try std.testing.expectEqual(lanes.fake.Fake.logit(&prompt, t), x);
++        var sum: f64 = 0;
++        for (0..lanes.fake.vocab) |t| sum += @exp(lanes.fake.Fake.logit(&prompt, @intCast(t)));
++        try std.testing.expectApproxEqRel(@log(sum), mass, 1e-12);
++        var plain: [labels.len]f64 = undefined;
++        try std.testing.expectEqual(@as(f64, 0), try e.score(&prompt, &labels, &plain, false));
++        try std.testing.expectEqualSlices(f64, &logits, &plain);
++    }
++    try std.testing.expectEqual(@as(usize, 6), target.scored);
++    // no lookup, no keep, no report: the store saw none of them
++    try std.testing.expectEqual(before.hits, store.counts.hits);
++    try std.testing.expectEqual(before.misses, store.counts.misses);
++    try std.testing.expectEqual(before.kept, store.counts.kept);
++    try std.testing.expectEqual(entries, store.entries.items.len);
++    try std.testing.expectEqual(Reason.length, reply.wait());
++    var history: std.ArrayList(u32) = .empty;
++    defer history.deinit(gpa);
++    try history.appendSlice(gpa, &prompt);
++    for (reply.tokens.items) |t| {
++        try std.testing.expectEqual(lanes.fake.next(history.items, null, history.items.len), t);
++        try history.append(gpa, t);
++    }
++    try std.testing.expectEqual(@as(usize, 400), reply.tokens.items.len);
++    var bad: [1]f64 = undefined;
++    try std.testing.expectError(error.Failed, e.score(&prompt, &.{lanes.fake.vocab}, &bad, false)); // a label past the vocabulary fails the decision alone
++    try std.testing.expectEqual(@as(u32, 0), target.lanes.count());
++}
++
++test "a lane host over a backend that scores nothing serves no score hook" {
++    const gpa = std.testing.allocator;
++    var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .gpu_tokens = true, .hidden_rows = true }, 8, 7);
++    defer cfg.deinit(gpa);
++    var target: lanes.fake.Fake = .{ .gpa = gpa };
++    defer target.deinit();
++    var clock: lanes.fake.FixedClock = .{};
++    var core = lanes.Engine.init(gpa, &cfg, target.backendHeldless(), clock.clock());
++    defer core.deinit();
++    var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 2 });
++    var logits: [1]f64 = undefined;
++    try std.testing.expect(host.engine().vtable.score == null);
++    try std.testing.expectError(error.Unsupported, host.engine().score(&.{ 1, 2 }, &.{3}, &logits, false));
++}
+diff --git a/zig/src/core/lanes/backend.zig b/zig/src/core/lanes/backend.zig
+index 5ce7bfaa..92bc8d75 100644
+--- a/zig/src/core/lanes/backend.zig
++++ b/zig/src/core/lanes/backend.zig
+@@ -59,6 +59,9 @@ pub const Backend = struct {
+         first_masked: ?*const fn (ptr: *anyopaque, s: *Stream, position: u64, mask: []const u32) anyerror!u64 = null,
+         /// The stream's held drafts as host tokens in window order, waiting for the draft (a grammar walks them).
+         held: ?*const fn (ptr: *anyopaque, s: *Stream, out: []u32) anyerror!void = null,
++        /// A decision (`s.score`): the prompt's last row read at the labels instead of `first`, and its logsumexp
++        /// when asked; the stream is released next without a token. Null: the backend scores nothing.
++        score: ?*const fn (ptr: *anyopaque, s: *Stream, labels: []const u32, logits: []f64, mass: bool) anyerror!f64 = null,
+         /// Feed one token and queue the draw of the next at `position` (a one-token round); a handle to it.
+         queue: *const fn (ptr: *anyopaque, s: *Stream, feed: Feed, position: u64) anyerror!u64,
+         /// The value of a drawn token (waits for the GPU).
+diff --git a/zig/src/core/lanes/engine.zig b/zig/src/core/lanes/engine.zig
+index 6e0ffa88..9d4a77ce 100644
+--- a/zig/src/core/lanes/engine.zig
++++ b/zig/src/core/lanes/engine.zig
+@@ -195,6 +195,7 @@ pub const Engine = struct {
+             e.backend.release(s);
+             return error.Cancelled;
+         }
++        if (s.score != null) return e.scoreStream(s);
+         s.context.shrinkRetainingCapacity(s.prompt_len);
+         s.pending = null;
+         s.cache_len = s.prompt_len;
+@@ -743,6 +744,20 @@ pub const Engine = struct {
+         try trail.event(e, &.{ f("ev", str("land")), f("stream", str(s.id)), f("got", .{ .u32s = s.emitted()[s.emitted().len - landed ..] }) });
+     }
+ 
++    /// A decision's prompt is in: its last row is read at the labels where a reply draws its first token, and the
++    /// stream ends there: no token committed, no drafts asked, its caches released (nothing kept for later prompts).
++    fn scoreStream(e: *Engine, s: *Stream) !void {
++        const sc = s.score.?;
++        const read = e.backend.vtable.score orelse return error.ScoresUnsupported;
++        if (sc.labels.len == 0 or sc.labels.len != sc.logits.len) return error.BadLabels;
++        sc.logsumexp = try read(e.backend.ptr, s, sc.labels, sc.logits, sc.mass);
++        s.cache_len = s.prompt_len;
++        s.finished = true;
++        s.reason = .stop;
++        try trail.finish(e, s);
++        e.release(s);
++    }
++
+     /// The first token's draw: among the grammar's allowed tokens when the stream has one that constrains it.
+     pub fn drawFirst(e: *Engine, s: *Stream, position: u64) !u64 {
+         const g = s.grammar orelse return e.backend.first(s, position);
+diff --git a/zig/src/core/lanes/engine_test.zig b/zig/src/core/lanes/engine_test.zig
+index 8972e7aa..7ca0043b 100644
+--- a/zig/src/core/lanes/engine_test.zig
++++ b/zig/src/core/lanes/engine_test.zig
+@@ -416,3 +416,65 @@ test "structured output: the grammar's stop token ends a reply that ignores eos"
+     try std.testing.expectEqual(@as(usize, 6), out[0].len);
+     try expectInGrammar(out[0], .{ .length = 5 });
+ }
++
++test "a decision reads its prompt's last row and emits nothing; the replies beside it equal their lone runs" {
++    const sampled: Sampling = .{ .seed = 9, .temperature = 1.0, .top_k = 0, .top_p = 0.9 };
++    const plain = [_]Case{ .{ .prompt = &p1, .max_new = 30 }, .{ .prompt = &p2, .sampling = sampled, .max_new = 30 } };
++    const labels = [_]u32{ 3, 40, 96 };
++    for ([_]bool{ false, true }) |sliced| {
++        var cfg = try model();
++        defer cfg.deinit(gpa);
++        var target: fake.Fake = .{ .gpa = gpa };
++        defer target.deinit();
++        var clock: fake.FixedClock = .{};
++        var engine = Engine.init(gpa, &cfg, if (sliced) target.backendSliced() else target.backend(), clock.clock());
++        defer engine.deinit();
++        var proposers: [plain.len]SuffixLookup = undefined;
++        for (&proposers) |*p| p.* = try SuffixLookup.init(gpa, .{ .min_match = 4 });
++        defer for (&proposers) |*p| p.deinit();
++        var streams: [plain.len]sm.Stream = undefined;
++        for (plain, &streams, &proposers) |c, *s, *p| s.* = try sm.Stream.init(gpa, .{ .id = "s", .prompt = c.prompt, .max_new = c.max_new, .eos = c.eos, .sampling = c.sampling, .proposer = p.proposer(), .think_close = &.{ 90, 91, 92 }, .think_end = 91 });
++        defer for (&streams) |*s| s.deinit(gpa);
++        var logits: [labels.len]f64 = undefined;
++        var score: sm.Score = .{ .labels = &labels, .logits = &logits, .mass = true };
++        var decision = try sm.Stream.init(gpa, .{ .id = "d", .prompt = &p2, .max_new = 1, .drafts = false, .score = &score });
++        defer decision.deinit(gpa);
++        // the decision arrives while a reply decodes, the second reply after it
++        _ = try engine.beginStream(&streams[0]);
++        try engine.step();
++        _ = try engine.beginStream(&decision);
++        _ = try engine.beginStream(&streams[1]);
++        while (engine.activeCount() > 0 or engine.fillingCount() > 0) try engine.step();
++        try std.testing.expect(decision.finished and decision.reason == .stop);
++        try std.testing.expectEqual(@as(usize, 0), decision.emitted().len);
++        try std.testing.expectEqual(@as(usize, 1), target.scored);
++        var sum: f64 = 0;
++        for (0..fake.vocab) |t| sum += @exp(fake.Fake.logit(&p2, @intCast(t)));
++        try std.testing.expectApproxEqRel(@log(sum), score.logsumexp, 1e-12);
++        for (labels, logits) |t, x| try std.testing.expectEqual(fake.Fake.logit(&p2, t), x);
++        try std.testing.expectEqual(@as(u32, 0), target.lanes.count()); // every lane released, the decision's too
++        for (plain, &streams) |c, *s| {
++            const alone = try run(&.{c});
++            defer free(alone);
++            try std.testing.expectEqualSlices(u32, alone[0], s.emitted());
++        }
++    }
++}
++
++test "a decision on a backend that scores nothing fails without a token" {
++    var cfg = try model();
++    defer cfg.deinit(gpa);
++    var target: fake.Fake = .{ .gpa = gpa };
++    defer target.deinit();
++    var clock: fake.FixedClock = .{};
++    var engine = Engine.init(gpa, &cfg, target.backendHeldless(), clock.clock());
++    defer engine.deinit();
++    var logits: [1]f64 = undefined;
++    var score: sm.Score = .{ .labels = &.{3}, .logits = &logits };
++    var decision = try sm.Stream.init(gpa, .{ .id = "d", .prompt = &p1, .max_new = 1, .drafts = false, .score = &score });
++    defer decision.deinit(gpa);
++    try std.testing.expectError(error.ScoresUnsupported, engine.addStream(&decision));
++    try std.testing.expectEqual(@as(usize, 0), decision.emitted().len);
++    engine.discard(&decision);
++    try std.testing.expectEqual(@as(u32, 0), target.lanes.count());
++}
+diff --git a/zig/src/core/lanes/fake.zig b/zig/src/core/lanes/fake.zig
+index 3d1ab8cf..f38e2459 100644
+--- a/zig/src/core/lanes/fake.zig
++++ b/zig/src/core/lanes/fake.zig
+@@ -44,6 +44,7 @@ pub const Fake = struct {
+     fills: std.ArrayList(Fill) = .empty,
+     fill_steps: u64 = 0, // prefill_step calls
+     widest_fill: usize = 0, // the most streams one prefill_step filled
++    scored: usize = 0, // decisions read
+ 
+     const Fill = struct { s: *Stream, done: usize };
+ 
+@@ -62,7 +63,7 @@ pub const Fake = struct {
+     }
+ 
+     pub fn backend(x: *Fake) be.Backend {
+-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .release = release, .held = held } };
++        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .first_masked = firstMasked, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .release = release, .held = held, .score = score } };
+     }
+ 
+     /// The target without its held-drafts read: structured output drops a held chain instead of walking it.
+@@ -72,7 +73,7 @@ pub const Fake = struct {
+ 
+     /// The same target filling prompts in slices between rounds (prefill_begin / prefill_step).
+     pub fn backendSliced(x: *Fake) be.Backend {
+-        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .release = release, .prefill_begin = prefillBegin, .prefill_step = prefillStep } };
++        return .{ .ptr = x, .vtable = &.{ .prefill = prefill, .first = first, .queue = queue, .read = read, .verify = verify, .keep = keep, .draft = draft, .release = release, .prefill_begin = prefillBegin, .prefill_step = prefillStep, .score = score } };
+     }
+ 
+     fn prefillBegin(ptr: *anyopaque, s: *Stream) anyerror!void {
+@@ -208,6 +209,28 @@ pub const Fake = struct {
+         @memcpy(out, l.held.items[0..out.len]);
+     }
+ 
++    /// The fake's logit for `t` at the row after `history`: it falls with the distance from the greedy draw.
++    pub fn logit(history: []const u32, t: u32) f64 {
++        const top = next(history, null, history.len);
++        return -@as(f64, @floatFromInt(@max(t, top) - @min(t, top)));
++    }
++
++    /// A decision: the prompt's last row at `labels`, and its logsumexp when `mass`.
++    fn score(ptr: *anyopaque, s: *Stream, labels: []const u32, logits: []f64, mass: bool) anyerror!f64 {
++        const x = self(ptr);
++        const h = x.lane(s).history.items;
++        if (h.len != s.prompt_len) return error.PositionMismatch;
++        x.scored += 1;
++        for (labels, logits) |t, *v| {
++            if (t >= vocab) return error.LabelOutsideVocabulary;
++            v.* = logit(h, t);
++        }
++        if (!mass) return 0;
++        var sum: f64 = 0;
++        for (0..vocab) |t| sum += @exp(logit(h, @intCast(t)));
++        return @log(sum);
++    }
++
+     fn queue(ptr: *anyopaque, s: *Stream, feed: be.Feed, position: u64) anyerror!u64 {
+         const x = self(ptr);
+         const l = x.lane(s);
+diff --git a/zig/src/core/lanes/lanes.zig b/zig/src/core/lanes/lanes.zig
+index 7ccb23e8..d54650e9 100644
+--- a/zig/src/core/lanes/lanes.zig
++++ b/zig/src/core/lanes/lanes.zig
+@@ -27,6 +27,7 @@ pub const Config = config.Config;
+ pub const Model = config.Model;
+ pub const Stream = stream.Stream;
+ pub const Media = stream.Media;
++pub const Score = stream.Score;
+ pub const Sampling = sampling.Sampling;
+ pub const SuffixLookup = proposer.SuffixLookup;
+ 
+diff --git a/zig/src/core/lanes/stream.zig b/zig/src/core/lanes/stream.zig
+index 845972d1..0afb97cc 100644
+--- a/zig/src/core/lanes/stream.zig
++++ b/zig/src/core/lanes/stream.zig
+@@ -136,6 +136,15 @@ pub const Media = struct {
+     }
+ };
+ 
++/// A decision (/v1/decisions, /v1/systemone): the prompt's last row read at `labels` where a reply would draw its
++/// first token; the stream then ends without one (lanes/engine.zig scoreStream).
++pub const Score = struct {
++    labels: []const u32,
++    logits: []f64, // out: one logit per label
++    mass: bool = false, // also the row's logsumexp
++    logsumexp: f64 = 0, // out, when `mass`
++};
++
+ pub const Spec = struct {
+     id: []const u8,
+     prompt: []const u32,
+@@ -165,6 +174,7 @@ pub const Spec = struct {
+     } = null,
+     media: ?*const Media = null,
+     grammar: ?*grammar.Constraint = null, // structured output: the reply stays in it (the creator frees it)
++    score: ?*Score = null, // a decision: no reply, the prompt's last row read at its labels (the creator owns it)
+ };
+ 
+ pub const Stream = struct {
+@@ -224,6 +234,7 @@ pub const Stream = struct {
+     gate: ?call_gate.Gate = null,
+     grammar: ?*grammar.Constraint = null, // follows each committed token; its masks keep the draws inside it
+     problem: []const u8 = "", // why a stream finished with `error` (static text)
++    score: ?*Score = null, // a decision: its prompt's last row is read, not drawn from
+ 
+     pub fn init(gpa: Allocator, spec: Spec) !Stream {
+         var s: Stream = .{
+@@ -245,6 +256,7 @@ pub const Stream = struct {
+             .reuse = spec.reuse,
+             .media = spec.media,
+             .grammar = spec.grammar,
++            .score = spec.score,
+         };
+         // under a grammar a forced close ends at the think end: the grammar takes the reply from the next token
+         if (spec.grammar) |g| if (g.after) |end| if (std.mem.indexOfScalar(u32, s.think_close, end)) |at| {
+diff --git a/zig/src/families/flashnext/cuda.zig b/zig/src/families/flashnext/cuda.zig
+index 074bfe28..f4c99306 100644
+--- a/zig/src/families/flashnext/cuda.zig
++++ b/zig/src/families/flashnext/cuda.zig
+@@ -32,6 +32,7 @@ pub const moe_tile = @import("cuda_moe_tile.zig");
+ pub const fp8 = @import("cuda_fp8.zig");
+ pub const int4 = @import("cuda_int4.zig");
+ pub const int4_check = @import("cuda_int4_check.zig");
++pub const score = @import("cuda_score.zig");
+ pub const Engine = engine.Engine;
+ 
+ test {
+@@ -63,4 +64,5 @@ test {
+     _ = fp8;
+     _ = int4;
+     _ = int4_check;
++    _ = score;
+ }
+diff --git a/zig/src/families/flashnext/cuda_engine.zig b/zig/src/families/flashnext/cuda_engine.zig
+index c893c5df..c2c11d8c 100644
+--- a/zig/src/families/flashnext/cuda_engine.zig
++++ b/zig/src/families/flashnext/cuda_engine.zig
+@@ -1485,6 +1485,13 @@ pub const Engine = struct {
+         return first[0];
+     }
+ 
++    /// A decision's label logits from a kept last row (firstRow), and its logsumexp when `mass` (cuda_score.zig).
++    pub fn scoreRow(e: *Engine, row: []const u8, wanted: []const u32, logits: []f64, mass: bool) !f64 {
++        if (e.world > 1) return error.UnsupportedRankOperation; // a rank's row is its vocabulary shard
++        if (row.len != e.g.head_n * 2) return error.BadFirstRow;
++        return @import("cuda_score.zig").labels(row, wanted, logits, mass);
++    }
++
+     /// Keep window `i`'s first `keep` rows (its stream's commit, at its rows of the shared window).
+     pub fn commitWindow(e: *Engine, i: usize, keep: usize) !void {
+         if (i >= e.round_n) return error.NoSuchWindow;
+diff --git a/zig/src/families/flashnext/cuda_lanes.zig b/zig/src/families/flashnext/cuda_lanes.zig
+index cf8178c3..ce07f56a 100644
+--- a/zig/src/families/flashnext/cuda_lanes.zig
++++ b/zig/src/families/flashnext/cuda_lanes.zig
+@@ -105,7 +105,8 @@ pub fn Lanes(comptime E: type) type {
+             fill: ?Filling = null,
+             /// the first token's handle of a burst's prompt (firstFn gives it once; else the last one taken)
+             first: ?u64 = null,
+-            /// structured output: the prompt's last logits row on the host, until its masked first draw
++            /// structured output and decisions: the prompt's last logits row on the host, until its masked first
++            /// draw or the decision's read
+             first_row: []u8 = &.{},
+         };
+ 
+@@ -211,6 +212,7 @@ pub fn Lanes(comptime E: type) type {
+                 .draft = draftFn,
+                 .tree = heldFn,
+                 .held = heldTokensFn,
++                .score = if (@hasDecl(E, "scoreRow")) scoreFn else null,
+                 .release = releaseFn,
+                 .prefill_begin = prefillBeginFn,
+                 .prefill_step = prefillStepFn,
+@@ -226,6 +228,7 @@ pub fn Lanes(comptime E: type) type {
+                 .draft = draftFn,
+                 .tree = heldFn,
+                 .held = heldTokensFn,
++                .score = if (@hasDecl(E, "scoreRow")) scoreFn else null,
+                 .release = releaseFn,
+                 .prefill_many = if (@hasDecl(E, "prefillMany")) prefillManyFn else null,
+             } };
+@@ -521,11 +524,12 @@ pub fn Lanes(comptime E: type) type {
+             };
+         }
+ 
+-        /// A structured stream's prompt's last logits row, kept on the host for its masked first draw (firstMaskedFn):
+-        /// the device row is the last pass's, and another fill may finish before this stream's first token.
++        /// A structured stream's prompt's last logits row, kept on the host for its masked first draw (firstMaskedFn),
++        /// and a decision's for its read (scoreFn): the device row is the last pass's, and another fill may finish
++        /// before this stream's first token.
+         fn keepFirstRow(self: *Self, s: *const lanes.Stream, l: *Lane) !void {
+             if (comptime !@hasDecl(E, "firstRow")) return;
+-            if (s.grammar == null) return;
++            if (s.grammar == null and s.score == null) return;
+             self.gpa.free(l.first_row);
+             l.first_row = &.{};
+             l.first_row = try self.e.firstRow(self.gpa);
+@@ -541,8 +545,8 @@ pub fn Lanes(comptime E: type) type {
+             const e = self.e;
+             if (ss.len < 2 or ss.len > max_rows) return error.BurstRefused;
+             // an image or video prompt prefills alone (attachMedia, the MODE 2 prompt rows)
+-            // a structured stream keeps its prompt's last row for its masked first draw (keepFirstRow), so it prefills alone
+-            for (ss) |s| if (s.reuse.at > 0 or s.reuse.marks.len > 0 or s.media != null or s.grammar != null) return error.BurstRefused;
++            // a structured stream or a decision keeps its prompt's last row (keepFirstRow), so it prefills alone
++            for (ss) |s| if (s.reuse.at > 0 or s.reuse.marks.len > 0 or s.media != null or s.grammar != null or s.score != null) return error.BurstRefused;
+             var ls: [max_rows]*Lane = undefined;
+             var made: usize = 0;
+             var failure: ?anyerror = null;
+@@ -957,6 +961,22 @@ pub fn Lanes(comptime E: type) type {
+             return self.take(try self.e.drawFirstMasked(l.first_row, mask, position, s.sampling));
+         }
+ 
++        /// A decision (lanes Stream.score): the prompt's last row (keepFirstRow) read at the labels on the host, where
++        /// a reply would draw its first token; the core then releases the lane, nothing kept.
++        fn scoreFn(ptr: *anyopaque, s: *lanes.Stream, wanted: []const u32, logits: []f64, mass: bool) anyerror!f64 {
++            const self = of(ptr);
++            if (comptime !@hasDecl(E, "scoreRow")) return error.ScoresUnsupported;
++            if (self.gate != null) return error.UnsupportedRankOperation; // two ranks score nothing
++            const l = self.lanes.get(s) orelse return error.UnknownStream;
++            if (l.first_row.len == 0) return error.NoFirstRow;
++            defer {
++                self.gpa.free(l.first_row);
++                l.first_row = &.{};
++            }
++            l.first = null;
++            return self.e.scoreRow(l.first_row, wanted, logits, mass);
++        }
++
+         /// The drafts the head holds for the stream's next window, as prepareVerify fills them: structured output
+         /// walks them through the grammar first, and sends the ones it keeps back as the window's host tokens.
+         fn heldTokensFn(ptr: *anyopaque, s: *lanes.Stream, out: []u32) anyerror!void {
+@@ -1634,6 +1654,22 @@ pub const Toy = struct {
+         if (row.len != 4) return error.ToyMisuse;
+         return allowed(std.mem.bytesToValue(u32, row[0..4]), mask);
+     }
++    /// cuda_engine's scoreRow over the toy's kept row: a label's logit falls with its distance from the first draw.
++    pub fn scoreRow(_: *Toy, row: []const u8, wanted: []const u32, logits: []f64, mass: bool) !f64 {
++        if (row.len != 4 or wanted.len != logits.len) return error.ToyMisuse;
++        const top = std.mem.bytesToValue(u32, row[0..4]);
++        for (wanted, logits) |t, *v| {
++            if (t >= 50) return error.LabelOutsideVocabulary;
++            v.* = logit(top, t);
++        }
++        if (!mass) return 0;
++        var sum: f64 = 0;
++        for (0..50) |t| sum += @exp(logit(top, @intCast(t)));
++        return @log(sum);
++    }
++    pub fn logit(top: u32, t: u32) f64 {
++        return -@as(f64, @floatFromInt(@max(t, top) - @min(t, top)));
++    }
+     pub fn commitWindow(t: *Toy, i: usize, keep: usize) !void {
+         if (i >= t.round_n) return error.ToyMisuse;
+         const w = &t.round_windows[i];
+@@ -1813,6 +1849,76 @@ test "structured output over the toy engine: the masked first token, held drafts
+     }
+ }
+ 
++test "decisions over the toy engine: the prompt's last row read at the labels, nothing emitted, the replies beside them as serial" {
++    const gpa = std.testing.allocator;
++    const plain = [_]Case{
++        .{ .prompt = &.{ 3, 1, 4, 1, 5 }, .max_new = 60 },
++        .{ .prompt = &.{ 2, 7, 1, 8, 2, 8 }, .max_new = 50, .sampling = .{ .seed = 9, .temperature = 0.7 } },
++    };
++    const asked = [_][]const u32{ &.{ 1, 4, 1, 5, 9 }, &.{ 6, 6, 6, 2 } };
++    const labels = [_]u32{ 0, 7, 21, 49 };
++    for ([_]struct { bool, usize }{ .{ false, 1 }, .{ false, 4 }, .{ true, 4 } }) |run| {
++        const sliced, const n_streams = run;
++        var t: Toy = .{ .gpa = gpa };
++        var b = Lanes(Toy).init(gpa, &t, true, 1 << 20, max_rows);
++        defer b.deinit();
++        b.streams = n_streams;
++        b.sliced = sliced;
++        b.fill_layers = 2;
++        var costs: [max_rows]lanes.config.Cost = undefined;
++        for (&costs, 1..) |*c, w| c.* = .{ .width = @intCast(w), .ms = 8.0 + 0.3 * @as(f64, @floatFromInt(w)) };
++        b.costs = costs;
++        b.cost_count = max_rows;
++        b.mtp_ms = 0.4;
++        for (b.shared[0..2], [_]usize{ 2, 4 }) |*c, n| c.* = .{ .width = @intCast(n * max_rows), .ms = 9.0 + 0.2 * @as(f64, @floatFromInt(n * max_rows)) };
++        b.shared_count = if (n_streams > 1) 2 else 0;
++        var cfg = try lanes.Config.init(gpa, b.facts(), max_rows, max_drafts);
++        defer cfg.deinit(gpa);
++        var clock: lanes.fake.FixedClock = .{};
++        var engine = lanes.Engine.init(gpa, &cfg, b.backend(), clock.clock());
++        defer engine.deinit();
++        try std.testing.expectEqual(sliced, engine.fills());
++        try std.testing.expect(b.backend().vtable.score != null);
++        var streams: [plain.len]lanes.Stream = undefined;
++        for (plain, &streams) |c, *s| s.* = try lanes.Stream.init(gpa, .{ .id = "s", .prompt = c.prompt, .max_new = c.max_new, .sampling = c.sampling, .drafts = c.drafts });
++        defer for (&streams) |*s| s.deinit(gpa);
++        var logits: [asked.len][labels.len]f64 = undefined;
++        var scores: [asked.len]lanes.Score = undefined;
++        var decisions: [asked.len]lanes.Stream = undefined;
++        for (asked, &scores, &logits, &decisions, 0..) |p, *sc, *row, *d, i| {
++            sc.* = .{ .labels = &labels, .logits = row, .mass = i == 0 };
++            d.* = try lanes.Stream.init(gpa, .{ .id = "d", .prompt = p, .max_new = 0, .drafts = false, .score = sc });
++        }
++        defer for (&decisions) |*d| d.deinit(gpa);
++        // a reply decodes; a decision arrives with the second reply, another while both decode
++        _ = try engine.beginStream(&streams[0]);
++        try engine.step();
++        _ = try engine.beginStream(&decisions[0]);
++        _ = try engine.beginStream(&streams[1]);
++        try engine.step();
++        try engine.step();
++        _ = try engine.beginStream(&decisions[1]);
++        while (engine.activeCount() > 0 or engine.fillingCount() > 0) try engine.step();
++        for (plain, &streams) |c, *s| {
++            const want = try serialTokens(gpa, c);
++            defer gpa.free(want);
++            try std.testing.expectEqualSlices(u32, want, s.emitted());
++        }
++        for (asked, &decisions, &scores, &logits) |p, *d, sc, row| {
++            try std.testing.expect(d.finished and d.reason == .stop);
++            try std.testing.expectEqual(@as(usize, 0), d.emitted().len);
++            const top = Toy.next(p, &.{}, null, p.len); // the greedy first draw of a fresh pass over the prompt
++            for (labels, row) |l, x| try std.testing.expectEqual(Toy.logit(top, l), x);
++            var sum: f64 = 0;
++            for (0..50) |k| sum += @exp(Toy.logit(top, @intCast(k)));
++            if (sc.mass) try std.testing.expectApproxEqRel(@log(sum), sc.logsumexp, 1e-12) else try std.testing.expectEqual(@as(f64, 0), sc.logsumexp);
++        }
++        try std.testing.expectEqual(@as(usize, 0), t.seqs); // the decisions' sequences freed with the rest
++        try std.testing.expectEqual(@as(u32, 0), b.lanes.count());
++        try std.testing.expectEqual(@as(usize, 0), b.kept.items.len); // nothing kept for a later prompt
++    }
++}
++
+ test "the confidence rule's short chains reach the round loop as the held count" {
+     const gpa = std.testing.allocator;
+     var t: Toy = .{ .gpa = gpa };
+diff --git a/zig/src/families/flashnext/cuda_mirror.zig b/zig/src/families/flashnext/cuda_mirror.zig
+index 82c257a3..90fab30b 100644
+--- a/zig/src/families/flashnext/cuda_mirror.zig
++++ b/zig/src/families/flashnext/cuda_mirror.zig
+@@ -1558,6 +1558,8 @@ test "rank 1 makes rank 0's calls over a local link: the same draws, rounds and
+     defer l.close();
+     var frames: Frames = .{ .gpa = gpa, .link = l };
+     var leader = Leader.init(gpa, rank0.backend(), frames.channel());
++    // two ranks read no decisions: a rank's logits row is its vocabulary shard, so the leader passes no score
++    const scores = rank0.backend().vtable.score != null and leader.backend().vtable.score == null;
+     const got = drive(gpa, leader.backend(), &cases) catch |e| {
+         leader.deinit();
+         t.join();
+@@ -1567,6 +1569,7 @@ test "rank 1 makes rank 0's calls over a local link: the same draws, rounds and
+     leader.deinit(); // sends stop
+     t.join();
+     if (rank1.err) |e| return e;
++    try std.testing.expect(scores);
+     for (want, got) |a, b| try std.testing.expectEqualSlices(u32, a, b);
+     // rank 1 drew every token rank 0 drew, in order, and ran as many forwards
+     try std.testing.expectEqualSlices(u32, rank0.drawn.items, rank1.target.drawn.items);
+diff --git a/zig/src/families/flashnext/cuda_score.zig b/zig/src/families/flashnext/cuda_score.zig
+new file mode 100644
+index 00000000..18c47aa4
+--- /dev/null
++++ b/zig/src/families/flashnext/cuda_score.zig
+@@ -0,0 +1,58 @@
++//! Decisions' label scores on CUDA: the prompt's last logits row (bf16, kept on the host by cuda_lanes' keepFirstRow)
++//! read at the labels, and the row's logsumexp in f64. Host arithmetic only: no kernel, no device work.
++const std = @import("std");
++
++/// One logit per label from `row` (bf16 [vocabulary], widened), and its logsumexp in f64 when `mass` (else 0).
++pub fn labels(row: []const u8, wanted: []const u32, logits: []f64, mass: bool) !f64 {
++    if (row.len == 0 or row.len % 2 != 0) return error.BadFirstRow;
++    if (wanted.len == 0 or wanted.len != logits.len) return error.UnexpectedTensor;
++    const r = std.mem.bytesAsSlice(u16, row);
++    for (wanted) |t| if (t >= r.len) return error.LabelOutsideVocabulary;
++    for (wanted, logits) |t, *v| {
++        v.* = widen(std.mem.littleToNative(u16, r[t]));
++        if (!std.math.isFinite(v.*)) return error.NonFiniteScore;
++    }
++    return if (mass) logsumexp(r) else 0;
++}
++
++/// A bf16 value as f64 (exact: bf16 is f32's top half).
++fn widen(b: u16) f64 {
++    return @as(f32, @bitCast(@as(u32, b) << 16));
++}
++
++/// The bf16 row's logsumexp in f64; a non-finite row is refused.
++fn logsumexp(row: []align(1) const u16) !f64 {
++    var top: f64 = -std.math.inf(f64);
++    for (row) |b| {
++        const v = widen(std.mem.littleToNative(u16, b));
++        if (!std.math.isFinite(v)) return error.NonFiniteScore;
++        top = @max(top, v);
++    }
++    var sum: f64 = 0;
++    for (row) |b| sum += @exp(widen(std.mem.littleToNative(u16, b)) - top);
++    return top + @log(sum);
++}
++
++test "the logsumexp of a bf16 row in f64, and a non-finite row refused" {
++    const one: u16 = 0x3f80; // 1.0
++    const two: u16 = 0x4000; // 2.0
++    const row = [_]u16{ one, two, one };
++    const want = 2.0 + @log(1.0 + 2.0 * @exp(@as(f64, -1.0)));
++    try std.testing.expectApproxEqRel(want, try logsumexp(&row), 1e-15);
++    try std.testing.expectError(error.NonFiniteScore, logsumexp(&[_]u16{ one, 0x7f80 }));
++}
++
++test "labels read the kept row's bf16 logits; labels past the row and a non-finite label are refused" {
++    const row = [_]u16{ 0x3f80, 0xc000, 0x4040, 0x7fc0 }; // 1, -2, 3, NaN
++    const bytes = std.mem.sliceAsBytes(&row);
++    var logits: [2]f64 = undefined;
++    try std.testing.expectEqual(@as(f64, 0), try labels(bytes, &.{ 2, 1 }, &logits, false));
++    try std.testing.expectEqualSlices(f64, &.{ 3, -2 }, &logits);
++    try std.testing.expectError(error.NonFiniteScore, labels(bytes, &.{ 0, 1 }, &logits, true)); // the row's NaN
++    try std.testing.expectError(error.NonFiniteScore, labels(bytes, &.{ 3, 1 }, &logits, false));
++    try std.testing.expectError(error.LabelOutsideVocabulary, labels(bytes, &.{ 4, 1 }, &logits, false));
++    try std.testing.expectError(error.UnexpectedTensor, labels(bytes, &.{1}, &logits, false));
++    const finite = std.mem.sliceAsBytes(row[0..3]);
++    const mass = try labels(finite, &.{ 0, 2 }, &logits, true);
++    try std.testing.expectApproxEqRel(3.0 + @log(@exp(@as(f64, -2.0)) + @exp(@as(f64, -5.0)) + 1.0), mass, 1e-15);
++}
+diff --git a/zig/src/native/cuda.zig b/zig/src/native/cuda.zig
+index e1cff8e3..5d3d2447 100644
+--- a/zig/src/native/cuda.zig
++++ b/zig/src/native/cuda.zig
+@@ -132,6 +132,12 @@ const Host = struct {
+                     return x.inner.vtable.held.?(x.inner.ptr, s, out);
+                 }
+             }.f else null,
++            .score = if (v.score != null) struct {
++                fn f(p: *anyopaque, s: *lanes.Stream, labels: []const u32, logits: []f64, mass: bool) anyerror!f64 {
++                    const x = bind(p);
++                    return x.inner.vtable.score.?(x.inner.ptr, s, labels, logits, mass);
++                }
++            }.f else null,
+             .queue = struct {
+                 fn f(p: *anyopaque, s: *lanes.Stream, feed: lanes.backend.Feed, position: u64) anyerror!u64 {
+                     const x = bind(p);
+diff --git a/zig/src/server/auth.zig b/zig/src/server/auth.zig
+index f586262d..7fce6168 100644
+--- a/zig/src/server/auth.zig
++++ b/zig/src/server/auth.zig
+@@ -229,9 +229,9 @@ pub fn gated(raw_path: []const u8, metrics_open: bool) bool {
+     const path = routePath(raw_path);
+     if (metrics_open and (std.mem.eql(u8, path, "/metrics") or std.mem.eql(u8, path, "/v1/metrics"))) return false;
+     if (std.mem.eql(u8, path, "/v1") or std.mem.startsWith(u8, path, "/v1/")) return true;
+-    for ([_][]const u8{ "/metrics", "/dashboard", "/stats", "/tokenize", "/detokenize", "/models", "/messages", "/messages/count_tokens", "/chat/completions", "/completions", "/decisions", "/responses" }) |p| if (std.mem.eql(u8, path, p)) return true;
++    for ([_][]const u8{ "/metrics", "/dashboard", "/stats", "/tokenize", "/detokenize", "/models", "/messages", "/messages/count_tokens", "/chat/completions", "/completions", "/decisions", "/systemone", "/responses" }) |p| if (std.mem.eql(u8, path, p)) return true;
+     if (std.mem.startsWith(u8, path, "/responses/")) return true;
+-    for ([_][]const u8{ "/chat/completions", "/completions", "/decisions", "/models" }) |end| if (std.mem.endsWith(u8, path, end)) return true;
++    for ([_][]const u8{ "/chat/completions", "/completions", "/decisions", "/systemone", "/models" }) |end| if (std.mem.endsWith(u8, path, end)) return true;
+     return false;
+ }
+ 
+@@ -256,6 +256,7 @@ test "gates and digests" {
+     try std.testing.expect(!gated("/health", false));
+     try std.testing.expect(!gated("/metrics/", true));
+     try std.testing.expect(gated("/alternative/chat/completions", false));
++    for ([_][]const u8{ "/systemone", "/systemone/", "/systemone?x=1", "/alternative/systemone", "/v1/systemone", "/decisions", "/x/decisions" }) |path| try std.testing.expect(gated(path, false));
+     try std.testing.expect(digest("has space") == null);
+     try std.testing.expect(loopback("127.0.0.1") and loopback("::1") and !loopback("0.0.0.0"));
+ }
+diff --git a/zig/src/server/decisions.zig b/zig/src/server/decisions.zig
+new file mode 100644
+index 00000000..faaf32f0
+--- /dev/null
++++ b/zig/src/server/decisions.zig
+@@ -0,0 +1,444 @@
++//! /v1/decisions checks a body the way 0.6.6 checks it, then scores through the engine hook when a family sets one.
++const std = @import("std");
++const json = @import("json.zig");
++const errors = @import("errors.zig");
++const fields = @import("fields.zig");
++const pyrepr = @import("pyrepr.zig");
++const reply_text = @import("reply_text.zig");
++const http_body = @import("http_body.zig");
++const openai = @import("openai.zig");
++const routes = @import("routes.zig");
++const Server = @import("server.zig").Server;
++const Conn = @import("http_conn.zig").Conn;
++const Value = json.Value;
++const Cx = errors.Cx;
++const Allocator = std.mem.Allocator;
++
++const top_fields = [_][]const u8{ "input", "questions", "temperature", "chat_template_kwargs", "prompt_format_version", "return_prompt_token_ids", "model" };
++const choice_fields = [_][]const u8{ "id", "type", "question", "options" };
++const score_fields = [_][]const u8{ "id", "type", "question", "levels" };
++const yes_no_fields = [_][]const u8{ "id", "type", "question", "yes", "no" };
++const option_fields = [_][]const u8{ "name", "description" };
++const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
++
++const Kind = enum { choice, score, yes_no };
++
++const Prepared = struct {
++    id: []const u8,
++    kind: Kind,
++    names: []const []const u8,
++    prompt_ids: []const u32,
++    label_ids: []const u32,
++};
++
++const Scored = struct { logits: []f64, logsumexp: f64 };
++
++pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
++    var cx: Cx = .{ .a = a };
++    const raw = http_body.readJson(conn, &cx) catch return sendErr(conn, a, &cx);
++    const payload = reply(srv, &cx, raw) catch |e| {
++        if (e == error.OutOfMemory) {
++            cx.kind = .server;
++            cx.message = "out of memory";
++        }
++        return sendErr(conn, a, &cx);
++    };
++    routes.sendValue(conn, a, 200, payload);
++}
++
++fn sendErr(conn: *Conn, a: Allocator, cx: *Cx) void {
++    // This route's client errors all name the type, including a body that is not an object.
++    if (cx.kind != .server) cx.kind = .request;
++    const err = openai.errorBody(a, cx, null) catch return;
++    routes.sendValue(conn, a, cx.status(), openai.wrapError(a, err) catch return);
++}
++
++/// The decisions object, or the refusal 0.6.6 would send for this body.
++pub fn reply(srv: *Server, cx: *Cx, raw: Value) errors.Refused!Value {
++    const body = try fields.parseNumbers(cx, raw);
++    try validate(cx, body);
++    const input = try renderText(cx, body.get("input"));
++    if (reply_text.pyStrip(input).len == 0) return cx.refuse("input must not be blank");
++    const questions = body.get("questions").?.array;
++    var prepared: std.ArrayList(Prepared) = .empty;
++    for (questions, 0..) |question, index| {
++        const item = prepareOne(srv, cx, input, question) catch |e| switch (e) {
++            error.OutOfMemory => return error.OutOfMemory,
++            error.Refused => {
++                const inner = cx.message;
++                return cx.fail(.request, "question {s}: {s}", .{ try questionWhere(cx, question, index), inner });
++            },
++        };
++        try prepared.append(cx.a, item);
++    }
++    return build(cx, body, prepared.items, try scoreAll(srv, cx, prepared.items));
++}
++
++fn validate(cx: *Cx, body: Value) errors.Refused!void {
++    try rejectUnknown(cx, body.object, &top_fields);
++    if (body.get("prompt_format_version")) |version| if (version != .null and !json.equal(version, .{ .int = "1" })) {
++        return cx.fail(.request, "prompt_format_version {s} is not served, this server uses version 1", .{try shown(cx.a, version)});
++    };
++    try checkTemperature(cx, body);
++    const kwargs = body.get("chat_template_kwargs") orelse .null;
++    if (kwargs != .null) {
++        if (kwargs != .object) return cx.refuse("chat_template_kwargs must be an object");
++        try rejectUnknown(cx, kwargs.object, &.{"enable_thinking"});
++        if (kwargs.get("enable_thinking")) |flag| if (!(flag == .bool and !flag.bool)) return cx.refuse("decisions need enable_thinking false or unset");
++    }
++    const questions = body.get("questions") orelse return cx.refuse("questions must contain at least one question");
++    if (questions != .array or questions.array.len == 0) return cx.refuse("questions must contain at least one question");
++    var seen: std.ArrayList([]const u8) = .empty;
++    for (questions.array) |question| {
++        if (question != .object) return cx.refuse("each question must be an object");
++        const ident = question.get("id") orelse return cx.refuse("a question id must not be blank");
++        if (ident != .string or reply_text.pyStrip(ident.string).len == 0) return cx.refuse("a question id must not be blank");
++        for (seen.items) |old| if (std.mem.eql(u8, old, ident.string)) return cx.fail(.request, "question id {s} is repeated", .{try pyrepr.repr(cx.a, ident)});
++        try seen.append(cx.a, ident.string);
++    }
++}
++
++// Numeric strings are rewritten before this check. A non-positive number still uses the decisions sentence.
++fn checkTemperature(cx: *Cx, body: Value) errors.Refused!void {
++    const v = body.get("temperature") orelse return;
++    if (v == .bool or v.float64() == null) return cx.refuse("temperature must be a number above 0");
++    const n = v.float64().?;
++    if (!std.math.isFinite(n) or n <= 0) return cx.refuse("temperature must be a number above 0");
++}
++
++fn rejectUnknown(cx: *Cx, obj: *json.Object, allowed: []const []const u8) errors.Refused!void {
++    var bad: std.ArrayList([]const u8) = .empty;
++    for (obj.keys()) |key| {
++        const known = for (allowed) |name| {
++            if (std.mem.eql(u8, name, key)) break true;
++        } else false;
++        if (!known) try bad.append(cx.a, key);
++    }
++    if (bad.items.len == 0) return;
++    std.mem.sort([]const u8, bad.items, {}, struct {
++        fn less(_: void, x: []const u8, y: []const u8) bool {
++            return std.mem.order(u8, x, y) == .lt;
++        }
++    }.less);
++    return cx.fail(.request, "unknown field {s}", .{try pyrepr.repr(cx.a, .{ .string = bad.items[0] })});
++}
++
++fn shown(a: Allocator, v: Value) Allocator.Error![]const u8 {
++    return switch (v) {
++        .null => "None",
++        .bool => |b| if (b) "True" else "False",
++        .int => |t| t,
++        .string => |s| s,
++        .float => |f| blk: {
++            var buf: [64]u8 = undefined;
++            break :blk try a.dupe(u8, json.floatRepr(&buf, f));
++        },
++        else => pyrepr.repr(a, v),
++    };
++}
++
++fn renderText(cx: *Cx, v: ?Value) errors.Refused![]const u8 {
++    const value = v orelse return "";
++    return switch (value) {
++        .null => "",
++        .string => |s| s,
++        .object, .array => json.stringify(cx.a, value, .{ .ascii = false, .compact = true }),
++        else => cx.refuse("text must be a string, object, or array"),
++    };
++}
++
++fn questionWhere(cx: *Cx, question: Value, index: usize) Allocator.Error![]const u8 {
++    if (question == .object) if (question.get("id")) |id| if (id == .string and id.string.len > 0) return pyrepr.repr(cx.a, id);
++    return std.fmt.allocPrint(cx.a, "at position {d}", .{index});
++}
++
++const Wording = struct {
++    kind: Kind,
++    names: []const []const u8,
++    labels: []const []const u8,
++    content: []const u8,
++};
++
++fn wording(cx: *Cx, input: []const u8, question: Value) errors.Refused!Wording {
++    const kind_value = question.get("type") orelse .null;
++    const kind: Kind = if (kind_value == .string and std.mem.eql(u8, kind_value.string, "choice"))
++        .choice
++    else if (kind_value == .string and std.mem.eql(u8, kind_value.string, "score"))
++        .score
++    else if (kind_value == .string and std.mem.eql(u8, kind_value.string, "yes_no"))
++        .yes_no
++    else
++        return cx.fail(.request, "unknown question type {s}", .{try pyrepr.repr(cx.a, kind_value)});
++    var lines: std.ArrayList([]const u8) = .empty;
++    const names, const labels = switch (kind) {
++        .choice => blk: {
++            try rejectUnknown(cx, question.object, &choice_fields);
++            const listed = try choiceList(cx, question);
++            try lines.append(cx.a, try questionLine(cx, question));
++            for (listed.labels, listed.names, listed.details) |label, name, detail| {
++                const line = if (detail.len > 0)
++                    try std.fmt.allocPrint(cx.a, "{s}: {s} - {s}", .{ label, name, detail })
++                else
++                    try std.fmt.allocPrint(cx.a, "{s}: {s}", .{ label, name });
++                try lines.append(cx.a, line);
++            }
++            break :blk .{ listed.names, listed.labels };
++        },
++        .score => blk: {
++            try rejectUnknown(cx, question.object, &score_fields);
++            const listed = try scoreList(cx, question);
++            try lines.append(cx.a, try questionLine(cx, question));
++            for (listed.labels, listed.details) |label, detail| try lines.append(cx.a, try std.fmt.allocPrint(cx.a, "{s}: {s}", .{ label, detail }));
++            break :blk .{ listed.names, listed.labels };
++        },
++        .yes_no => blk: {
++            try rejectUnknown(cx, question.object, &yes_no_fields);
++            const yes = try renderText(cx, question.get("yes"));
++            const no = try renderText(cx, question.get("no"));
++            const lead = try renderText(cx, question.get("question"));
++            if (reply_text.pyStrip(lead).len == 0) return cx.refuse("a question must not be blank");
++            try lines.append(cx.a, try std.fmt.allocPrint(cx.a, "Is the following true? {s}", .{lead}));
++            if (yes.len > 0) try lines.append(cx.a, try std.fmt.allocPrint(cx.a, "yes: {s}", .{yes}));
++            if (no.len > 0) try lines.append(cx.a, try std.fmt.allocPrint(cx.a, "no: {s}", .{no}));
++            const names = [_][]const u8{ "yes", "no" };
++            break :blk .{ try cx.a.dupe([]const u8, &names), try cx.a.dupe([]const u8, &names) };
++        },
++    };
++    const closing = switch (kind) {
++        .choice => "Answer with the letter of one option only.",
++        .score => "Answer with the number of one level only.",
++        .yes_no => "Answer with yes or no only.",
++    };
++    try lines.append(cx.a, closing);
++    return .{ .kind = kind, .names = names, .labels = labels, .content = try contentOf(cx.a, input, lines.items) };
++}
++
++const Listed = struct {
++    names: []const []const u8,
++    details: []const []const u8,
++    labels: []const []const u8,
++};
++
++fn choiceList(cx: *Cx, question: Value) errors.Refused!Listed {
++    const options = question.get("options") orelse return cx.refuse("a choice needs 2 to 26 options");
++    if (options != .array or options.array.len < 2 or options.array.len > 26) return cx.refuse("a choice needs 2 to 26 options");
++    const n = options.array.len;
++    const names = try cx.a.alloc([]const u8, n);
++    const details = try cx.a.alloc([]const u8, n);
++    const labels = try cx.a.alloc([]const u8, n);
++    var seen: std.ArrayList([]const u8) = .empty;
++    for (options.array, 0..) |option, i| {
++        if (option != .object) return cx.refuse("each option must be an object");
++        try rejectUnknown(cx, option.object, &option_fields);
++        const name = option.get("name") orelse return cx.refuse("option names must not be blank or contain line breaks");
++        if (name != .string or badName(name.string)) return cx.refuse("option names must not be blank or contain line breaks");
++        const stripped = reply_text.pyStrip(name.string);
++        if (try foldedSeen(cx, &seen, stripped)) return cx.fail(.request, "option name {s} repeats another name", .{try pyrepr.repr(cx.a, name)});
++        names[i] = stripped;
++        details[i] = try renderText(cx, option.get("description"));
++        labels[i] = alphabet[i .. i + 1];
++    }
++    return .{ .names = names, .details = details, .labels = labels };
++}
++
++fn badName(name: []const u8) bool {
++    const stripped = reply_text.pyStrip(name);
++    if (stripped.len == 0) return true;
++    for (stripped) |c| if (c < 32) return true;
++    return false;
++}
++
++fn foldedSeen(cx: *Cx, seen: *std.ArrayList([]const u8), name: []const u8) errors.Refused!bool {
++    const folded = try cx.a.alloc(u8, name.len);
++    for (name, folded) |c, *d| d.* = std.ascii.toLower(c);
++    for (seen.items) |old| if (std.mem.eql(u8, old, folded)) return true;
++    try seen.append(cx.a, folded);
++    return false;
++}
++
++fn scoreList(cx: *Cx, question: Value) errors.Refused!Listed {
++    const levels = question.get("levels") orelse return cx.refuse("a score needs 2 to 10 levels");
++    if (levels != .array or levels.array.len < 2 or levels.array.len > 10) return cx.refuse("a score needs 2 to 10 levels");
++    const n = levels.array.len;
++    const names = try cx.a.alloc([]const u8, n);
++    const details = try cx.a.alloc([]const u8, n);
++    for (levels.array, 0..) |level, i| {
++        const text = try renderText(cx, level);
++        if (reply_text.pyStrip(text).len == 0) return cx.refuse("a level must not be blank");
++        details[i] = text;
++        names[i] = try std.fmt.allocPrint(cx.a, "{d}", .{i});
++    }
++    return .{ .names = names, .details = details, .labels = names };
++}
++
++fn questionLine(cx: *Cx, question: Value) errors.Refused![]const u8 {
++    const text = try renderText(cx, question.get("question"));
++    if (reply_text.pyStrip(text).len == 0) return cx.refuse("a question must not be blank");
++    return std.fmt.allocPrint(cx.a, "Question: {s}", .{text});
++}
++
++fn contentOf(a: Allocator, input: []const u8, lines: []const []const u8) Allocator.Error![]u8 {
++    var out: std.ArrayList(u8) = .empty;
++    try out.appendSlice(a, input);
++    try out.append(a, '\n');
++    try out.append(a, '\n');
++    for (lines, 0..) |line, i| {
++        if (i > 0) try out.append(a, '\n');
++        try out.appendSlice(a, line);
++    }
++    return out.toOwnedSlice(a);
++}
++
++fn prepareOne(srv: *Server, cx: *Cx, input: []const u8, question: Value) errors.Refused!Prepared {
++    const word = try wording(cx, input, question);
++    const prompt_text = try renderPrompt(srv, cx, word.content);
++    const prompt_ids = try encodePrompt(srv, cx, prompt_text);
++    try thinkOpen(cx, prompt_text);
++    try fits(cx, srv.info.context_window, prompt_ids.len);
++    return .{
++        .id = question.strField("id") orelse "",
++        .kind = word.kind,
++        .names = word.names,
++        .prompt_ids = prompt_ids,
++        .label_ids = try labelIds(srv, cx, prompt_text, prompt_ids, word.labels),
++    };
++}
++
++/// The chat template over one user turn, thinking off (decisions read the answer position, not a reasoning block).
++fn renderPrompt(srv: *Server, cx: *Cx, content: []const u8) errors.Refused![]const u8 {
++    const user = try json.newObject(cx.a);
++    try user.put(cx.a, "role", .{ .string = "user" });
++    try user.put(cx.a, "content", .{ .string = content });
++    const messages = try cx.a.alloc(Value, 1);
++    messages[0] = .{ .object = user };
++    var problem: []const u8 = "";
++    return srv.text.render(cx.a, .{ .array = messages }, .{ .add_generation_prompt = true, .enable_thinking = false }, &problem) catch |e| switch (e) {
++        error.OutOfMemory => return error.OutOfMemory,
++        error.Template => return cx.fail(.request, "the chat template failed: {s}", .{problem}),
++    };
++}
++
++fn encodePrompt(srv: *Server, cx: *Cx, text: []const u8) errors.Refused![]u32 {
++    return srv.text.encode(cx.a, text, false) catch |e| switch (e) {
++        error.OutOfMemory => return error.OutOfMemory,
++        error.Template => return cx.fail(.request, "the chat template failed: {s}", .{"the tokenizer cannot encode this prompt"}),
++    };
++}
++
++/// This build renders text, not template spans: the last open and close anywhere in the prompt are compared.
++fn thinkOpen(cx: *Cx, rendered: []const u8) errors.Refused!void {
++    const open_at = std.mem.lastIndexOf(u8, rendered, "<think>") orelse return;
++    if (std.mem.lastIndexOf(u8, rendered, "</think>")) |close_at| if (open_at <= close_at) return;
++    return cx.refuse("the chat template leaves a reasoning block open at the answer position");
++}
++
++fn fits(cx: *Cx, window: u32, n: usize) errors.Refused!void {
++    if (window > 0 and n >= window) return cx.fail(.request, "the prompt has {d} tokens, which does not fit the context length of {d} tokens", .{ n, window });
++}
++
++fn labelIds(srv: *Server, cx: *Cx, prompt: []const u8, prompt_ids: []const u32, labels: []const []const u8) errors.Refused![]u32 {
++    var found: std.ArrayList(u32) = .empty;
++    for (labels) |label| {
++        const joined = try std.mem.concat(cx.a, u8, &.{ prompt, label });
++        const ids = srv.text.encode(cx.a, joined, false) catch |e| switch (e) {
++            error.OutOfMemory => return error.OutOfMemory,
++            error.Template => return labelRefuse(cx, label),
++        };
++        const fresh = ids.len == prompt_ids.len + 1 and std.mem.eql(u32, ids[0..prompt_ids.len], prompt_ids) and std.mem.indexOfScalar(u32, found.items, ids[ids.len - 1]) == null;
++        if (!fresh) return labelRefuse(cx, label);
++        try found.append(cx.a, ids[ids.len - 1]);
++    }
++    return found.toOwnedSlice(cx.a);
++}
++
++fn labelRefuse(cx: *Cx, label: []const u8) errors.Refused {
++    return cx.fail(.request, "the answer label {s} is not one distinct token after the chat prompt for this tokenizer, so this model is not supported", .{pyrepr.repr(cx.a, .{ .string = label }) catch label});
++}
++
++fn scoreAll(srv: *Server, cx: *Cx, prepared: []const Prepared) errors.Refused![]Scored {
++    const scored = try cx.a.alloc(Scored, prepared.len);
++    for (prepared, scored) |item, *row| {
++        const logits = try cx.a.alloc(f64, item.label_ids.len);
++        @memset(logits, 0);
++        const logsumexp = srv.engine.score(item.prompt_ids, item.label_ids, logits, true) catch |e| switch (e) {
++            error.Unsupported => return cx.refuse("decision scoring is not supported by this engine yet"),
++            error.Failed => return cx.fail(.server, "decision scoring failed", .{}),
++        };
++        row.* = .{ .logits = logits, .logsumexp = logsumexp };
++    }
++    return scored;
++}
++
++fn build(cx: *Cx, body: Value, prepared: []const Prepared, scored: []const Scored) errors.Refused!Value {
++    const a = cx.a;
++    const temperature = if (body.get("temperature")) |v| v.float64().? else 1;
++    const show_ids = if (body.get("return_prompt_token_ids")) |v| v.truthy() else false;
++    const answers = try json.newObject(a);
++    var prompt_tokens: usize = 0;
++    for (prepared, scored) |item, row| {
++        const probs = try a.alloc(f64, row.logits.len);
++        softmax(row.logits, temperature, probs);
++        const one = try json.newObject(a);
++        try one.put(a, "type", .{ .string = @tagName(item.kind) });
++        const map = try json.newObject(a);
++        for (item.names, probs) |name, p| try map.put(a, name, .{ .float = p });
++        try one.put(a, "probabilities", .{ .object = map });
++        try one.put(a, "label_mass", .{ .float = labelMass(row.logits, row.logsumexp) });
++        switch (item.kind) {
++            .choice => {
++                var best: usize = 0;
++                for (probs, 0..) |p, i| if (p > probs[best]) {
++                    best = i;
++                };
++                try one.put(a, "choice", .{ .string = item.names[best] });
++            },
++            .score => {
++                var total: f64 = 0;
++                for (probs, 0..) |p, i| total += @as(f64, @floatFromInt(i)) * p;
++                try one.put(a, "score", .{ .float = total });
++            },
++            .yes_no => {},
++        }
++        if (show_ids) {
++            try one.put(a, "prompt_token_ids", try idsValue(a, item.prompt_ids));
++            try one.put(a, "label_token_ids", try idsValue(a, item.label_ids));
++        }
++        try answers.put(a, item.id, .{ .object = one });
++        prompt_tokens += item.prompt_ids.len;
++    }
++    const named = body.get("model") orelse .null;
++    const usage = try json.newObject(a);
++    try usage.put(a, "prompt_tokens", try json.intValue(a, prompt_tokens));
++    try usage.put(a, "completion_tokens", .{ .int = "0" });
++    try usage.put(a, "total_tokens", try json.intValue(a, prompt_tokens));
++    const out = try json.newObject(a);
++    try out.put(a, "object", .{ .string = "decisions" });
++    try out.put(a, "model", if (named.truthy()) named else .{ .string = "default" });
++    try out.put(a, "prompt_format_version", .{ .int = "1" });
++    try out.put(a, "answers", .{ .object = answers });
++    try out.put(a, "usage", .{ .object = usage });
++    return .{ .object = out };
++}
++
++fn softmax(logits: []const f64, temperature: f64, out: []f64) void {
++    var peak = logits[0];
++    for (logits[1..]) |x| peak = @max(peak, x);
++    var total: f64 = 0;
++    for (logits, out) |x, *p| {
++        p.* = @exp((x - peak) / temperature);
++        total += p.*;
++    }
++    for (out) |*p| p.* /= total;
++}
++
++fn labelMass(logits: []const f64, logsumexp: f64) f64 {
++    var total: f64 = 0;
++    for (logits) |logit| total += @exp(logit - logsumexp);
++    return total;
++}
++
++fn idsValue(a: Allocator, ids: []const u32) Allocator.Error!Value {
++    const items = try a.alloc(Value, ids.len);
++    for (ids, items) |id, *slot| slot.* = try json.intValue(a, id);
++    return .{ .array = items };
++}
+diff --git a/zig/src/server/decisions_test.zig b/zig/src/server/decisions_test.zig
+new file mode 100644
+index 00000000..f4ec9bf7
+--- /dev/null
++++ b/zig/src/server/decisions_test.zig
+@@ -0,0 +1,233 @@
++//! Request checks for /v1/decisions, and a fake engine hook that scores one choice.
++const std = @import("std");
++const api = @import("engine_api");
++const json = @import("json.zig");
++const errors = @import("errors.zig");
++const openai = @import("openai.zig");
++const model_text = @import("model_text.zig");
++const decisions = @import("decisions.zig");
++const Server = @import("server.zig").Server;
++const Allocator = std.mem.Allocator;
++
++const ByteText = struct {
++    open_think: bool = false,
++
++    fn text(t: *@This()) model_text.Text {
++        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
++    }
++
++    fn encode(_: *anyopaque, a: Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
++        const ids = try a.alloc(u32, input.len);
++        for (input, ids) |byte, *id| id.* = byte;
++        return ids;
++    }
++
++    fn decode(_: *anyopaque, a: Allocator, ids: []const u32) Allocator.Error![]u8 {
++        const out = try a.alloc(u8, ids.len);
++        for (ids, out) |id, *byte| byte.* = @intCast(id);
++        return out;
++    }
++
++    fn tokenId(_: *anyopaque, _: []const u8) ?u32 {
++        return null;
++    }
++
++    fn tokenString(_: *anyopaque, a: Allocator, id: u32) Allocator.Error![]u8 {
++        return std.fmt.allocPrint(a, "{d}", .{id});
++    }
++
++    fn vocabSize(_: *anyopaque) u32 {
++        return 256;
++    }
++
++    fn eosIds(_: *anyopaque) []const u32 {
++        return &.{};
++    }
++
++    fn render(ctx: *anyopaque, a: Allocator, _: json.Value, options: model_text.RenderOptions, _: *[]const u8) model_text.Error![]u8 {
++        const t: *ByteText = @ptrCast(@alignCast(ctx));
++        if (options.enable_thinking) return error.Template; // decisions render with thinking off
++        return a.dupe(u8, if (t.open_think) "prompt<think>" else "prompt");
++    }
++
++    fn templateSource(_: *anyopaque) []const u8 {
++        return "";
++    }
++};
++
++const Backend = struct {
++    window: u32 = 0,
++    hooked: bool = false,
++    calls: usize = 0,
++    prompt_len: usize = 0,
++    label_len: usize = 0,
++
++    fn engine(b: *Backend) api.Engine {
++        return .{ .ctx = b, .vtable = if (b.hooked) &hooked_vt else &bare_vt };
++    }
++
++    fn info(ctx: *anyopaque) api.Info {
++        const b: *@This() = @ptrCast(@alignCast(ctx));
++        return .{ .context_window = b.window };
++    }
++
++    fn submit(_: *anyopaque, _: api.Id, _: *const api.Request, _: api.Sink) api.SubmitError!void {}
++
++    fn cancel(_: *anyopaque, _: api.Id) void {}
++
++    fn status(_: *anyopaque, out: *api.Status, _: []u32) void {
++        out.* = .{};
++    }
++
++    fn memory(_: *anyopaque, _: bool) ?api.Memory {
++        return null;
++    }
++
++    fn score(ctx: *anyopaque, prompt: []const u32, labels: []const u32, logits: []f64, _: bool) error{Failed}!f64 {
++        const b: *@This() = @ptrCast(@alignCast(ctx));
++        b.calls += 1;
++        b.prompt_len = prompt.len;
++        b.label_len = labels.len;
++        if (logits.len > 0) logits[0] = 0;
++        if (logits.len > 1) logits[1] = 3;
++        return 4;
++    }
++};
++
++const bare_vt: api.Engine.VTable = .{ .info = Backend.info, .submit = Backend.submit, .cancel = Backend.cancel, .status = Backend.status, .memory = Backend.memory };
++const hooked_vt: api.Engine.VTable = .{ .info = Backend.info, .submit = Backend.submit, .cancel = Backend.cancel, .status = Backend.status, .memory = Backend.memory, .score = Backend.score };
++
++fn serve(text: *ByteText, backend: *Backend) !*Server {
++    return Server.init(std.testing.allocator, std.testing.io, backend.engine(), text.text(), .{
++        .served_name = "m",
++        .model_ids = &.{"m"},
++        .enable_thinking = false,
++        .use_drafts = false,
++    }, null);
++}
++
++fn messageOf(srv: *Server, a: Allocator, body: []const u8) ![]const u8 {
++    const raw = (try json.parse(a, body)).ok;
++    var cx: errors.Cx = .{ .a = a };
++    try std.testing.expectError(error.Refused, decisions.reply(srv, &cx, raw));
++    return cx.message;
++}
++
++test "a decisions body is refused with 0.6.6's sentences" {
++    var text: ByteText = .{};
++    var backend: Backend = .{};
++    const srv = try serve(&text, &backend);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++
++    const raw = (try json.parse(a, "{\"input\":\"x\"}")).ok;
++    var cx: errors.Cx = .{ .a = a };
++    try std.testing.expectError(error.Refused, decisions.reply(srv, &cx, raw));
++    try std.testing.expectEqualStrings("questions must contain at least one question", cx.message);
++    const err = try openai.wrapError(a, try openai.errorBody(a, &cx, null));
++    try std.testing.expectEqualStrings("{\"error\": {\"message\": \"questions must contain at least one question\", \"type\": \"invalid_request_error\"}}", try json.stringify(a, err, .{}));
++
++    const cases = [_]struct { []const u8, []const u8 }{
++        .{ "{\"input\":\"x\",\"temperature\":0}", "temperature must be a number above 0" },
++        .{ "{\"input\":\"x\",\"temperature\":true}", "temperature must be a finite number or null" },
++        .{ "{\"input\":\"x\",\"temperature\":\"0\"}", "temperature must be a number above 0" },
++        .{ "{\"input\":\"x\",\"temperature\":\"hot\"}", "temperature must be a finite number or null" },
++        .{ "{\"input\":\"x\",\"temperature\":\"1\"}", "questions must contain at least one question" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":2}", "prompt_format_version 2 is not served, this server uses version 1" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":false}", "prompt_format_version False is not served, this server uses version 1" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":\"1\"}", "prompt_format_version 1 is not served, this server uses version 1" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":1.0}", "questions must contain at least one question" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":null}", "questions must contain at least one question" },
++        .{ "{\"input\":\"x\",\"prompt_format_version\":true}", "questions must contain at least one question" },
++        .{ "{\"zzz\":1,\"aaa\":true}", "unknown field 'aaa'" },
++        .{ "{\"input\":\"x\",\"chat_template_kwargs\":[]}", "chat_template_kwargs must be an object" },
++        .{ "{\"input\":\"x\",\"chat_template_kwargs\":{\"enable_thinking\":true}}", "decisions need enable_thinking false or unset" },
++        .{ "{\"input\":\"x\",\"chat_template_kwargs\":{\"enable_thinking\":false}}", "questions must contain at least one question" },
++        .{ "{\"input\":\"x\",\"questions\":[1]}", "each question must be an object" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"  \"}]}", "a question id must not be blank" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\"},{\"id\":\"q\"}]}", "question id 'q' is repeated" },
++        .{ "{\"input\":\"  \",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"p\",\"options\":[{\"name\":\"a\"},{\"name\":\"b\"}]}]}", "input must not be blank" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"nope\"}]}", "question 'q': unknown question type 'nope'" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\"}]}", "question 'q': unknown question type None" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"p\",\"options\":[{\"name\":\"a\"}]}]}", "question 'q': a choice needs 2 to 26 options" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"p\",\"options\":[{\"name\":\"Red\"},{\"name\":\"red\"}]}]}", "question 'q': option name 'red' repeats another name" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"p\",\"options\":[{\"name\":\"a\\nb\"},{\"name\":\"c\"}]}]}", "question 'q': option names must not be blank or contain line breaks" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"  \",\"options\":[{\"name\":\"a\"},{\"name\":\"b\"}]}]}", "question 'q': a question must not be blank" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"p\",\"options\":[{\"name\":\"a\",\"extra\":1},{\"name\":\"b\"}]}]}", "question 'q': unknown field 'extra'" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"yes_no\",\"question\":\"  \"}]}", "question 'q': a question must not be blank" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"score\",\"question\":\"rate\",\"levels\":[\"only\"]}]}", "question 'q': a score needs 2 to 10 levels" },
++        .{ "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"score\",\"question\":\"rate\",\"levels\":[\"good\",\" \"]}]}", "question 'q': a level must not be blank" },
++        .{ "[]", "'list' object has no attribute 'get'" },
++    };
++    for (cases) |case| try std.testing.expectEqualStrings(case[1], try messageOf(srv, a, case[0]));
++}
++
++const choice_body = "{\"input\":\"x\",\"model\":\"m\",\"return_prompt_token_ids\":true,\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"pick\",\"options\":[{\"name\":\"red\"},{\"name\":\"blue\",\"description\":\"sky\"}]}]}";
++
++test "the engine hook scores a choice and a missing hook is refused" {
++    var text: ByteText = .{};
++    var backend: Backend = .{ .hooked = true };
++    const srv = try serve(&text, &backend);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++
++    const raw = (try json.parse(a, choice_body)).ok;
++    var cx: errors.Cx = .{ .a = a };
++    const payload = try decisions.reply(srv, &cx, raw);
++    try std.testing.expectEqualStrings("decisions", payload.get("object").?.string);
++    try std.testing.expectEqualStrings("m", payload.get("model").?.string);
++    try std.testing.expectEqualStrings("1", payload.get("prompt_format_version").?.int);
++    const answer = payload.get("answers").?.get("q").?;
++    try std.testing.expectEqualStrings("choice", answer.get("type").?.string);
++    try std.testing.expectEqualStrings("blue", answer.get("choice").?.string);
++    try std.testing.expect(answer.get("probabilities").?.get("blue").?.float > answer.get("probabilities").?.get("red").?.float);
++    try std.testing.expectEqual(@as(usize, 2), answer.get("label_token_ids").?.array.len);
++    try std.testing.expectEqualStrings("65", answer.get("label_token_ids").?.array[0].int);
++    try std.testing.expectEqualStrings("66", answer.get("label_token_ids").?.array[1].int);
++    try std.testing.expectEqual(@as(usize, 6), answer.get("prompt_token_ids").?.array.len);
++    const usage = payload.get("usage").?;
++    try std.testing.expectEqualStrings("6", usage.get("prompt_tokens").?.int);
++    try std.testing.expectEqualStrings("0", usage.get("completion_tokens").?.int);
++    try std.testing.expectEqualStrings("6", usage.get("total_tokens").?.int);
++    try std.testing.expectEqual(@as(usize, 1), backend.calls);
++    try std.testing.expectEqual(@as(usize, 6), backend.prompt_len);
++    try std.testing.expectEqual(@as(usize, 2), backend.label_len);
++
++    const score_raw = (try json.parse(a, "{\"input\":\"x\",\"questions\":[{\"id\":\"s\",\"type\":\"score\",\"question\":\"rate\",\"levels\":[\"bad\",\"good\"]}]}")).ok;
++    const scored = try decisions.reply(srv, &cx, score_raw);
++    const score = scored.get("answers").?.get("s").?;
++    try std.testing.expectEqualStrings("score", score.get("type").?.string);
++    try std.testing.expect(score.get("choice") == null);
++    try std.testing.expect(score.get("score").?.float > 0.9);
++
++    try std.testing.expectEqualStrings("question 'q': the answer label 'yes' is not one distinct token after the chat prompt for this tokenizer, so this model is not supported", try messageOf(srv, a, "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"yes_no\",\"question\":\"rain\"}]}"));
++
++    text.open_think = true;
++    try std.testing.expectEqualStrings("question 'q': the chat template leaves a reasoning block open at the answer position", try messageOf(srv, a, choice_body));
++}
++
++test "a prompt past the context window is refused before scoring" {
++    var text: ByteText = .{};
++    var backend: Backend = .{ .hooked = true, .window = 4 };
++    const srv = try serve(&text, &backend);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    try std.testing.expectEqualStrings("question 'q': the prompt has 6 tokens, which does not fit the context length of 4 tokens", try messageOf(srv, arena.allocator(), choice_body));
++    try std.testing.expectEqual(@as(usize, 0), backend.calls);
++}
++
++test "an engine with no score hook refuses after the checks pass" {
++    var text: ByteText = .{};
++    var backend: Backend = .{};
++    const srv = try serve(&text, &backend);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    try std.testing.expectEqualStrings("decision scoring is not supported by this engine yet", try messageOf(srv, arena.allocator(), choice_body));
++    try std.testing.expectEqual(@as(usize, 0), backend.calls);
++}
+diff --git a/zig/src/server/root.zig b/zig/src/server/root.zig
+index 6942e7aa..22134d4f 100644
+--- a/zig/src/server/root.zig
++++ b/zig/src/server/root.zig
+@@ -36,4 +36,8 @@ test {
+     _ = @import("log.zig");
+     _ = @import("messages.zig");
+     _ = @import("stream_preflight_test.zig");
++    _ = @import("decisions.zig");
++    _ = @import("decisions_test.zig");
++    _ = @import("systemone.zig");
++    _ = @import("systemone_test.zig");
+ }
+diff --git a/zig/src/server/routes.zig b/zig/src/server/routes.zig
+index c27eaf94..b8c7cf41 100644
+--- a/zig/src/server/routes.zig
++++ b/zig/src/server/routes.zig
+@@ -8,6 +8,8 @@ const openai = @import("openai.zig");
+ const responses = @import("responses.zig");
+ const anthropic = @import("anthropic.zig");
+ const tokens = @import("tokens.zig");
++const decisions = @import("decisions.zig");
++const systemone = @import("systemone.zig");
+ const status = @import("status_routes.zig");
+ const Server = @import("server.zig").Server;
+ const Conn = http_conn.Conn;
+@@ -52,10 +54,9 @@ fn discardBody(conn: *Conn, a: Allocator) void {
+ 
+ fn post(srv: *Server, conn: *Conn, a: Allocator) void {
+     const route = auth.routePath(conn.path);
+-    if (std.mem.endsWith(u8, route, "/decisions")) {
+-        discardBody(conn, a); // decision scoring is the engine's, and this one has none yet
+-        return unknown(conn, a);
+-    }
++    // decisions are the engine's score hook: without one /decisions refuses (400) and /systemone is unknown (404)
++    if (std.mem.endsWith(u8, route, "/decisions")) return decisions.post(srv, conn, a);
++    if (std.mem.endsWith(u8, route, "/systemone")) return systemone.post(srv, conn, a);
+     if (anthropic.route(conn.path)) return anthropic.post(srv, conn, a);
+     if (responses.route(route)) |rid| if (rid.len == 0) return responses.post(srv, conn, a);
+     for (tokens.paths) |r| if (std.mem.eql(u8, route, r)) return tokens.post(srv, conn, a, std.mem.endsWith(u8, route, "/detokenize"));
+diff --git a/zig/src/server/systemone.zig b/zig/src/server/systemone.zig
+new file mode 100644
+index 00000000..29898fed
+--- /dev/null
++++ b/zig/src/server/systemone.zig
+@@ -0,0 +1,497 @@
++//! /v1/systemone: llama-server's System One request, its options read at single-token forms through the engine.
++//! Each question is one user turn through the served chat template (thinking off, the generation prompt appended),
++//! not main's literal LFM header; its labels are read where the answer's first token would be drawn.
++const std = @import("std");
++const json = @import("json.zig");
++const errors = @import("errors.zig");
++const pyrepr = @import("pyrepr.zig");
++const reply_text = @import("reply_text.zig");
++const http_body = @import("http_body.zig");
++const openai = @import("openai.zig");
++const routes = @import("routes.zig");
++const Server = @import("server.zig").Server;
++const Conn = @import("http_conn.zig").Conn;
++const Value = json.Value;
++const Cx = errors.Cx;
++const Allocator = std.mem.Allocator;
++
++const yes_forms = [_][]const u8{ "yes", "Yes", "YES" };
++const no_forms = [_][]const u8{ "no", "No", "NO" };
++const media = [_][]const u8{ "input_audio", "audio", "video_url", "video" };
++const max_pictures = 4; // TensorFold 0.6's ImageLimits.max_images (read for the refusals; no engine here takes them)
++
++const Kind = enum { noul, choice, score };
++
++const Question = struct {
++    id: []const u8,
++    kind: Kind,
++    instructions: []const u8,
++    keys: []const []const u8 = &.{}, // choice: option names; score: level texts; noul: none or true/false
++    texts: []const ?Value = &.{}, // choice: descriptions; noul: the true and false descriptions
++};
++
++const Code = struct { text: []const u8, id: u32 };
++
++pub fn post(srv: *Server, conn: *Conn, a: Allocator) void {
++    if (srv.engine.vtable.score == null) { // an engine that does not decide serves no such path
++        _ = http_body.read(conn, a, http_body.limit) catch {};
++        return routes.unknown(conn, a);
++    }
++    var cx: Cx = .{ .a = a };
++    const payload = blk: {
++        const raw = http_body.readJson(conn, &cx) catch break :blk null;
++        if (raw != .object) {
++            _ = cx.refuse("request body must be an object") catch {};
++            break :blk null;
++        }
++        break :blk reply(srv, &cx, raw) catch |e| {
++            if (e == error.OutOfMemory) {
++                cx.kind = .server;
++                cx.message = "out of memory";
++            }
++            break :blk null;
++        };
++    };
++    if (payload) |p| return routes.sendValue(conn, a, 200, p);
++    if (cx.kind != .server) cx.kind = .request;
++    const err = openai.errorBody(a, &cx, null) catch return;
++    routes.sendValue(conn, a, cx.status(), openai.wrapError(a, err) catch return);
++}
++
++/// The answers to a System One body, or its refusal.
++pub fn reply(srv: *Server, cx: *Cx, body: Value) errors.Refused!Value {
++    const state = body.get("state") orelse return cx.refuse("a request needs a state (null when the question is the whole state)");
++    const raw_questions = body.get("questions") orelse return cx.refuse("a request needs questions");
++    const seen = try pictures(cx, body, state);
++    if (raw_questions != .object or raw_questions.object.count() == 0) return cx.refuse("questions is a non-empty object of id: question");
++    const questions = try cx.a.alloc(Question, raw_questions.object.count());
++    for (raw_questions.object.keys(), raw_questions.object.values(), questions) |id, raw, *q| q.* = try parse(cx, id, raw);
++    // no engine here reads a decision's pictures (main's are LFM2's decide): refused in main's words
++    if (seen.urls.len > 0) return cx.refuse("this checkpoint has no vision tower");
++
++    var f: Format = .{ .srv = srv, .cx = cx, .one = .init(cx.a) };
++    const lead = try prefix(cx.a, seen.state);
++    const prompts = try cx.a.alloc([]const u32, questions.len);
++    const groups = try cx.a.alloc([]const []const u32, questions.len);
++    const window = srv.engine.info().context_window;
++    for (questions, prompts, groups) |q, *p, *g| {
++        const codes = if (q.kind == .choice) try f.codes(q.keys) else &.{};
++        const rendered = try f.render(try std.mem.concat(cx.a, u8, &.{ lead, try questionBody(cx.a, q, codes) }));
++        p.* = try f.encode(rendered);
++        if (p.len == 0) return cx.refuse("each question needs a nonempty token sequence");
++        if (window > 0 and p.len > window) return cx.fail(.request, "a decision sequence exceeds the {d}-token context", .{window});
++        g.* = try f.readout(q, codes, .{ .text = rendered, .ids = p.* });
++    }
++    const scores = try scoreAll(srv, cx, prompts, groups);
++    // the prompts' shared start counted once, as llama-server counts a packed decision's trunk
++    var shared: usize = prompts[0].len;
++    for (prompts[1..]) |p| shared = @min(shared, std.mem.indexOfDiff(u32, prompts[0][0..shared], p[0..@min(shared, p.len)]) orelse @min(shared, p.len));
++    var read: usize = shared;
++    for (prompts) |p| read += p.len - shared;
++    const answers = try json.newObject(cx.a);
++    for (questions, scores) |q, s| try answers.put(cx.a, q.id, try answer(cx.a, q, s));
++    const usage = try json.newObject(cx.a);
++    try usage.put(cx.a, "input_tokens", try json.intValue(cx.a, read));
++    try usage.put(cx.a, "output_tokens", .{ .int = "0" });
++    const out = try json.newObject(cx.a);
++    try out.put(cx.a, "model", .{ .string = srv.config.served_name });
++    try out.put(cx.a, "answers", .{ .object = answers });
++    try out.put(cx.a, "usage", .{ .object = usage });
++    return .{ .object = out };
++}
++
++const Seen = struct { urls: []const []const u8, state: Value };
++
++/// The pictures (files, images, then the state's image parts) and the state without them; other media refused.
++fn pictures(cx: *Cx, body: Value, state: Value) errors.Refused!Seen {
++    var urls: std.ArrayList([]const u8) = .empty;
++    for ([_][]const u8{ "files", "images" }) |key| if (body.get(key)) |v| switch (v) {
++        .null => {},
++        .array => |items| for (items) |item| try urls.append(cx.a, try url(cx, item)),
++        else => return cx.fail(.request, "{s} must be an array of data URLs", .{key}),
++    };
++    if (body.get("videos")) |v| if (v.truthy()) return cx.refuse("videos are not supported");
++    const messages = if (state == .object) state.get("messages") orelse .null else state;
++    var kept_state = state;
++    if (messages == .array and messages.array.len > 0) {
++        const kept = try cx.a.alloc(Value, messages.array.len);
++        for (messages.array, kept) |message, *out| {
++            out.* = message;
++            const content = if (message == .object) message.get("content") orelse .null else .null;
++            if (content != .array) continue;
++            var parts: std.ArrayList(Value) = .empty;
++            for (content.array) |part| {
++                const kind = if (part == .object) (part.get("type") orelse .null) else .null;
++                if (kind == .string and std.mem.eql(u8, kind.string, "image_url")) {
++                    const u = part.get("image_url") orelse .null;
++                    try urls.append(cx.a, try url(cx, if (u == .object) u.get("url") orelse .null else u));
++                    continue;
++                }
++                if (kind == .string) for (media) |m| if (std.mem.eql(u8, kind.string, m))
++                    return cx.fail(.request, "{s} is not supported: a decision state takes images", .{m});
++                try parts.append(cx.a, part);
++            }
++            const copy = try json.newObject(cx.a);
++            for (message.object.keys(), message.object.values()) |k, v| try copy.put(cx.a, k, if (std.mem.eql(u8, k, "content")) .{ .array = parts.items } else v);
++            out.* = .{ .object = copy };
++        }
++        if (state == .object) {
++            const copy = try json.newObject(cx.a);
++            for (state.object.keys(), state.object.values()) |k, v| try copy.put(cx.a, k, if (std.mem.eql(u8, k, "messages")) .{ .array = kept } else v);
++            kept_state = .{ .object = copy };
++        } else kept_state = .{ .array = kept };
++    }
++    if (urls.items.len > max_pictures) return cx.fail(.request, "at most {d} pictures a request", .{max_pictures});
++    return .{ .urls = urls.items, .state = kept_state };
++}
++
++fn url(cx: *Cx, v: Value) errors.Refused![]const u8 {
++    if (v != .string or v.string.len == 0) return cx.refuse("image_url must contain a non-empty url string");
++    return v.string;
++}
++
++fn parse(cx: *Cx, id: []const u8, raw: Value) errors.Refused!Question {
++    if (raw != .object) return cx.refuse("a question is an object with type, instructions and criteria");
++    const kind_v = raw.get("type") orelse Value{ .string = "choice" };
++    const instr_v = raw.get("instructions") orelse .null;
++    if (instr_v == .null) return cx.refuse("a question needs instructions (llama-server's System One requires them)");
++    const instructions = try text(cx.a, instr_v);
++    const crit = raw.get("criteria") orelse .null;
++    const kind: Kind = if (kind_v == .string) std.meta.stringToEnum(Kind, kind_v.string) orelse
++        return cx.fail(.request, "unknown question type {s}: choose noul, choice or score", .{try pyrepr.repr(cx.a, kind_v)}) else return cx.fail(.request, "unknown question type {s}: choose noul, choice or score", .{try pyrepr.repr(cx.a, kind_v)});
++    var q: Question = .{ .id = id, .kind = kind, .instructions = instructions };
++    switch (kind) {
++        .noul => {
++            if (crit == .null) return q;
++            if (crit != .object) return cx.refuse("noul criteria is an object with true and false");
++            q.keys = &.{ "true", "false" };
++            q.texts = try cx.a.dupe(?Value, &.{ crit.get("true"), crit.get("false") });
++        },
++        .score => {
++            if (crit != .array or crit.array.len < 2 or crit.array.len > 10) return cx.refuse("score criteria is a list of 2 to 10 levels, lowest first");
++            const keys = try cx.a.alloc([]const u8, crit.array.len);
++            for (crit.array, keys) |c, *k| k.* = try text(cx.a, c);
++            q.keys = keys;
++        },
++        .choice => {
++            if (crit != .object or crit.object.count() == 0) return cx.refuse("choice criteria is a non-empty object of option: description");
++            q.keys = crit.object.keys();
++            const texts = try cx.a.alloc(?Value, crit.object.count());
++            for (crit.object.values(), texts) |v, *t| t.* = v;
++            q.texts = texts;
++        },
++    }
++    return q;
++}
++
++/// Python's ``v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)``.
++fn text(a: Allocator, v: Value) Allocator.Error![]const u8 {
++    return if (v == .string) v.string else json.stringify(a, v, .{ .ascii = false });
++}
++
++/// Prompt pieces and readout tokens for the served tokenizer.
++const Format = struct {
++    srv: *Server,
++    cx: *Cx,
++    one: std.StringHashMap(?u32),
++
++    /// One user turn through the chat template: thinking off, the assistant's generation prompt appended.
++    fn render(f: *Format, content: []const u8) errors.Refused![]const u8 {
++        const a = f.cx.a;
++        const user = try json.newObject(a);
++        try user.put(a, "role", .{ .string = "user" });
++        try user.put(a, "content", .{ .string = content });
++        const messages = try a.alloc(Value, 1);
++        messages[0] = .{ .object = user };
++        var problem: []const u8 = "";
++        const text_ = f.srv.text.render(a, .{ .array = messages }, .{ .add_generation_prompt = true, .enable_thinking = false }, &problem) catch |e| switch (e) {
++            error.OutOfMemory => return error.OutOfMemory,
++            error.Template => return f.cx.fail(.request, "the chat template failed: {s}", .{problem}),
++        };
++        // a template that leaves a reasoning block open would read the labels inside it
++        if (std.mem.lastIndexOf(u8, text_, "<think>")) |open_at| {
++            const closed = if (std.mem.lastIndexOf(u8, text_, "</think>")) |close_at| open_at <= close_at else false;
++            if (!closed) return f.cx.refuse("the chat template leaves a reasoning block open at the answer position");
++        }
++        return text_;
++    }
++
++    fn encode(f: *Format, s: []const u8) errors.Refused![]const u32 {
++        return f.srv.text.encode(f.cx.a, s, false) catch |e| switch (e) {
++            error.OutOfMemory => error.OutOfMemory,
++            else => f.cx.refuse("the tokenizer cannot encode this decision"),
++        };
++    }
++
++    /// The token `s` is when it is exactly one.
++    fn single(f: *Format, s: []const u8) errors.Refused!?u32 {
++        if (f.one.get(s)) |hit| return hit;
++        const ids = try f.encode(s);
++        const id: ?u32 = if (ids.len == 1) ids[0] else null;
++        try f.one.put(try f.cx.a.dupe(u8, s), id);
++        return id;
++    }
++
++    /// A distinct single-token code per option: single letters as given, else A.. (00.. past 26), else the pool's next.
++    fn codes(f: *Format, keys: []const []const u8) errors.Refused![]const Code {
++        const a = f.cx.a;
++        var letters = true;
++        for (keys) |k| {
++            const s = reply_text.pyStrip(k);
++            if (!(s.len == 1 and std.ascii.isAlphabetic(s[0]))) letters = false;
++        }
++        const out = try a.alloc(Code, keys.len);
++        var used: std.AutoHashMapUnmanaged(u32, void) = .empty;
++        for (keys, out, 0..) |k, *code, i| {
++            const wanted = if (letters) reply_text.pyStrip(k) else if (keys.len <= 26) try a.dupe(u8, &.{@as(u8, @intCast('A' + i))}) else try std.fmt.allocPrint(a, "{d:0>2}", .{i});
++            var n: usize = 0;
++            var candidate = wanted;
++            while (true) : (n += 1) {
++                if (n > 0) candidate = try pool(a, n - 1) orelse return f.cx.fail(.request, "no single-token code left for {d} options", .{keys.len});
++                const id = try f.single(candidate) orelse continue;
++                if (used.contains(id)) continue;
++                try used.put(a, id, {});
++                code.* = .{ .text = candidate, .id = id };
++                break;
++            }
++        }
++        return out;
++    }
++
++    /// The token `form` is right after the rendered prompt, when the prompt's ids stay as they are and it adds one.
++    fn after(f: *Format, prompt: Prompt, form: []const u8) errors.Refused!?u32 {
++        const ids = try f.encode(try std.mem.concat(f.cx.a, u8, &.{ prompt.text, form }));
++        if (ids.len != prompt.ids.len + 1 or !std.mem.eql(u32, ids[0..prompt.ids.len], prompt.ids)) return null;
++        return ids[ids.len - 1];
++    }
++
++    /// Token ids an option is read at, each one token right after the prompt; an option scores its best form.
++    fn readout(f: *Format, q: Question, codes_: []const Code, prompt: Prompt) errors.Refused![]const []const u32 {
++        const a = f.cx.a;
++        var taken: std.ArrayList(u32) = .empty; // an id reads one option only
++        switch (q.kind) {
++            .noul => {
++                const groups = try a.alloc([]const u32, 2);
++                groups[0] = try f.forms(prompt, &yes_forms, &taken);
++                groups[1] = try f.forms(prompt, &no_forms, &taken);
++                if (groups[0].len == 0 or groups[1].len == 0) return f.cx.refuse("this tokenizer has no single-token yes/no, which a noul question is read at");
++                return groups;
++            },
++            .score => {
++                const groups = try a.alloc([]const u32, q.keys.len);
++                for (groups, 0..) |*g, i| {
++                    g.* = try f.forms(prompt, &.{try std.fmt.allocPrint(a, "{d}", .{i})}, &taken);
++                    if (g.len == 0) return f.cx.fail(.request, "a score with {d} levels needs single-token digits", .{q.keys.len});
++                }
++                return groups;
++            },
++            .choice => {
++                const groups = try a.alloc([]const u32, codes_.len);
++                for (codes_, groups) |c, *g| {
++                    const id = try f.after(prompt, c.text) orelse return labelRefuse(f.cx, c.text);
++                    if (std.mem.indexOfScalar(u32, taken.items, id) != null) return labelRefuse(f.cx, c.text);
++                    try taken.append(a, id);
++                    g.* = try a.dupe(u32, &.{id});
++                }
++                // the spaced forms after every code's own, so a code is never shadowed by another's spaced form
++                for (codes_, groups) |c, *g| {
++                    const extra = try f.after(prompt, try std.mem.concat(a, u8, &.{ " ", c.text })) orelse continue;
++                    if (std.mem.indexOfScalar(u32, taken.items, extra) != null) continue;
++                    try taken.append(a, extra);
++                    g.* = try a.dupe(u32, &.{ g.*[0], extra });
++                }
++                return groups;
++            },
++        }
++    }
++
++    fn forms(f: *Format, prompt: Prompt, texts: []const []const u8, taken: *std.ArrayList(u32)) errors.Refused![]const u32 {
++        var seen: std.ArrayList(u32) = .empty;
++        for (texts) |t| if (try f.after(prompt, t)) |id| if (std.mem.indexOfScalar(u32, taken.items, id) == null) {
++            try seen.append(f.cx.a, id);
++            try taken.append(f.cx.a, id);
++        };
++        return seen.items;
++    }
++};
++
++/// A question's rendered prompt, as text and as the ids the engine reads.
++const Prompt = struct { text: []const u8, ids: []const u32 };
++
++fn labelRefuse(cx: *Cx, label: []const u8) errors.Refused {
++    return cx.fail(.request, "the answer label {s} is not one distinct token after the chat prompt for this tokenizer, so this model is not supported", .{pyrepr.repr(cx.a, .{ .string = label }) catch label});
++}
++
++/// The pool's `i`th code: A-Z, 00-99, a-z, #0-#199, then AA-ZZ; null past its end.
++fn pool(a: Allocator, i: usize) Allocator.Error!?[]const u8 {
++    if (i < 26) return try a.dupe(u8, &.{@as(u8, @intCast('A' + i))});
++    if (i < 126) return try std.fmt.allocPrint(a, "{d:0>2}", .{i - 26});
++    if (i < 152) return try a.dupe(u8, &.{@as(u8, @intCast('a' + i - 126))});
++    if (i < 352) return try std.fmt.allocPrint(a, "#{d}", .{i - 152});
++    if (i < 352 + 676) return try a.dupe(u8, &.{ @as(u8, @intCast('A' + (i - 352) / 26)), @as(u8, @intCast('A' + (i - 352) % 26)) });
++    return null;
++}
++
++/// The user turn's start: the state, then the question's heading (empty for a null state).
++fn prefix(a: Allocator, state: Value) Allocator.Error![]const u8 {
++    var out: std.Io.Writer.Allocating = .init(a);
++    writePrefix(&out.writer, state) catch return error.OutOfMemory;
++    return out.toOwnedSlice();
++}
++
++fn writePrefix(w: *std.Io.Writer, state: Value) std.Io.Writer.Error!void {
++    if (state == .null) return;
++    if (state == .string) try w.writeAll(state.string) else try indented(w, state, 0);
++    try w.writeAll("\n\n\nQUESTION:\n");
++}
++
++/// ``json.dumps(v, ensure_ascii=False, indent=2)``.
++fn indented(w: *std.Io.Writer, v: Value, level: usize) std.Io.Writer.Error!void {
++    const o: json.Options = .{ .ascii = false };
++    switch (v) {
++        .array => |items| {
++            if (items.len == 0) return w.writeAll("[]");
++            try w.writeByte('[');
++            for (items, 0..) |item, i| {
++                try w.writeAll(if (i > 0) ",\n" else "\n");
++                try w.splatByteAll(' ', 2 * (level + 1));
++                try indented(w, item, level + 1);
++            }
++            try w.writeByte('\n');
++            try w.splatByteAll(' ', 2 * level);
++            try w.writeByte(']');
++        },
++        .object => |obj| {
++            if (obj.count() == 0) return w.writeAll("{}");
++            try w.writeByte('{');
++            for (obj.keys(), obj.values(), 0..) |k, item, i| {
++                try w.writeAll(if (i > 0) ",\n" else "\n");
++                try w.splatByteAll(' ', 2 * (level + 1));
++                try json.writeString(w, k, o);
++                try w.writeAll(": ");
++                try indented(w, item, level + 1);
++            }
++            try w.writeByte('\n');
++            try w.splatByteAll(' ', 2 * level);
++            try w.writeByte('}');
++        },
++        else => try json.write(w, v, o),
++    }
++}
++
++/// The user turn's question: its instructions, options or levels, and the reply it asks for.
++fn questionBody(a: Allocator, q: Question, codes: []const Code) Allocator.Error![]const u8 {
++    var out: std.Io.Writer.Allocating = .init(a);
++    questionText(a, &out.writer, q, codes) catch return error.OutOfMemory;
++    return out.toOwnedSlice();
++}
++
++fn questionText(a: Allocator, w: *std.Io.Writer, q: Question, codes: []const Code) !void {
++    try w.writeAll(q.instructions);
++    switch (q.kind) {
++        .choice => {
++            try w.writeAll("\n\nOptions:\n");
++            for (codes, q.keys, q.texts, 0..) |c, key, desc, i| {
++                if (i > 0) try w.writeByte('\n');
++                try w.print("{s} ", .{c.text});
++                // a description as written (JSON when it is not text); without one, the name
++                if (desc != null and desc.?.truthy()) try w.writeAll(try text(a, desc.?)) else for (key) |ch| try w.writeByte(if (ch == '_') ' ' else ch);
++            }
++            try w.writeAll("\n\nReply with the option code only.");
++        },
++        .noul => {
++            // the template shows the descriptions only when one side has one, then both
++            const any = q.texts.len == 2 and (q.texts[0] != null and q.texts[0].? != .null or q.texts[1] != null and q.texts[1].? != .null);
++            if (any) for ([_][]const u8{ "Yes", "No" }, q.texts) |name, t| {
++                const shown: Value = if (t != null and t.? != .null) t.? else .{ .string = "None" };
++                try w.print("\n{s}: {s}", .{ name, try text(a, shown) });
++            };
++            try w.writeAll("\n\nReply with yes or no only.");
++        },
++        .score => {
++            try w.writeAll("\n\n");
++            for (q.keys, 0..) |name, i| try w.print("{s}{d} {s}", .{ if (i > 0) "\n" else "", i, name });
++            try w.print("\n\nReply with a single digit 0-{d} only.", .{q.keys.len - 1});
++        },
++    }
++}
++
++/// Each question's option scores (its best form's logit): a pass over each question's rendered prompt.
++fn scoreAll(srv: *Server, cx: *Cx, prompts: []const []const u32, groups: []const []const []const u32) errors.Refused![]const []const f64 {
++    var labels: std.ArrayList(u32) = .empty;
++    const counts = try cx.a.alloc(usize, groups.len);
++    for (groups, counts) |g, *n| {
++        n.* = 0;
++        for (g) |forms| {
++            try labels.appendSlice(cx.a, forms);
++            n.* += forms.len;
++        }
++    }
++    const logits = try cx.a.alloc(f64, labels.items.len);
++    @memset(logits, 0);
++    var at: usize = 0;
++    for (prompts, counts) |prompt, n| {
++        // a softmax over the options alone: the vocabulary's mass is not read
++        _ = srv.engine.score(prompt, labels.items[at..][0..n], logits[at..][0..n], false) catch |e| switch (e) {
++            error.Unsupported => return cx.refuse("decision scoring is not supported by this engine"),
++            error.Failed => return cx.fail(.server, "decision scoring failed", .{}),
++        };
++        at += n;
++    }
++    const out = try cx.a.alloc([]const f64, groups.len);
++    at = 0;
++    for (groups, out) |g, *row| {
++        const scores = try cx.a.alloc(f64, g.len);
++        for (g, scores) |forms, *s| {
++            s.* = logits[at];
++            for (logits[at..][0..forms.len]) |x| s.* = @max(s.*, x);
++            at += forms.len;
++        }
++        row.* = scores;
++    }
++    return out;
++}
++
++fn answer(a: Allocator, q: Question, scores: []const f64) Allocator.Error!Value {
++    var peak = scores[0];
++    for (scores[1..]) |s| peak = @max(peak, s);
++    const p = try a.alloc(f64, scores.len);
++    var z: f64 = 0;
++    for (scores, p) |s, *x| {
++        x.* = @exp(s - peak);
++        z += x.*;
++    }
++    for (p) |*x| x.* /= z;
++    var best: usize = 0;
++    for (p, 0..) |x, i| if (x > p[best]) {
++        best = i;
++    };
++    const o = try json.newObject(a);
++    try o.put(a, "type", .{ .string = @tagName(q.kind) });
++    switch (q.kind) {
++        .noul => try o.put(a, "noul", .{ .float = p[0] }),
++        .choice => {
++            try o.put(a, "choice", .{ .string = q.keys[best] });
++            try o.put(a, "confidence", .{ .float = p[best] });
++            const probs = try json.newObject(a);
++            for (q.keys, p) |k, x| try probs.put(a, k, .{ .float = x });
++            try o.put(a, "probabilities", .{ .object = probs });
++        },
++        .score => {
++            var expected: f64 = 0;
++            for (p, 0..) |x, i| expected += @as(f64, @floatFromInt(i)) * x;
++            try o.put(a, "score", .{ .float = expected });
++            try o.put(a, "confidence", .{ .float = p[best] });
++            const probs = try json.newObject(a);
++            const legend = try json.newObject(a);
++            for (q.keys, p, 0..) |k, x, i| {
++                const name = try std.fmt.allocPrint(a, "{d}", .{i});
++                try probs.put(a, name, .{ .float = x });
++                try legend.put(a, name, .{ .string = k });
++            }
++            try o.put(a, "probabilities", .{ .object = probs });
++            try o.put(a, "legend", .{ .object = legend });
++        },
++    }
++    return .{ .object = o };
++}
+diff --git a/zig/src/server/systemone_test.zig b/zig/src/server/systemone_test.zig
+new file mode 100644
+index 00000000..0ab5498b
+--- /dev/null
++++ b/zig/src/server/systemone_test.zig
+@@ -0,0 +1,352 @@
++//! /v1/systemone against llama-server System One goldens: the same fake tokenizer and head logits give the same bytes.
++const std = @import("std");
++const api = @import("engine_api");
++const json = @import("json.zig");
++const errors = @import("errors.zig");
++const model_text = @import("model_text.zig");
++const systemone = @import("systemone.zig");
++const routes = @import("routes.zig");
++const Server = @import("server.zig").Server;
++const Conn = @import("http_conn.zig").Conn;
++const Allocator = std.mem.Allocator;
++
++// Greedy longest match over `table` (ids from 256), else UTF-8 bytes: the goldens' tokenizer.
++const table = [_][]const u8{ "<|startoftext|>", "<|im_start|>", "<|im_end|>", "yes", "Yes", "no", "No", " A", " B", "AB" };
++
++const Text = struct {
++    tail: []const u8 = "", // text after the generation prompt (a template whose labels would merge with it)
++
++    fn text(t: *@This()) model_text.Text {
++        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
++    }
++
++    fn encode(_: *anyopaque, a: Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
++        var ids: std.ArrayList(u32) = .empty;
++        var i: usize = 0;
++        while (i < input.len) {
++            var best: ?usize = null;
++            for (table, 0..) |t, j| if (std.mem.startsWith(u8, input[i..], t) and (best == null or t.len > table[best.?].len)) {
++                best = j;
++            };
++            if (best) |j| {
++                try ids.append(a, @intCast(256 + j));
++                i += table[j].len;
++            } else {
++                try ids.append(a, input[i]);
++                i += 1;
++            }
++        }
++        return ids.toOwnedSlice(a);
++    }
++
++    fn decode(_: *anyopaque, a: Allocator, ids: []const u32) Allocator.Error![]u8 {
++        var out: std.ArrayList(u8) = .empty;
++        for (ids) |id| if (id >= 256) try out.appendSlice(a, table[id - 256]) else try out.append(a, @intCast(id));
++        return out.toOwnedSlice(a);
++    }
++
++    fn tokenId(_: *anyopaque, _: []const u8) ?u32 {
++        return null;
++    }
++
++    fn tokenString(_: *anyopaque, a: Allocator, id: u32) Allocator.Error![]u8 {
++        return std.fmt.allocPrint(a, "{d}", .{id});
++    }
++
++    fn vocabSize(_: *anyopaque) u32 {
++        return 256 + table.len;
++    }
++
++    fn eosIds(_: *anyopaque) []const u32 {
++        return &.{};
++    }
++
++    /// Qwen's ChatML for one user turn; thinking off writes the empty think block after the assistant header.
++    fn render(ctx: *anyopaque, a: Allocator, messages: json.Value, o: model_text.RenderOptions, problem: *[]const u8) model_text.Error![]u8 {
++        const t: *Text = @ptrCast(@alignCast(ctx));
++        if (o.enable_thinking or !o.add_generation_prompt) {
++            problem.* = "System One renders with thinking off and the generation prompt";
++            return error.Template;
++        }
++        const content = messages.array[0].get("content").?.string;
++        return std.mem.concat(a, u8, &.{ "<|im_start|>user\n", content, "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", t.tail });
++    }
++
++    fn templateSource(_: *anyopaque) []const u8 {
++        return "";
++    }
++};
++
++/// Scores each label as the goldens' head does and keeps every prompt it was asked for, as text.
++const Head = struct {
++    gpa: Allocator,
++    prompts: std.ArrayList([]u8) = .empty,
++    window: u32 = 0,
++    hooks: enum { none, score } = .score,
++    mass: bool = false, // /v1/decisions also reads the vocabulary's mass; System One never asks for it
++
++    fn engine(h: *Head) api.Engine {
++        return .{ .ctx = h, .vtable = switch (h.hooks) {
++            .none => &bare_vt,
++            .score => &score_vt,
++        } };
++    }
++
++    fn info(ctx: *anyopaque) api.Info {
++        const h: *Head = @ptrCast(@alignCast(ctx));
++        return .{ .context_window = h.window };
++    }
++
++    fn submit(_: *anyopaque, _: api.Id, _: *const api.Request, _: api.Sink) api.SubmitError!void {}
++    fn cancel(_: *anyopaque, _: api.Id) void {}
++    fn status(_: *anyopaque, out: *api.Status, _: []u32) void {
++        out.* = .{};
++    }
++    fn memory(_: *anyopaque, _: bool) ?api.Memory {
++        return null;
++    }
++
++    fn score(ctx: *anyopaque, prompt: []const u32, labels: []const u32, logits: []f64, mass: bool) error{Failed}!f64 {
++        const h: *Head = @ptrCast(@alignCast(ctx));
++        const t = Text.decode(undefined, h.gpa, prompt) catch return error.Failed;
++        h.prompts.append(h.gpa, t) catch return error.Failed;
++        if (mass and !h.mass) return error.Failed; // System One reads the options alone
++        for (labels, logits) |id, *x| x.* = @as(f64, @floatFromInt((id * 37) % 101)) / 10.0;
++        return if (mass) 12 else 0;
++    }
++
++    fn reset(h: *Head) void {
++        for (h.prompts.items) |p| h.gpa.free(p);
++        h.prompts.clearRetainingCapacity();
++    }
++};
++
++const bare_vt: api.Engine.VTable = .{ .info = Head.info, .submit = Head.submit, .cancel = Head.cancel, .status = Head.status, .memory = Head.memory };
++const score_vt: api.Engine.VTable = .{ .info = Head.info, .submit = Head.submit, .cancel = Head.cancel, .status = Head.status, .memory = Head.memory, .score = Head.score };
++
++fn serve(text: *Text, head: *Head) !*Server {
++    return Server.init(std.testing.allocator, std.testing.io, head.engine(), text.text(), .{
++        .served_name = "m",
++        .model_ids = &.{"m"},
++        .enable_thinking = false,
++        .use_drafts = false,
++    }, null);
++}
++
++/// Equal JSON in key order and text; floats within 1e-12 relative (Python's exp and Zig's differ in the last bit).
++fn expectSame(want: json.Value, got: json.Value) !void {
++    try std.testing.expectEqual(std.meta.activeTag(want), std.meta.activeTag(got));
++    switch (want) {
++        .float => |w| try std.testing.expectApproxEqRel(w, got.float, 1e-12),
++        .object => |o| {
++            try std.testing.expectEqual(o.count(), got.object.count());
++            for (o.keys(), got.object.keys()) |w, g| try std.testing.expectEqualStrings(w, g);
++            for (o.values(), got.object.values()) |w, g| try expectSame(w, g);
++        },
++        .array => |items| {
++            try std.testing.expectEqual(items.len, got.array.len);
++            for (items, got.array) |w, g| try expectSame(w, g);
++        },
++        else => try std.testing.expect(json.equal(want, got)),
++    }
++}
++
++const Case = struct { body: []const u8, want: []const u8, prompts: []const []const u8 };
++
++test "System One answers and prompts equal the goldens, a pass a question" {
++    {
++        var text: Text = .{};
++        var head: Head = .{ .gpa = std.testing.allocator };
++        defer {
++            head.reset();
++            head.prompts.deinit(std.testing.allocator);
++        }
++        const srv = try serve(&text, &head);
++        defer srv.deinit();
++        for (answered) |case| {
++            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++            defer arena.deinit();
++            const a = arena.allocator();
++            head.reset();
++            var cx: errors.Cx = .{ .a = a };
++            const out = try systemone.reply(srv, &cx, (try json.parse(a, case.body)).ok);
++            try expectSame((try json.parse(a, case.want)).ok, out);
++            try std.testing.expectEqual(case.prompts.len, head.prompts.items.len);
++            for (case.prompts, head.prompts.items) |want, got| try std.testing.expectEqualStrings(want, got);
++        }
++    }
++}
++
++test "System One refuses in the goldens' words, before any scoring" {
++    var text: Text = .{};
++    var head: Head = .{ .gpa = std.testing.allocator };
++    defer head.prompts.deinit(std.testing.allocator);
++    const srv = try serve(&text, &head);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    for (refused) |case| {
++        var cx: errors.Cx = .{ .a = a };
++        try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, case[0])).ok));
++        try std.testing.expectEqualStrings(case[1], cx.message);
++    }
++    // pictures wait for an engine that reads them; a sequence past the engine's context is refused by its length
++    const pictured = "{\"state\": \"x\", \"images\": [\"data:image/png;base64,AA\"], \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"i\"}}}";
++    var cx: errors.Cx = .{ .a = a };
++    try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, pictured)).ok));
++    try std.testing.expectEqualStrings("this checkpoint has no vision tower", cx.message);
++    head.window = 8;
++    try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, answered[0].body)).ok));
++    try std.testing.expectEqualStrings("a decision sequence exceeds the 8-token context", cx.message);
++    try std.testing.expectEqual(@as(usize, 0), head.prompts.items.len);
++}
++
++test "pictures are refused before any scoring (no engine here reads them), past four by their count first" {
++    var text: Text = .{};
++    var head: Head = .{ .gpa = std.testing.allocator };
++    defer head.prompts.deinit(std.testing.allocator);
++    const srv = try serve(&text, &head);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const body =
++        \\{"state": {"messages": [{"role": "user", "content": [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBB"}}]}, {"role": "assistant", "content": "ok"}], "note": 1},
++        \\ "questions": {"q": {"type": "noul", "instructions": "i"}}}
++    ;
++    var cx: errors.Cx = .{ .a = a };
++    try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, body)).ok));
++    try std.testing.expectEqualStrings("this checkpoint has no vision tower", cx.message);
++    const five = "{\"state\": null, \"images\": [\"a\", \"b\", \"c\", \"d\", \"e\"], \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"i\"}}}";
++    try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, five)).ok));
++    try std.testing.expectEqualStrings("at most 4 pictures a request", cx.message);
++    try std.testing.expectEqual(@as(usize, 0), head.prompts.items.len);
++}
++
++/// One POST through the router over a socket pair; the reply's bytes (status line, headers, body).
++fn routed(srv: *Server, a: Allocator, path: []const u8, body: []const u8) ![]const u8 {
++    var fds: [2]std.c.fd_t = undefined;
++    if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds) != 0) return error.SocketPair;
++    defer _ = std.c.close(fds[1]);
++    var conn = try Conn.init(a, fds[0], "test");
++    defer {
++        conn.deinit();
++        _ = std.c.close(fds[0]);
++    }
++    if (std.c.write(fds[1], body.ptr, body.len) != @as(isize, @intCast(body.len))) return error.Write;
++    var headers = [_]@import("http_conn.zig").Header{.{ .name = "Content-Length", .value = try std.fmt.allocPrint(a, "{d}", .{body.len}) }};
++    conn.method = "POST";
++    conn.path = path;
++    conn.version = "HTTP/1.1";
++    conn.headers = &headers;
++    conn.close = false;
++    routes.dispatch(srv, &conn, a);
++    var out: std.ArrayList(u8) = .empty;
++    var buf: [4096]u8 = undefined;
++    _ = std.c.shutdown(fds[0], std.c.SHUT.WR);
++    while (true) {
++        const n = std.c.read(fds[1], &buf, buf.len);
++        if (n <= 0) break;
++        try out.appendSlice(a, buf[0..@intCast(n)]);
++    }
++    return out.items;
++}
++
++test "routes: without a score hook /systemone is an unknown path and /decisions a 400; with one both answer" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const one = "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"i\"}}}";
++    const decision = "{\"input\":\"x\",\"questions\":[{\"id\":\"q\",\"type\":\"choice\",\"question\":\"pick\",\"options\":[{\"name\":\"red\"},{\"name\":\"blue\"}]}]}";
++    var text: Text = .{};
++    var bare: Head = .{ .gpa = std.testing.allocator, .hooks = .none };
++    defer bare.prompts.deinit(std.testing.allocator);
++    const plain = try serve(&text, &bare);
++    defer plain.deinit();
++    for ([_][]const u8{ "/v1/systemone", "/systemone", "/x/systemone/" }) |path| {
++        const got = try routed(plain, a, path, one);
++        try std.testing.expect(std.mem.startsWith(u8, got, "HTTP/1.1 404"));
++        try std.testing.expect(std.mem.indexOf(u8, got, "unknown path") != null);
++    }
++    const no_hook = try routed(plain, a, "/v1/decisions", decision);
++    try std.testing.expect(std.mem.startsWith(u8, no_hook, "HTTP/1.1 400"));
++    try std.testing.expect(std.mem.indexOf(u8, no_hook, "decision scoring is not supported by this engine yet") != null);
++    var head: Head = .{ .gpa = std.testing.allocator, .mass = true };
++    defer {
++        head.reset();
++        head.prompts.deinit(std.testing.allocator);
++    }
++    const scored = try serve(&text, &head);
++    defer scored.deinit();
++    const read = try routed(scored, a, "/systemone", one);
++    try std.testing.expect(std.mem.startsWith(u8, read, "HTTP/1.1 200"));
++    try std.testing.expect(std.mem.indexOf(u8, read, "\"noul\": 0.2689414213699951") != null);
++    const picked = try routed(scored, a, "/v1/decisions", decision);
++    try std.testing.expect(std.mem.startsWith(u8, picked, "HTTP/1.1 200"));
++    try std.testing.expect(std.mem.indexOf(u8, picked, "\"object\": \"decisions\"") != null);
++    try std.testing.expectEqual(@as(usize, 2), head.prompts.items.len); // the noul's prompt, then the choice's
++}
++test "each label is one distinct token right after the rendered prompt, or the question is refused" {
++    var text: Text = .{ .tail = " " }; // " A" is one token: an "A" after this prompt merges with its last
++    var head: Head = .{ .gpa = std.testing.allocator };
++    defer {
++        head.reset();
++        head.prompts.deinit(std.testing.allocator);
++    }
++    const srv = try serve(&text, &head);
++    defer srv.deinit();
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const pick = "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"choice\", \"instructions\": \"Pick.\", \"criteria\": {\"red\": null, \"green\": null, \"blue\": null}}}}";
++    var cx: errors.Cx = .{ .a = a };
++    try std.testing.expectError(error.Refused, systemone.reply(srv, &cx, (try json.parse(a, pick)).ok));
++    try std.testing.expectEqualStrings("the answer label 'A' is not one distinct token after the chat prompt for this tokenizer, so this model is not supported", cx.message);
++    try std.testing.expectEqual(@as(usize, 0), head.prompts.items.len);
++    // without the merge the same question renders as one ChatML user turn, thinking off, read at A, B and C
++    text.tail = "";
++    _ = try systemone.reply(srv, &cx, (try json.parse(a, pick)).ok);
++    try std.testing.expectEqualStrings("<|im_start|>user\nx\n\n\nQUESTION:\nPick.\n\nOptions:\nA red\nB green\nC blue\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", head.prompts.items[0]);
++}
++// The goldens: the d1 recipe's Python reference (github.com/plotarmordev/d1-tensorfold) answers, its prompts as the
++// chat template renders them here (ChatML, thinking off) instead of its literal LFM header.
++pub const answered = [_]Case{
++    .{ .body = "{\"state\": \"I was charged twice, refund one.\", \"questions\": {\"refund\": {\"type\": \"noul\", \"instructions\": \"Is this a refund request?\"}}}", .want = "{\"model\": \"m\", \"answers\": {\"refund\": {\"type\": \"noul\", \"noul\": 0.2689414213699951}}, \"usage\": {\"input_tokens\": 133, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\nI was charged twice, refund one.\n\n\nQUESTION:\nIs this a refund request?\n\nReply with yes or no only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++    .{ .body = "{\"state\": null, \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"Is the sky green?\", \"criteria\": {\"true\": \"green\", \"false\": null}}}}", .want = "{\"model\": \"m\", \"answers\": {\"q\": {\"type\": \"noul\", \"noul\": 0.2689414213699951}}, \"usage\": {\"input_tokens\": 96, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\nIs the sky green?\nYes: green\nNo: None\n\nReply with yes or no only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++    .{ .body = "{\"state\": {\"user\": \"Ana\", \"items\": [1, 2.5, true, null, {}], \"note\": \"caf\xc3\xa9 \xe2\x98\x95\", \"empty\": []}, \"questions\": {\"mood\": {\"instructions\": \"Which mood?\", \"criteria\": {\"happy_now\": null, \"sad\": \"feeling low\", \"n\": {\"x\": 1}, \"zero\": 0}}, \"rate\": {\"type\": \"score\", \"instructions\": \"Rate it.\", \"criteria\": [\"bad\", \"ok\", {\"level\": \"good\"}]}}}", .want = "{\"model\": \"m\", \"answers\": {\"mood\": {\"type\": \"choice\", \"choice\": \"zero\", \"confidence\": 0.6544767103154275, \"probabilities\": {\"happy_now\": 0.24076852645056343, \"sad\": 0.08857379096230497, \"n\": 0.01618097227170413, \"zero\": 0.6544767103154275}}, \"rate\": {\"type\": \"score\", \"score\": 0.9775308804049918, \"confidence\": 0.974293192524506, \"probabilities\": {\"0\": 0.02408796353525111, \"1\": 0.974293192524506, \"2\": 0.0016188439402429462}, \"legend\": {\"0\": \"bad\", \"1\": \"ok\", \"2\": \"{\\\"level\\\": \\\"good\\\"}\"}}}, \"usage\": {\"input_tokens\": 375, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\n{\n  \"user\": \"Ana\",\n  \"items\": [\n    1,\n    2.5,\n    true,\n    null,\n    {}\n  ],\n  \"note\": \"caf\xc3\xa9 \xe2\x98\x95\",\n  \"empty\": []\n}\n\n\nQUESTION:\nWhich mood?\n\nOptions:\nA happy now\nB feeling low\nC {\"x\": 1}\nD zero\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++        "<|im_start|>user\n{\n  \"user\": \"Ana\",\n  \"items\": [\n    1,\n    2.5,\n    true,\n    null,\n    {}\n  ],\n  \"note\": \"caf\xc3\xa9 \xe2\x98\x95\",\n  \"empty\": []\n}\n\n\nQUESTION:\nRate it.\n\n0 bad\n1 ok\n2 {\"level\": \"good\"}\n\nReply with a single digit 0-2 only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++    .{ .body = "{\"state\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"hi\"}]}], \"questions\": {\"letters\": {\"type\": \"choice\", \"instructions\": \"Pick.\", \"criteria\": {\"A\": \"first\", \"B\": \"second\", \"c\": null}}, \"dup\": {\"type\": \"choice\", \"instructions\": \"Pick.\", \"criteria\": {\"a\": \"x\", \" a\": \"y\"}}}}", .want = "{\"model\": \"m\", \"answers\": {\"letters\": {\"type\": \"choice\", \"choice\": \"A\", \"confidence\": 0.7288809234577932, \"probabilities\": {\"A\": 0.7288809234577932, \"B\": 0.26814030680217804, \"c\": 0.002978769740028626}}, \"dup\": {\"type\": \"choice\", \"choice\": \" a\", \"confidence\": 0.9426758241011313, \"probabilities\": {\"a\": 0.05732417589886881, \" a\": 0.9426758241011313}}}, \"usage\": {\"input_tokens\": 309, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\n[\n  {\n    \"role\": \"user\",\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"hi\"\n      }\n    ]\n  }\n]\n\n\nQUESTION:\nPick.\n\nOptions:\nA first\nB second\nc c\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++        "<|im_start|>user\n[\n  {\n    \"role\": \"user\",\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"hi\"\n      }\n    ]\n  }\n]\n\n\nQUESTION:\nPick.\n\nOptions:\na x\nA y\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++    .{ .body = "{\"state\": \"many\", \"questions\": {\"big\": {\"type\": \"choice\", \"instructions\": \"Pick one.\", \"criteria\": {\"opt0\": null, \"opt1\": null, \"opt2\": null, \"opt3\": null, \"opt4\": null, \"opt5\": null, \"opt6\": null, \"opt7\": null, \"opt8\": null, \"opt9\": null, \"opt10\": null, \"opt11\": null, \"opt12\": null, \"opt13\": null, \"opt14\": null, \"opt15\": null, \"opt16\": null, \"opt17\": null, \"opt18\": null, \"opt19\": null, \"opt20\": null, \"opt21\": null, \"opt22\": null, \"opt23\": null, \"opt24\": null, \"opt25\": null, \"opt26\": null}}}}", .want = "{\"model\": \"m\", \"answers\": {\"big\": {\"type\": \"choice\", \"choice\": \"opt25\", \"confidence\": 0.27603257025325034, \"probabilities\": {\"opt0\": 0.05573001478724626, \"opt1\": 0.02050192669640839, \"opt2\": 0.003745364218770724, \"opt3\": 0.15148988649592537, \"opt4\": 0.0002517091227195988, \"opt5\": 0.010180955496845168, \"opt6\": 1.6916240653643228e-05, \"opt7\": 0.0006842163343460532, \"opt8\": 0.02767470632342445, \"opt9\": 4.598310957463856e-05, \"opt10\": 0.0018598928283877349, \"opt11\": 0.07522765130690531, \"opt12\": 0.0001249950511727811, \"opt13\": 0.005055712878287677, \"opt14\": 0.20448995754521404, \"opt15\": 0.0003397717762502794, \"opt16\": 0.013742852446955769, \"opt17\": 2.2834536437395574e-05, \"opt18\": 0.000923595445204387, \"opt19\": 0.03735694607775379, \"opt20\": 6.207070545905834e-05, \"opt21\": 0.002510592715546627, \"opt22\": 0.10154670768988264, \"opt23\": 0.00016872567072899193, \"opt24\": 0.006824498557332045, \"opt25\": 0.27603257025325034, \"opt26\": 0.0033889456893167716}}}, \"usage\": {\"input_tokens\": 314, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\nmany\n\n\nQUESTION:\nPick one.\n\nOptions:\nA opt0\nB opt1\nC opt2\nD opt3\nE opt4\nF opt5\nG opt6\nH opt7\nI opt8\nJ opt9\nK opt10\nL opt11\nM opt12\nN opt13\nO opt14\nP opt15\nQ opt16\nR opt17\nS opt18\nT opt19\nU opt20\nV opt21\nW opt22\nX opt23\nY opt24\nZ opt25\na opt26\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++    .{ .body = "{\"state\": 42, \"questions\": {\"n\": {\"type\": \"noul\", \"instructions\": \"Even?\", \"criteria\": {}}}}", .want = "{\"model\": \"m\", \"answers\": {\"n\": {\"type\": \"noul\", \"noul\": 0.2689414213699951}}, \"usage\": {\"input_tokens\": 83, \"output_tokens\": 0}}", .prompts = &.{
++        "<|im_start|>user\n42\n\n\nQUESTION:\nEven?\n\nReply with yes or no only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    } },
++};
++
++pub const refused = [_][2][]const u8{
++    .{ "{\"questions\": {}}", "a request needs a state (null when the question is the whole state)" },
++    .{ "{\"state\": \"x\"}", "a request needs questions" },
++    .{ "{\"state\": \"x\", \"questions\": []}", "questions is a non-empty object of id: question" },
++    .{ "{\"state\": \"x\", \"questions\": {}}", "questions is a non-empty object of id: question" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": 1}}", "a question is an object with type, instructions and criteria" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"noul\"}}}", "a question needs instructions (llama-server's System One requires them)" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"maybe\", \"instructions\": \"i\"}}}", "unknown question type 'maybe': choose noul, choice or score" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": null, \"instructions\": \"i\"}}}", "unknown question type None: choose noul, choice or score" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"i\", \"criteria\": [1]}}}", "noul criteria is an object with true and false" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"score\", \"instructions\": \"i\", \"criteria\": [\"one\"]}}}", "score criteria is a list of 2 to 10 levels, lowest first" },
++    .{ "{\"state\": \"x\", \"questions\": {\"q\": {\"type\": \"choice\", \"instructions\": \"i\", \"criteria\": {}}}}", "choice criteria is a non-empty object of option: description" },
++    .{ "{\"state\": \"x\", \"images\": \"data:x\", \"questions\": {}}", "images must be an array of data URLs" },
++    .{ "{\"state\": \"x\", \"videos\": [\"v\"], \"questions\": {}}", "videos are not supported" },
++    .{ "{\"state\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\"}]}], \"questions\": {\"q\": {\"type\": \"noul\", \"instructions\": \"i\"}}}", "input_audio is not supported: a decision state takes images" },
++};

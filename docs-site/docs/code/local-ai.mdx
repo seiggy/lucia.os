@@ -142,7 +142,7 @@ Keys are `lucia_inf_` plus 43 URL-safe base64 characters (32 random bytes). The 
 
 ### The Spark model filter
 
-While the Qwen recipe is wanted, an endpoint filter on `/v1` intercepts `models`, `chat/completions` and `responses`. `SparkModel.Serving()` returns the recipe's address once its status says `running` for the current generation and is under a minute old, or a human-readable problem. `/v1/models` is answered locally in Lucia's shape, because TensorFold's own list lacks the fields clients read. The proxy buffers the request body before sending, since TensorFold reads `Content-Length` and ignores chunked bodies.
+While the Qwen recipe is wanted, an endpoint filter on `/v1` intercepts `models`, `chat/completions`, `responses`, `systemone` and `decisions`. Lucia has no decision engine of its own, so `systemone` and `decisions` are mapped only so the filter has an endpoint to run on; with the recipe stopped they return 503 `model_not_loaded`. `SparkModel.Serving()` returns the recipe's address once its status says `running` for the current generation and is under a minute old, or a human-readable problem. `/v1/models` is answered locally in Lucia's shape, because TensorFold's own list lacks the fields clients read. The proxy buffers the request body before sending, since TensorFold reads `Content-Length` and ignores chunked bodies.
 
 One quirk is worth reading. TensorFold streams a function call's "done" events before its last argument delta, and some clients trust them and parse truncated JSON. `RelayResponsesAsync` holds those events and replays them just before the terminal event, with the final arguments from the completed response:
 

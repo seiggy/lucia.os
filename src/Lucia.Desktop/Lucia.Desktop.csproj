@@ -31,6 +31,7 @@
     <Content Include="..\..\tools\packages\package_worker.py" Link="BootstrapPayload\tools\packages\package_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\tools\runners\spark_runner_worker.py" Link="BootstrapPayload\tools\runners\spark_runner_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\tools\runners\spark_model_worker.py" Link="BootstrapPayload\tools\runners\spark_model_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\runners\tensorfold\0017-engine-systemone.patch" Link="BootstrapPayload\tools\runners\tensorfold\0017-engine-systemone.patch" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\tools\skills\skill_worker.py" Link="BootstrapPayload\tools\skills\skill_worker.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\deployment\skill-runner\Dockerfile" Link="BootstrapPayload\deployment\skill-runner\Dockerfile" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\deployment\host\Dockerfile" Link="BootstrapPayload\deployment\host\Dockerfile" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

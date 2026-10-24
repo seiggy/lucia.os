@@ -119,11 +119,17 @@ Kestrel caps request bodies at 16 MiB. A 503 with `code: model_not_loaded` means
 
 ## Spark recipe: Qwen3.8-Flash-Next on TensorFold
 
-TensorFold has no authentication, so it never listens on the LAN. The `lucia-spark-model` user service binds it to the gateway address of the host container's Docker network, which the host reaches and the LAN does not. Lucia's authenticated `/v1` forwards to it for `models`, `chat/completions` and `responses`.
+TensorFold has no authentication, so it never listens on the LAN. The `lucia-spark-model` user service binds it to the gateway address of the host container's Docker network, which the host reaches and the LAN does not. Lucia's authenticated `/v1` forwards `models`, `chat/completions`, `responses`, `systemone` and `decisions` to it. While the recipe is stopped, `systemone` and `decisions` answer 503 with `code: model_not_loaded`.
 
-<Source path="tools/runners/spark_model_worker.py" /> owns the recipe, pinned to one commit of its git repository, and its settings (`PARALLEL=4`, `CONTEXT=200000`, `TENSORFOLD_MEMORY_RESERVE_GIB=4`, `PORT=8888`). The host can only ask for `running` or `stopped`.
+<Source path="tools/runners/spark_model_worker.py" /> owns the recipe, pinned to one commit of its git repository, and its settings (`CHECKPOINT=nvfp4`, `VISION=1`, `PARALLEL=4`, `CONTEXT=200000`, `PORT=8888`, `PULL=0`). The host can only ask for `running` or `stopped`.
 
-Structured output (`response_format` and `text.format`) needs the `xgrammar` package in the TensorFold image. The worker does not install TensorFold's `[grammar]` extra from PyPI, because that would replace the patched TensorFold in the recipe. It builds a second image, `<recipe image>-grammar`, on top of the recipe's image. That image adds `xgrammar>=0.2.8,<0.3` and checks that `xgrammar` and `tensorfold` both import. The build runs on the first start and again whenever the recipe's image or that pin changes. The build can take up to 30 minutes, and the status message reads "Adding structured output support to the TensorFold image" while it runs.
+The pin is the head of the recipe's PR #69. That PR runs TensorFold's Zig engine (`tensorfold-native`) on NVIDIA's `nvidia/Qwen3.8-Flash-Next-FP4-Local` checkpoint, reads the n-gram table from the SSD, and serves images. Its patch 0016 builds xgrammar into the engine, so `response_format`, `text.format` and the `guided_*` fields are enforced. PR #69 isn't merged yet, so the worker fetches it by commit.
+
+Lucia adds one engine patch of its own. <Source path="tools/runners/tensorfold/0017-engine-systemone.patch" /> brings `POST /v1/systemone` and `POST /v1/decisions` over from TensorFold's main branch. Both read the model's logits for each option at the end of the prompt and return probabilities, with thinking off and no generated text. The worker copies every file in `tools/runners/tensorfold/` into the recipe's `patches/` before it runs `scripts/prepare.sh`. The recipe labels its image with a hash of all the patches, so changing one rebuilds the image on the next start. No published image includes Lucia's patch, so the Spark always builds its own (`PULL=0`).
+
+:::warning
+The first start after a move to a new pin builds the engine and downloads about 96 GiB of weights. Plan for an hour or more of downtime. A container still running an older build gets stopped first, because a rebuild keeps the same image tag and the worker compares image IDs.
+:::
 
 The bootstrap installs the service but leaves it stopped. It needs `docker` and `git`, a non-root user and persistent user services (`loginctl` linger). It runs as `systemctl --user` unit `lucia-spark-model.service`.
 
@@ -153,7 +159,7 @@ The files sit in `<data>/spark-model/`:
 { "schemaVersion": 1, "generation": 3, "desired": "running" }
 ```
 
-`status.json` echoes the `generation` it applied, with `state` (`starting`, `running`, `stopping`, `stopped`, `failed`), `since`, `message`, `url` and `checkedAt`. The host ignores a status whose generation does not match the request, and treats the worker as unavailable when `checkedAt` is older than one minute. The first start downloads about 125 GB. The worker reports the last line of the recipe's output while it waits, which keeps the heartbeat fresh.
+`status.json` echoes the `generation` it applied, with `state` (`starting`, `running`, `stopping`, `stopped`, `failed`), `since`, `message`, `url` and `checkedAt`. The host ignores a status whose generation does not match the request, and treats the worker as unavailable when `checkedAt` is older than one minute. The first start builds the engine and downloads about 100 GB. The worker reports the last line of the recipe's output while it waits, which keeps the heartbeat fresh.
 
 After a reboot the worker resets its remembered generation, so it re-applies the current request. Starting a running model again leaves it alone, unless the container runs an image other than the grammar image. Then the worker stops it, giving it 60 seconds, and starts it on the new image. If the container dies while `state` is `running`, the status becomes `failed` with its exit code.
 

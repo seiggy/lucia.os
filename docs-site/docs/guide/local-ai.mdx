@@ -76,8 +76,9 @@ A key can use Local AI and nothing else. It cannot manage your lab. Revoke a key
 
 On Spark setups with the model service installed, **Models** shows a **Spark recipe** card for **Qwen3.8-Flash-Next**. It is a big model that gets nearly all of the Spark's memory.
 
-- **Start** unloads Lucia's own models first, then downloads about 125 GB the first time and loads for a few minutes.
+- **Start** unloads Lucia's own models first. The first time, it also builds its engine and downloads about 100 GB, which can take an hour or more. After that it loads in a few minutes.
 - While it runs, apps ask for it by the name `Qwen3.8-Flash-Next`, through the same base URL and key.
+- Apps that need a quick pick from a list of options, or a yes or no, can send the question to `/v1/systemone` instead of chatting. They get back a probability for each option. This only works while Qwen3.8-Flash-Next is running.
 - **Stop** cuts off any answer in progress. Lucia then loads its own models again.
 
 Do not start it while you are mid-conversation in the Playground. Your own models are off until you stop it.

@@ -5,8 +5,8 @@ install|run, from ~/.local/share/lucia/bootstrap/app/tools/runners/spark_model_w
 The web host writes host/data/spark-model/request.json, with EXACT keys:
 schemaVersion (1), generation (integer, raised on every change) and desired
 (running|stopped). It unloads Lucia's own models before asking for running.
-This worker owns the recipe, pinned to one commit, and its settings, so the web
-host can only start or stop it. It binds the model to the Docker bridge the web
+This worker owns the recipe, pinned to one commit, Lucia's own engine patches
+and the settings, so the web host can only start or stop it. It binds the model to the Docker bridge the web
 host shares with the Spark, never the LAN, since TensorFold has no
 authentication; Lucia's /v1 forwards to it. Reports in status.json.
 """
@@ -32,14 +32,15 @@ from activation_worker import open_directory, parse_json, private_directory, reg
 
 UTC = datetime.timezone.utc
 RECIPE = "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold.git"
-COMMIT = "4c0dea8ebe93a1d445d6a716b5a38995ff6e9362"
+# The recipe's Zig engine with its structured output patch 0016 (PR #69's head, not yet merged, so fetched by commit).
+COMMIT = "06ce0fee12e979ca0ad95f12b982bdfe76e3d42e"
+# Lucia's engine patches, applied after the recipe's own: 0017 adds /v1/systemone and /v1/decisions.
+PATCHES = sorted((pathlib.Path(__file__).resolve().parent / "tensorfold").glob("*.patch"))
 CONTAINER = "qwen38-flash-next-tf"
 HOST_CONTAINER = "lucia-homelab-host"
 PORT = 8888
-# Keep PARALLEL and CONTEXT in step with SparkModel.cs.
-SETTINGS = {"PARALLEL": "4", "CONTEXT": "200000", "TENSORFOLD_MEMORY_RESERVE_GIB": "4", "PORT": str(PORT)}
-# Structured output (response_format / text.format) needs TensorFold's grammar extra, which is exactly this requirement.
-GRAMMAR = "xgrammar>=0.2.8,<0.3"
+# Keep PARALLEL and CONTEXT in step with SparkModel.cs. No published image carries Lucia's patches, so it is built here.
+SETTINGS = {"CHECKPOINT": "nvfp4", "VISION": "1", "PARALLEL": "4", "CONTEXT": "200000", "PORT": str(PORT), "PULL": "0"}
 FIELDS = {"schemaVersion", "generation", "desired"}
 HOME = pathlib.Path.home() / ".local" / "share" / "lucia"
 SHARED = HOME / "host" / "data" / "spark-model"
@@ -92,8 +93,12 @@ def checkout():
         shutil.rmtree(CHECKOUT, ignore_errors=True)
         run("git", "clone", "--quiet", RECIPE, str(CHECKOUT), timeout=600)
     if run("git", "-C", str(CHECKOUT), "rev-parse", "HEAD") != COMMIT:
-        run("git", "-C", str(CHECKOUT), "fetch", "--quiet", "origin", timeout=600)
+        run("git", "-C", str(CHECKOUT), "fetch", "--quiet", "origin", COMMIT, timeout=600)
         run("git", "-C", str(CHECKOUT), "checkout", "--quiet", "--force", "--detach", COMMIT)
+    # prepare.sh applies patches/*.patch in order and labels the image with their hash, so a changed patch rebuilds it.
+    run("git", "-C", str(CHECKOUT), "clean", "-fdq", "--", "patches")
+    for patch in PATCHES:
+        (CHECKOUT / "patches" / patch.name).write_bytes(patch.read_bytes())
 
 
 def running():
@@ -108,13 +113,6 @@ def inspect(image, template):
         return run("docker", "image", "inspect", "-f", template, image)
     except RuntimeError:
         return None
-
-
-def grammar_dockerfile(base, stamp):
-    """tensorfold[grammar] is only xgrammar; installing the extra from PyPI would replace the recipe's patched TensorFold."""
-    return (f"FROM {base}\n"
-            f'RUN pip install --no-cache-dir "{GRAMMAR}" && python -c "import xgrammar, tensorfold"\n'
-            f'LABEL lucia.grammar="{stamp}"\n')
 
 
 def recipe_image(env):
@@ -151,7 +149,7 @@ class Worker:
             self.targets = targets
 
     def script(self, name, env, timeout):
-        # The first start downloads ~125 GB; its latest line is the progress, and reporting it keeps the heartbeat fresh.
+        # The first start downloads ~100 GB; its latest line is the progress, and reporting it keeps the heartbeat fresh.
         process = subprocess.Popen(["bash", f"./{name}"], cwd=CHECKOUT, env={**os.environ, **env}, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
         lines = collections.deque(maxlen=20)
@@ -171,19 +169,15 @@ class Worker:
             errors = [line for line in shown if "ERROR" in line]
             raise RuntimeError((errors or shown or [f"{name} failed."])[-1][:300])
 
-    def grammar_image(self, env):
-        """The recipe's image plus TensorFold's grammar extra, rebuilt only when the recipe's image or GRAMMAR changes."""
-        base, patches = recipe_image(env)
-        if inspect(base, '{{index .Config.Labels "tf.patches"}}') != patches:
-            self.script("scripts/prepare.sh", env, timeout=12 * 3600)  # builds or pulls the recipe's image and the checkpoint
-        base_id = inspect(base, "{{.Id}}")
-        if not base_id:
-            raise RuntimeError(f"The recipe's image {base} is missing after preparing it.")
-        image, stamp = base + "-grammar", f"{base_id} {GRAMMAR}"
-        if inspect(image, '{{index .Config.Labels "lucia.grammar"}}') != stamp:
-            self.report(message="Adding structured output support to the TensorFold image")
-            run("docker", "build", "-t", image, "-", stdin=grammar_dockerfile(base, stamp), timeout=1800)
-        return image
+    def image(self, env):
+        """The recipe's image with every patch in patches/, built (or pulled) with the checkpoint only when they changed."""
+        image, patches = recipe_image(env)
+        if inspect(image, '{{index .Config.Labels "tf.patches"}}') != patches:
+            self.script("scripts/prepare.sh", env, timeout=12 * 3600)
+        image_id = inspect(image, "{{.Id}}")
+        if not image_id:
+            raise RuntimeError(f"The recipe's image {image} is missing after preparing it.")
+        return image, image_id
 
     def apply(self, value):
         self.report(generation=value["generation"], state="starting" if value["desired"] == "running" else "stopping",
@@ -192,9 +186,9 @@ class Worker:
             checkout()
             host = bridge()
             env = {**SETTINGS, "HOST": host}
-            env["IMAGE"] = self.grammar_image(env)
-            # start.sh leaves a running model alone, so a model on an older image is stopped first.
-            if running()[0] == "true" and run("docker", "inspect", "-f", "{{.Config.Image}}", CONTAINER) != env["IMAGE"]:
+            env["IMAGE"], image_id = self.image(env)
+            # start.sh leaves a running model alone, and a rebuild keeps the image's tag, so a model on an older build is stopped first.
+            if running()[0] == "true" and run("docker", "inspect", "-f", "{{.Image}}", CONTAINER) != image_id:
                 self.script("stop.sh", {**SETTINGS, "STOP_TIMEOUT": "60"}, timeout=300)
             self.script("start.sh", env, timeout=12 * 3600)
             self.report(state="running", since=now().isoformat(), message=None, url=f"http://{host}:{PORT}/")

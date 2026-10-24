@@ -33,12 +33,13 @@ public static class HostPlatformEndpoints
         host.MapPost("/spark-model/stop", (SparkModel model, CancellationToken ct) => model.Set("stopped", ct));
 
         var openai = app.MapGroup("/v1").WithTags("OpenAI-compatible inference").RequireAuthorization("HostInference").AddEndpointFilter<HostErrorFilter>();
-        // While Qwen3.8-Flash-Next is wanted, it answers models, chat and responses; Lucia's own models are unloaded.
+        // While Qwen3.8-Flash-Next is wanted, it answers models, chat, responses and decisions; Lucia's own models are unloaded.
         openai.AddEndpointFilter(async (context, next) =>
         {
             var http = context.HttpContext;
             var model = http.RequestServices.GetRequiredService<SparkModel>();
-            if (http.Request.Path.Value is not ("/v1/models" or "/v1/chat/completions" or "/v1/responses") || model.Serving() is not { } serving) return await next(context);
+            if (http.Request.Path.Value is not ("/v1/models" or "/v1/chat/completions" or "/v1/responses" or "/v1/systemone" or "/v1/decisions")
+                || model.Serving() is not { } serving) return await next(context);
             var problem = serving.Problem;
             // TensorFold's list lacks the capabilities and context Lucia's clients read, so describe it in Lucia's shape.
             if (serving.Url is not null && http.Request.Path.Value == "/v1/models")
@@ -54,6 +55,10 @@ public static class HostPlatformEndpoints
             return Results.Json(new { error = new { message = problem, type = "server_error", code = "model_not_loaded" } }, statusCode: 503);
         });
         openai.MapOpenAIInference();
+        // Typed decisions exist only on the Spark's TensorFold engine; the filter above forwards them while it is wanted.
+        foreach (var path in new[] { "/systemone", "/decisions" })
+            openai.MapPost(path, () => Results.Json(new { error = new { message = $"Decisions need {SparkModel.Name} running on the Spark. Start it on the AI page.",
+                type = "server_error", code = "model_not_loaded" } }, statusCode: 503));
     }
 }
 

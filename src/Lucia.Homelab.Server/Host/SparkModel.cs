@@ -89,7 +89,7 @@ public sealed class SparkModel(IOptions<HardwareOnboardingOptions> options, IOpt
             && time.GetUtcNow() - status.CheckedAt < TimeSpan.FromMinutes(1))
             return (url, null);
         return (null, status?.Generation == request.Generation && status.State == "failed"
-            ? $"{Name} failed to start on the Spark: {status.Message}" : $"{Name} is starting on the Spark. The first start downloads about 125 GB.");
+            ? $"{Name} failed to start on the Spark: {status.Message}" : $"{Name} is starting on the Spark. The first start builds the engine and downloads about 100 GB.");
     }
 
     public async Task ProxyAsync(HttpContext context, Uri upstream)
