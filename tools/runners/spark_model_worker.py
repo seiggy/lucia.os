@@ -117,7 +117,7 @@ def inspect(image, template):
 
 def recipe_image(env):
     """The image name the recipe's config picks for these settings, and the patches hash it labels a ready image with."""
-    lines = run("bash", "-c", '. scripts/config.sh >/dev/null 2>&1; printf "%s\\n%s\\n" "$IMAGE" "$(patches_hash)"',
+    lines = run("bash", "-c", '. scripts/config.sh >/dev/null 2>&1; printf "%s\\n%s\\n" "$IMAGE" "$(image_hash)"',
                 cwd=str(CHECKOUT), env=env).splitlines()
     if len(lines) != 2 or not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+", lines[0]) or not lines[1]:
         raise RuntimeError("The recipe's image settings could not be read.")
