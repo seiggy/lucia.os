@@ -518,8 +518,8 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
               <input id={`batch-${model.id}`} value={batchInput} inputMode="numeric" maxLength={5} placeholder="Default" autoComplete="off"
                 aria-describedby={`batch-help-${model.id}`} disabled={disabled} onChange={event => setBatchInput(event.target.value.replace(/\D/g, ''))} /></label>
             <p id={`batch-help-${model.id}`} className="section-note">How many prompt tokens llama.cpp reads at once. Leave it blank for llama.cpp’s default of 512.
-              Decision models need one question and all its options in a single batch, so raise it if their requests fail with “increase the batch size”. 8,192 covers long option lists.
-              A larger batch takes more GPU memory. If the model is loaded, llama.cpp restarts it with the new size.</p>
+              Decision models need one question and all its options in a single batch, so raise it if their requests fail with “increase the batch size”. 4,096 covers up to 255 options.
+              A larger batch takes more GPU memory: 8,192 needed 12 GB more for a 4B model. If the model is loaded, llama.cpp restarts it with the new size.</p>
             <div className="model-actions">
               <button className="button primary" disabled={disabled || !batchValid} onClick={() => { setBatchFor(null); void mutate({
                 label: 'Save batch size', path: `${base}/models/${model.id}/llama-batch`, method: 'POST', description: '', body: { batchTokens: batch },
