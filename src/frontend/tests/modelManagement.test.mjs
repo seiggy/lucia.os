@@ -13,6 +13,9 @@ const plan = {
 }
 const model = { id, source, state: 'Ready', createdAt: '2026-09-22T12:00:00Z', updatedAt: '2026-09-22T12:00:00Z', error: null, persistenceError: null, inspection }
 assert.equal(parseLocalModels([model])[0].source.kind, 'Chat')
+assert.equal(parseLocalModels([model])[0].llamaBatchTokens, null)
+assert.equal(parseLocalModels([{ ...model, llamaBatchTokens: 8192 }])[0].llamaBatchTokens, 8192)
+assert.throws(() => parseLocalModels([{ ...model, llamaBatchTokens: '8192' }]))
 assert.equal(parseContextPlan(plan).voiceReserveBytes, 8 * 1024 ** 3)
 assert.deepEqual(chatContextRange(plan), { min: 8192, max: 32768, step: 256, available: true, initial: 8192 })
 assert.equal(chatContextRange({ ...plan, effectiveContextTokens: 256 }).initial, 8192)

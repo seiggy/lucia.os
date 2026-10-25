@@ -41,7 +41,11 @@ public sealed record LocalModel(
     string? Error = null,
     ModelInspection? Inspection = null,
     string? PersistenceError = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? DownloadedBytes = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? DownloadedBytes = null,
+    // llama.cpp's batch and micro-batch for a GGUF LLM; null keeps llama.cpp's defaults.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? LlamaBatchTokens = null);
+
+public sealed record ModelLlamaBatchRequest(int? BatchTokens);
 
 public sealed record ModelSelection(int Version = 1, Guid? ChatId = null, int? ChatContext = null,
     Guid? EmbeddingId = null, int? EmbeddingContext = null);
@@ -264,6 +268,8 @@ public sealed class ModelCatalog(
                 var context = Math.Min(LlamaEmbeddingContext, model.Inspection?.NativeContextTokens is > 0 and var native ? native : LlamaEmbeddingContext);
                 ini.Append($"embeddings = true\nc = {context}\nbatch-size = {context}\nubatch-size = {context}\n");
             }
+            else if (model.LlamaBatchTokens is { } batch)
+                ini.Append($"batch-size = {batch}\nubatch-size = {batch}\n");
             if (loadOnStartup?.Contains(name) == true) ini.Append("load-on-startup = true\n");
         }
         return ini.ToString();
@@ -298,7 +304,7 @@ public sealed class ModelCatalog(
                 foreach (var directory in Directory.EnumerateDirectories(cache))
                     if (Guid.TryParseExact(Path.GetFileName(directory), "N", out _) && !wanted.ContainsKey(Path.GetFileName(directory)))
                         Directory.Delete(directory, recursive: true);
-                WriteLlamaPresets(cache);
+                if (WriteLlamaPresets(cache)) await ReloadLlamaAsync(stoppingToken);
                 foreach (var model in wanted.Values.OrderBy(m => m.CreatedAt))
                 {
                     var target = Path.Combine(cache, model.Id.ToString("N"));
@@ -317,7 +323,7 @@ public sealed class ModelCatalog(
                     }
                     await File.WriteAllTextAsync(Path.Combine(target, MirroredMarker), "", stoppingToken);
                     logger.LogInformation("Model {ModelId} is on local disk", model.Id);
-                    WriteLlamaPresets(cache);
+                    if (WriteLlamaPresets(cache)) await ReloadLlamaAsync(stoppingToken);
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -328,14 +334,36 @@ public sealed class ModelCatalog(
         }
     }
 
-    private void WriteLlamaPresets(string cache)
+    private bool WriteLlamaPresets(string cache)
     {
         var path = Path.Combine(cache, LlamaPresetsFileName);
-        File.WriteAllText(path + ".tmp", LlamaPresets(cache,
+        var presets = LlamaPresets(cache,
             _models.Values.Where(m => File.Exists(Path.Combine(cache, m.Id.ToString("N"), MirroredMarker))),
             (_options.LlamaLoadOnStartup ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase)));
+                .ToHashSet(StringComparer.OrdinalIgnoreCase));
+        if (File.Exists(path) && File.ReadAllText(path) == presets) return false;
+        File.WriteAllText(path + ".tmp", presets);
         File.Move(path + ".tmp", path, overwrite: true);
+        return true;
+    }
+
+    private static readonly HttpClient LlamaClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    /// <summary>Asks llama.cpp's router to read the preset file again. Before the router is up there is nothing to do: it reads the file when it starts.</summary>
+    private async Task ReloadLlamaAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.LlamaUrl)) return;
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, _options.LlamaUrl.TrimEnd('/') + "/models?reload=1");
+            if (!string.IsNullOrEmpty(_options.InferenceApiKey))
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.InferenceApiKey);
+            using var response = await LlamaClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                logger.LogWarning("llama.cpp did not reload its model presets: HTTP {Status}", (int)response.StatusCode);
+        }
+        catch (HttpRequestException exception) { logger.LogInformation("llama.cpp is not answering yet, so it reads the presets when it starts: {Error}", exception.Message); }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { logger.LogWarning("llama.cpp did not answer the preset reload in time"); }
     }
 
     private FileStream AcquireLease()
@@ -442,6 +470,31 @@ public sealed class ModelCatalog(
         }
         finally { _changes.Release(); }
     }
+
+    /// <summary>
+    /// Sets llama.cpp's batch for a GGUF LLM, or clears it with null. Decision servers need it: one question and all its
+    /// options must fit a single batch, and llama.cpp's default micro-batch is 512 tokens.
+    /// </summary>
+    public async Task<LocalModel> SetLlamaBatchAsync(Guid id, int? batchTokens, CancellationToken cancellationToken)
+    {
+        if (batchTokens is < MinLlamaBatch or > MaxLlamaBatch)
+            throw new ArgumentException($"The batch size must be from {MinLlamaBatch:N0} to {MaxLlamaBatch:N0} tokens.");
+        await _changes.WaitAsync(cancellationToken);
+        try
+        {
+            var model = Require(id);
+            if (model.Source.Format != ModelFormat.Gguf || (model.Inspection?.Kind ?? model.Source.Kind) != ModelKind.Chat)
+                throw new ArgumentException("Only GGUF LLMs take a batch size. Embedding models already get one as long as their context.");
+            model = model with { LlamaBatchTokens = batchTokens, UpdatedAt = DateTimeOffset.UtcNow };
+            await SaveAsync(model, cancellationToken);
+            _models[id] = model;
+            MirrorLlamaCache();
+            return model;
+        }
+        finally { _changes.Release(); }
+    }
+
+    internal const int MinLlamaBatch = 512, MaxLlamaBatch = 65536;
 
     private async Task EnqueueAsync(LocalModel model, CancellationToken cancellationToken)
     {

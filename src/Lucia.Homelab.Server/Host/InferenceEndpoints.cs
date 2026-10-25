@@ -39,6 +39,8 @@ public static class InferenceEndpoints
             await catalog.CancelAsync(id, ct);
             return Results.Accepted($"{prefix}/models/{id}");
         });
+        host.MapPost("/models/{id:guid}/llama-batch", async (Guid id, ModelLlamaBatchRequest request, ModelCatalog catalog, CancellationToken ct) =>
+            Results.Ok(await catalog.SetLlamaBatchAsync(id, request.BatchTokens, ct)));
         host.MapGet("/models/{id:guid}/context", async (Guid id, int? contextTokens, InferenceRuntime runtime, CancellationToken ct) =>
         {
             await runtime.Gate.WaitAsync(ct);

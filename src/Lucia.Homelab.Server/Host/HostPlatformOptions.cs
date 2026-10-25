@@ -60,6 +60,10 @@ public sealed class HostPlatformOptions
     // Comma-separated llama.cpp model names its router loads when it starts.
     public string? LlamaLoadOnStartup { get; set; }
 
+    // llama.cpp's router on the app's network. After the preset file changes the catalog asks it to read the file again,
+    // which restarts any loaded model whose settings changed.
+    public string? LlamaUrl { get; set; }
+
     public Guid? ChatModelId { get; set; }
     public Guid? EmbeddingModelId { get; set; }
 }

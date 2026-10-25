@@ -611,7 +611,7 @@ internal static class StackChecks
         var rendered = localAi.Render(settings, gpuNode, new Dictionary<string, string>());
         var env = StackCatalog.ReadEnv(rendered.Env);
         check(!rendered.Compose.Contains('\r'), "Local AI's compose has Windows line endings.");
-        check(rendered.Compose.Contains("lucia-inference:0.1.8-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
+        check(rendered.Compose.Contains("lucia-inference:0.1.9-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
             && rendered.Compose.Contains("HostPlatform__MemoryBudgetGiB: \"23\"") && rendered.Require.Contains("cuda=13")
             && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
             "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");
@@ -732,6 +732,12 @@ internal static class StackChecks
         var pooled = Gguf("a/pooled-GGUF", "p-Q4_K_M.gguf") with { Inspection = new("mistral3", ModelKind.Embedding, 1, 1, 262144, 0, 0, []) };
         check(ModelCatalog.LlamaPresets("/m", [pooled]).EndsWith("embeddings = true\nc = 8192\nbatch-size = 8192\nubatch-size = 8192\n"),
             "llama.cpp served a pooling GGUF downloaded as chat without embeddings.");
+        check(ModelCatalog.LlamaPresets("/m", [plain with { LlamaBatchTokens = 8192 }, embed with { LlamaBatchTokens = 4096 }])
+                == $"version = 1\n\n[a/plain-GGUF:plain]\nmodel = /m/{plain.Id:N}/files/plain.gguf\nbatch-size = 8192\nubatch-size = 8192\n"
+                + $"\n[a/embed-GGUF:Q8_0]\nmodel = /m/{embed.Id:N}/files/e-Q8_0.gguf\nembeddings = true\nc = 512\nbatch-size = 512\nubatch-size = 512\n",
+            "llama.cpp presets ignored an LLM's batch size or let one override an embedding model's.");
+        check(llama.Contains("HostPlatform__LlamaUrl: http://llama:8080") && !library.Contains("LlamaUrl"),
+            "The llama.cpp worker can't ask the router to reload its presets, or vLLM's worker was told about a router.");
         foreach (var (bad, why, target) in new (Dictionary<string, string>, string, ManagedNodeFacts)[] {
             (new() { ["gpus"] = "GPU-00000000-0000-0000-0000-000000000000", ["port"] = "8080" }, "with a GPU the server doesn't have", gpuNode),
             (settings, "without a CUDA line", gpuNode with { Gpu = null }),

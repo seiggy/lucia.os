@@ -67,6 +67,8 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
   const [serving, setServing] = useState<ServingStatus | null>(null)
   const [qwen, setQwen] = useState<SparkModel | null>(null)
   const [serveContext, setServeContext] = useState('')
+  const [batchFor, setBatchFor] = useState<string | null>(null)
+  const [batchInput, setBatchInput] = useState('')
   // vLLM serves one model the owner picks here; llama.cpp's router serves the whole library; Lucia Inference loads models itself.
   const engine = serving?.engine ?? 'lucia'
   const vllm = engine === 'vllm'
@@ -478,11 +480,16 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
         const loaded = dedicated ? vllm && serving?.model === model.id : status?.chat?.id === model.id || status?.embedding?.id === model.id
         const snapshot = model.source.format === 'Safetensors'
         const servable = vllm && model.source.kind === 'Chat' && snapshot
+        const batchable = router && !snapshot && model.state === 'Ready' && (model.inspection?.kind ?? model.source.kind) === 'Chat'
+        const batch = batchInput === '' ? null : Number(batchInput)
+        const batchValid = batch === null || (batch >= 512 && batch <= 65536)
         return <article key={model.id}>
           <div className="model-library-row"><div><h3>{title(model)}</h3><p className="muted">{snapshot ? 'Safetensors for vLLM' : model.source.repository} · {(model.inspection?.kind ?? model.source.kind) === 'Chat' ? 'LLM' : 'Embedding'} · {loaded ? (dedicated ? 'Serving' : 'Loaded') : model.state}</p>
             {model.inspection && <p className="model-meta">{bytes(model.inspection.fileBytes)} · {model.inspection.architecture} · {model.inspection.nativeContextTokens.toLocaleString()} model-limit tokens</p>}
-            {snapshot && model.state === 'Ready' && model.source.sizeBytes && <p className="model-meta">{bytes(model.source.sizeBytes)}</p>}</div>
+            {snapshot && model.state === 'Ready' && model.source.sizeBytes && <p className="model-meta">{bytes(model.source.sizeBytes)}</p>}
+            {batchable && model.llamaBatchTokens && <p className="model-meta">Batch size {model.llamaBatchTokens.toLocaleString()} tokens</p>}</div>
             <div className="model-actions">
+              {batchable && <button className="text-link" disabled={disabled} onClick={() => { setBatchFor(model.id); setBatchInput(model.llamaBatchTokens?.toString() ?? '') }}>Batch size <Icon name="chevron" /></button>}
               {model.state === 'Ready' && !dedicated && !snapshot && <button className="text-link" disabled={disabled} onClick={() => void inspect(model)}>Context & load <Icon name="chevron" /></button>}
               {model.state === 'Ready' && servable && !loaded && <button className="text-link" disabled={disabled} onClick={() => { setSelected(model.id); setServeContext('') }}>Serve <Icon name="chevron" /></button>}
               {['Queued', 'Downloading'].includes(model.state) && <button className="text-link" disabled={disabled} onClick={() => setConfirmation({
@@ -506,6 +513,22 @@ function Models({ session, refreshSession, view = 'library', server }: Omit<Acce
             </div>
           })()}
           {(model.error || model.persistenceError) && <p className="model-manager-error">{model.error ?? model.persistenceError}</p>}
+          {batchFor === model.id && batchable && <div className="model-local-plan">
+            <label className="model-serve-context" htmlFor={`batch-${model.id}`}>Batch size
+              <input id={`batch-${model.id}`} value={batchInput} inputMode="numeric" maxLength={5} placeholder="Default" autoComplete="off"
+                aria-describedby={`batch-help-${model.id}`} disabled={disabled} onChange={event => setBatchInput(event.target.value.replace(/\D/g, ''))} /></label>
+            <p id={`batch-help-${model.id}`} className="section-note">How many prompt tokens llama.cpp reads at once. Leave it blank for llama.cpp’s default of 512.
+              Decision models need one question and all its options in a single batch, so raise it if their requests fail with “increase the batch size”. 8,192 covers long option lists.
+              A larger batch takes more GPU memory. If the model is loaded, llama.cpp restarts it with the new size.</p>
+            <div className="model-actions">
+              <button className="button primary" disabled={disabled || !batchValid} onClick={() => { setBatchFor(null); void mutate({
+                label: 'Save batch size', path: `${base}/models/${model.id}/llama-batch`, method: 'POST', description: '', body: { batchTokens: batch },
+                successMessage: batch === null ? 'llama.cpp uses its default batch size for this model.' : `llama.cpp reads up to ${batch.toLocaleString()} tokens at once for this model.`,
+              }) }}>Save batch size</button>
+              <button className="button secondary" disabled={busy} onClick={() => setBatchFor(null)}>Not now</button>
+            </div>
+            {!batchValid && <p className="section-note">Use 512 to 65,536 tokens, or leave it blank.</p>}
+          </div>}
           {selected === model.id && dedicated && <div className="model-local-plan">
             <label className="model-serve-context" htmlFor={`serve-context-${model.id}`}>Context limit
               <input id={`serve-context-${model.id}`} value={serveContext} inputMode="numeric" maxLength={7} placeholder="Auto" autoComplete="off"

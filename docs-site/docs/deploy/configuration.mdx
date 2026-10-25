@@ -56,6 +56,7 @@ Models, inference and the owner API. Bound and validated at startup (`ValidateOn
 | `RequireTensorSharp` | `true` | `true` | `true` | Set false when another engine serves the library |
 | `LlamaCache` | none | none | not set | Local directory that Ready GGUFs are copied to, with `llama-models.ini` |
 | `LlamaLoadOnStartup` | none | none | not set | Comma-separated llama.cpp model names to preload |
+| `LlamaUrl` | none | none | not set | llama.cpp's router, asked to reread `llama-models.ini` after it changes |
 | `ChatModelId`, `EmbeddingModelId` | none | none | not set | Model GUIDs to load at start when no selection is saved |
 
 The memory model that these reserves feed is in [Local AI](./local-ai.mdx). The environment variable `KV_CACHE_DTYPE=f32` doubles the KV estimate from 2 to 4 bytes per element. The host sets `TS_VRAM_HEADROOM_MB` itself, to the larger of its existing value and the sum of the four reserves.

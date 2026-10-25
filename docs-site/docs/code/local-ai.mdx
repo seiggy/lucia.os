@@ -74,7 +74,7 @@ The bundled preset (`ModelPresets.Bundled`) pins repository, revision, size and 
 
 `ModelFormat.Gguf` runs on TensorSharp, or on llama.cpp through the library mirror. `ModelFormat.Safetensors` is a whole repository for vLLM, with `config.json` as its anchor file. With `RequireTensorSharp` false (on a worker beside vLLM or llama.cpp), `Inspect` skips TensorSharp's architecture and chat-protocol checks and classifies any GGUF with a pooling type as an embedding model.
 
-The llama.cpp mirror copies each Ready GGUF into `LlamaCache`, writes `llama-models.ini` (one `[owner/repo:QUANT]` section per model, `embeddings = true` for encoders, `load-on-startup` for the named ones) and lists a model only after a `.mirrored` marker proves the copy finished.
+The llama.cpp mirror copies each Ready GGUF into `LlamaCache`, writes `llama-models.ini` (one `[owner/repo:QUANT]` section per model, `embeddings = true` for encoders, `batch-size` and `ubatch-size` for an LLM with `LlamaBatchTokens`, `load-on-startup` for the named ones) and lists a model only after a `.mirrored` marker proves the copy finished. `WriteLlamaPresets` compares the new text with the file and writes only when it differs. Each write is followed by `ReloadLlamaAsync`, which asks the router at `LlamaUrl` to reread the file. `POST /models/{id}/llama-batch` with `{ "batchTokens": 8192 }`, or `null` to clear it, goes through `SetLlamaBatchAsync`. That method refuses anything but a GGUF LLM.
 
 ### The lease
 

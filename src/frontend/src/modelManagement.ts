@@ -34,7 +34,7 @@ export interface ServingStatus {
 export interface LocalModel {
   id: string; source: DownloadRequest; state: 'Queued' | 'Downloading' | 'Ready' | 'Failed' | 'Canceled' | 'Interrupted'
   createdAt: string; updatedAt: string; error: string | null; persistenceError: string | null; inspection: ModelInspection | null
-  downloadedBytes: number | null
+  downloadedBytes: number | null; llamaBatchTokens: number | null
 }
 export interface LoadedModel { id: string; name: string; plan: ContextPlan }
 export interface ModelStatus { backend: string; chat: LoadedModel | null; embedding: LoadedModel | null; voiceReserveGiB: number; startupError: string | null; paused: string | null }
@@ -142,7 +142,8 @@ export function parseLocalModels(value: unknown): LocalModel[] {
     if (!['Queued', 'Downloading', 'Ready', 'Failed', 'Canceled', 'Interrupted'].includes(state)) throw invalid()
     return { id: id(x.id), source: source(x.source), state: state as LocalModel['state'], createdAt: date(x.createdAt),
       updatedAt: date(x.updatedAt), error: nullable(x.error, text), persistenceError: nullable(x.persistenceError, text),
-      inspection: nullable(x.inspection, inspection), downloadedBytes: nullable(x.downloadedBytes ?? null, number) }
+      inspection: nullable(x.inspection, inspection), downloadedBytes: nullable(x.downloadedBytes ?? null, number),
+      llamaBatchTokens: nullable(x.llamaBatchTokens ?? null, number) }
   })
 }
 
