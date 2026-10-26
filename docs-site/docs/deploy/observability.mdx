@@ -105,7 +105,7 @@ Scrape and collection interval is 30 seconds.
 
 ### On the Spark
 
-The installer runs a relay container with `node-exporter` beside the controller. It has no Observability credentials. It posts to the controller at `/api/host/telemetry/relay/v1/{traces|metrics|logs}` with an `X-Lucia-Relay` token generated into `relay-token` in `Telemetry:RelayDirectory`. The controller forwards to wherever Observability runs now, so moving the app doesn't break the Spark's feed. The gateway's access logs take the same path, with credentials and query strings dropped.
+The installer runs a relay container with `node-exporter` beside the controller. It has no Observability credentials. It posts to the controller at `/api/host/telemetry/relay/v1/{traces|metrics|logs}` with an `X-Lucia-Relay` token generated into `relay-token` in `Telemetry:RelayDirectory`. The controller forwards to wherever Observability runs now, so moving the app doesn't break the Spark's feed. The gateway's access logs take the same path, with credentials and query strings dropped, and the same records also go to a JSON file for CrowdSec. The Spark's relay also scrapes CrowdSec's metrics from `127.0.0.1:19060` as the `crowdsec` job. See [Gateway protection](./crowdsec.mdx).
 
 ## Storage and the metric tiers
 

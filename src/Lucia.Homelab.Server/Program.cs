@@ -7,6 +7,7 @@ using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.LabMap;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Packages;
+using Lucia.Homelab.Server.Security;
 using Lucia.Homelab.Server.Stacks;
 
 if (args is ["--check-model-lease"])
@@ -42,6 +43,7 @@ builder.AddAdGuardManagement();
 builder.AddUniFiManagement();
 builder.AddCloudflareDomains();
 builder.AddDomainOnboarding();
+builder.AddGatewaySecurity();
 builder.Services.AddHostedService<DomainSupportWorker>();
 builder.AddHardwareOnboarding();
 builder.AddHardwareBoot();
@@ -80,6 +82,7 @@ app.MapAdGuardManagement();
 app.MapUniFiManagement();
 app.MapCloudflareDomains();
 app.MapDomainOnboarding();
+app.MapGatewaySecurity();
 app.MapHardwareOnboarding();
 app.MapHardwareBoot();
 app.MapManagedInstallation();

@@ -11,4 +11,8 @@
     <PackageReference Include="Aspire.Hosting.Docker" Version="13.5.4" />
     <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.5.4" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The gateway's CrowdSec middlewares; the server rewrites the same files when the owner edits the safe harbor. -->
+    <Compile Include="..\Lucia.Homelab.Server\Security\GatewaySecurity.cs" Link="GatewaySecurity.cs" />
+  </ItemGroup>
 </Project>

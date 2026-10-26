@@ -188,16 +188,22 @@ public static class AppGateway
     public const string FileName = "apps.yml";
 
     /// <param name="zone">The domain's zone while public access is on: routes with a public name also answer at <c>name.zone</c> on the public entrypoint.</param>
-    public static string? Build(IEnumerable<ActiveRoute> routes, string ns, string? zone = null)
+    /// <param name="appSec">Whether the gateway runs CrowdSec. Its AppSec middleware (crowdsec.yml) then also checks requests to apps
+    /// from the LAN; the public entrypoint already runs it for every request from the internet, so public routers don't repeat it.</param>
+    public static string? Build(IEnumerable<ActiveRoute> routes, string ns, string? zone = null, bool appSec = false)
     {
         var routers = new Dictionary<string, object>();
         var services = new Dictionary<string, object>();
         var middlewares = new Dictionary<string, object>();
+        string[] lan = appSec ? [Security.GatewaySecurity.AppSecMiddleware + "@file"] : [];
+        object Router(string rule, string service) => lan.Length == 0
+            ? new { entryPoints = new[] { "host" }, rule, service, tls = new { } }
+            : new { entryPoints = new[] { "host" }, rule, service, middlewares = lan, tls = new { } };
         foreach (var (stack, route, address) in routes.OrderBy(item => item.Route.Host, StringComparer.Ordinal))
         {
             var id = $"app-{stack}-{route.Host}";
             var rule = $"Host(`{route.Host}.{ns}`)";
-            routers[id] = new { entryPoints = new[] { "host" }, rule, service = id, tls = new { } };
+            routers[id] = Router(rule, id);
             services[id] = Service($"http://{address}:{route.Port}");
             if (zone is not null && route.Public is { } name)
             {
@@ -208,10 +214,7 @@ public static class AppGateway
             }
             if (route.GrpcPort is { } grpc)
             {
-                routers[id + "-grpc"] = new
-                {
-                    entryPoints = new[] { "host" }, rule = rule + " && HeaderRegexp(`Content-Type`, `^application/grpc`)", service = id + "-grpc", tls = new { },
-                };
+                routers[id + "-grpc"] = Router(rule + " && HeaderRegexp(`Content-Type`, `^application/grpc`)", id + "-grpc");
                 services[id + "-grpc"] = Service($"h2c://{address}:{grpc}");
             }
         }

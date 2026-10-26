@@ -6,6 +6,7 @@ import contextlib
 import base64
 import datetime
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -28,11 +29,29 @@ SECRET_NAMES = (
     "identity-db-password", "authentik-secret-key", "authentik-admin-password",
     "authentik-bootstrap-token", "ldap-admin-password", "authentik-ldap-password", "ca-password",
 )
+# Secrets added after the first release. An existing installation gets them once, on its next run: the CrowdSec engine
+# registers whatever bouncer key it is given, so creating one late loses nothing. All other credentials are never regenerated.
+LATE_SECRET_NAMES = ("crowdsec-bouncer-key",)
 CONTAINERS = (
     "lucia-identity-db", "lucia-identity-ca", "lucia-identity-ldap", "lucia-identity-server",
-    "lucia-identity-worker", "lucia-identity-gateway", "lucia-identity-renewer",
+    "lucia-identity-worker", "lucia-identity-gateway", "lucia-identity-renewer", "lucia-identity-crowdsec",
 )
 BASE_DN = "dc=lucia,dc=home,dc=arpa"
+# The gateway's CrowdSec bouncer, loaded by Traefik as a local plugin. Go module zips are byte-stable, so the plugin and the two
+# modules it vendors are each pinned by their zip's SHA-256 from proxy.golang.org (module zips leave vendor/ out, so the
+# dependencies are unpacked into it here, without their tests, as go mod vendor would). The unpacked tree is pinned too
+# (tree_digest); the identity AppHost checks it again before every deploy. GatewaySecurity.cs carries the version and tree digest.
+PLUGIN_MODULE = "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+PLUGIN_VERSION = "v1.8.1"
+PLUGIN_ARCHIVES = (  # module, version, zip SHA-256, where it goes below the plugin's directory
+    (PLUGIN_MODULE, PLUGIN_VERSION, "854eb7a9f530c6065e5a6bf582379277a0f5c2e1fac0efdcd8b6d145463d0570", ""),
+    ("github.com/leprosus/golang-ttl-map", "v1.1.7", "11abbdadaaf67dd3c1d6862df470f17a5cd4af5bd6e2c43a27ac0fce747faf5d",
+     "vendor/github.com/leprosus/golang-ttl-map"),
+    ("github.com/maxlerebourg/simpleredis", "v1.0.12", "35645c35591c113569b0d40db917542866ddf28292e89bcf4fb7855639578a8b",
+     "vendor/github.com/maxlerebourg/simpleredis"),
+)
+PLUGIN_TREE_SHA256 = "8a141217a402fcccb015d7a9b3bef1d1ee078f640df2b2b305985058653e5d90"
+CROWDSEC_FILES = ("start.sh", "profiles.yaml", "acquis.yaml", "config.yaml.local")
 
 
 class IdentityReadinessError(RuntimeError):
@@ -88,6 +107,54 @@ def service_hosts(host, resolv_conf="/etc/resolv.conf"):
 def authority(host, port):
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
+
+def tree_digest(root):
+    """SHA-256 of "hash  path\\n" for every regular file below root, sorted by relative POSIX path; links are refused."""
+    root = pathlib.Path(root)
+    files = []
+    for directory, directories, names in os.walk(root):
+        for name in directories + names:
+            path = pathlib.Path(directory) / name
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise RuntimeError("The plugin tree must contain only regular files and directories.")
+        files.extend((pathlib.Path(directory) / name).relative_to(root).as_posix() for name in names)
+    listing = "".join(f"{hashlib.sha256((root / name).read_bytes()).hexdigest()}  {name}\n" for name in sorted(files))
+    return hashlib.sha256(listing.encode()).hexdigest()
+
+
+def module_url(module, version):
+    return f"https://proxy.golang.org/{module}/@v/{version}.zip"
+
+
+def unpack_plugin(archives, target):
+    """Unpacks the verified module zips (module -> bytes) into target, which must not exist, and checks the unpacked tree."""
+    import zipfile
+
+    target.mkdir(parents=True)
+    for module, version, digest, destination in PLUGIN_ARCHIVES:
+        data = archives[module]
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise RuntimeError(f"The download of {module} {version} doesn't match its pinned SHA-256; nothing was installed.")
+        prefix = f"{module}@{version}/"
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            if len(members) > 4096 or sum(member.file_size for member in members) > 64 * 1024 * 1024:
+                raise RuntimeError(f"The {module} archive is unexpectedly large.")
+            for member in members:
+                name = member.filename
+                relative = pathlib.PurePosixPath(name[len(prefix):]) if name.startswith(prefix) else None
+                if (relative is None or member.is_dir() or not relative.parts or relative.is_absolute()
+                        or any(part in ("", ".", "..") for part in relative.parts)
+                        or (member.external_attr >> 16) & 0o170000 == 0o120000):
+                    raise RuntimeError(f"The {module} archive has an unexpected entry: {name!r}")
+                if destination and relative.name.endswith("_test.go"):
+                    continue
+                path = target.joinpath(*pathlib.PurePosixPath(destination).parts, *relative.parts)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, open(path, "xb") as output:
+                    shutil.copyfileobj(source, output)
+    if tree_digest(target) != PLUGIN_TREE_SHA256:
+        raise RuntimeError("The unpacked CrowdSec bouncer plugin doesn't match its pinned tree digest.")
 
 def write_file(path, content, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +244,8 @@ class Provisioner:
                 directory = self.state / path
                 if directory.exists() and any(directory.iterdir()):
                     raise RuntimeError(f"Existing {path} data has no installation record. Restore its settings and secrets; refusing to initialize over it.")
-        for path in ("secrets", "ca", "certificates", "trust", "config", "gateway", "ldap/data", "ldap/config", "deployment"):
+        for path in ("secrets", "ca", "certificates", "trust", "config", "gateway", "ldap/data", "ldap/config", "deployment",
+                     "config/crowdsec", "gateway/security", "access-logs", "crowdsec/enroll", "plugins-local"):
             directory = self.state / path
             if not directory.exists():
                 directory.mkdir(parents=True, mode=0o700)
@@ -195,18 +263,65 @@ class Provisioner:
                 raise RuntimeError(f"Secret {name} is unexpectedly short.")
             os.chmod(path, 0o600)
             self.values[name] = value
+        for name in LATE_SECRET_NAMES:
+            path = self.state / "secrets" / name
+            if path.is_symlink():
+                raise RuntimeError(f"Secret file is a symbolic link: {name}")
+            if not path.exists():
+                with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
+                    output.write(secrets.token_urlsafe(48))
+            value = path.read_text().rstrip("\r\n")
+            if len(value) < 32:
+                raise RuntimeError(f"Secret {name} is unexpectedly short.")
+            os.chmod(path, 0o600)
+            self.values[name] = value
         write_file(settings_path, json.dumps(self.settings, indent=2) + "\n")
         for name in ("start-ca.sh", "renew-certificate.sh", "init_org_tree.ldif", "init_org_entries.ldif"):
             write_file(self.state / "config" / name, (ROOT / "deployment/identity" / name).read_text(encoding="utf-8"))
+        for name in CROWDSEC_FILES:
+            write_file(self.state / "config/crowdsec" / name, (ROOT / "deployment/identity/crowdsec" / name).read_text(encoding="utf-8"))
         write_file(self.state / "trust" / "install-node-trust.sh",
                    (ROOT / "deployment/identity/install-node-trust.sh").read_text(encoding="utf-8"), 0o644)
         self.gateway_files()
+        self.install_plugin()
         emit("prepare", "Identity inputs are ready. Existing trust and credentials were preserved.", state=str(self.state))
+
+    def install_plugin(self):
+        """Fetches the pinned CrowdSec bouncer plugin once and unpacks it for the gateway, replacing any tree that differs."""
+        target = self.state / "plugins-local/src" / PLUGIN_MODULE
+        if target.is_dir() and not target.is_symlink():
+            try:
+                if tree_digest(target) == PLUGIN_TREE_SHA256:
+                    return
+            except (OSError, RuntimeError):
+                pass
+        emit("prepare", f"Fetching the gateway's CrowdSec bouncer plugin {PLUGIN_VERSION} from proxy.golang.org.")
+        archives = {}
+        for module, version, _, _ in PLUGIN_ARCHIVES:
+            with urllib.request.urlopen(module_url(module, version), timeout=60) as response:
+                archives[module] = response.read(16 * 1024 * 1024 + 1)
+            if len(archives[module]) > 16 * 1024 * 1024:
+                raise RuntimeError(f"The {module} download is unexpectedly large.")
+        staging = self.state / "plugins-local" / f".staging-{secrets.token_hex(8)}"
+        try:
+            unpack_plugin(archives, staging)
+            previous = None
+            if target.exists() or target.is_symlink():
+                previous = target.with_name(f".previous-{secrets.token_hex(8)}")
+                os.replace(target, previous)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging, target)
+            if previous is not None:
+                shutil.rmtree(previous) if previous.is_dir() and not previous.is_symlink() else previous.unlink()
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def gateway_files(self):
         # Every entrypoint runs forwarded-strip (the gateway's static configuration names it). Traefik already replaces an
         # untrusted client's X-Forwarded-*, but not RFC 7239 Forwarded or these older scheme headers, which apps also read.
         # deploy() writes these too, so a gateway restarted with the new static configuration always finds the middleware.
+        # The CrowdSec middlewares the entrypoints also name (gateway/security/crowdsec.yml) are written by the identity
+        # AppHost on every publish and deploy, from the same inputs the server uses when the owner edits the safe harbor.
         forwarded = {name: "" for name in ("Forwarded", "X-Forwarded-Ssl", "X-Forwarded-Scheme", "X-Url-Scheme",
                                            "X-Original-Url", "X-Rewrite-Url")}
         routes = {
@@ -238,6 +353,10 @@ class Provisioner:
             self.values[name] = path.read_text().rstrip("\r\n")
             if len(self.values[name]) < 32:
                 raise RuntimeError(f"Secret {name} is unexpectedly short.")
+        for name in LATE_SECRET_NAMES:
+            path = self.state / "secrets" / name
+            if path.is_file() and not path.is_symlink():
+                self.values[name] = path.read_text().rstrip("\r\n")
 
     def collision_check(self):
         for name in CONTAINERS:
@@ -469,8 +588,10 @@ class Provisioner:
     def verify(self):
         from owner import load_owner, owner_identity
 
+        # CrowdSec fails open: the gateway serves without it, so identity readiness doesn't wait for it.
         for name in CONTAINERS:
-            self.wait_container(name, timeout=30)
+            if name != "lucia-identity-crowdsec":
+                self.wait_container(name, timeout=30)
         self.check_ldap_tls()
         source = self.api("GET", "/api/v3/sources/ldap/lucia-ldap/")
         if (source["base_dn"] != self.settings["ldap_base_dn"] or not source.get("peer_certificate")

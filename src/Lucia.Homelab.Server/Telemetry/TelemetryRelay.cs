@@ -10,7 +10,7 @@ namespace Lucia.Homelab.Server.Telemetry;
 
 /// <summary>An app on the server whose Prometheus metrics the relay scrapes. llama.cpp's router serves them per model.</summary>
 /// <param name="Target">An address, or with <paramref name="TargetsFile"/> a Prometheus file_sd file the app's owner keeps current.</param>
-internal sealed record RelayScrape(string Job, string Target, string[]? Models = null, bool TargetsFile = false);
+internal sealed record RelayScrape(string Job, string Target, string[]? Models = null, bool TargetsFile = false, bool Authenticated = true);
 
 /// <summary>
 /// The telemetry relay: an OpenTelemetry collector on each machine Lucia manages. Apps and Lucia's agent send it OTLP on
@@ -77,7 +77,7 @@ internal static class TelemetryRelay
         if (gpu) jobs += Job("gpu", "    - targets: [127.0.0.1:19835]\n");
         foreach (var app in apps)
             jobs += app.TargetsFile ? Job(app.Job, $"    - files: [{app.Target}]\n", discovery: "file_sd_configs")
-                : app.Models is null ? Job(app.Job, $"    - targets: [{app.Target}]\n", Auth)
+                : app.Models is null ? Job(app.Job, $"    - targets: [{app.Target}]\n", app.Authenticated ? Auth : "")
                 : Job(app.Job, string.Concat(app.Models.Select(model => $"    - targets: [{app.Target}]\n      labels:\n        model: \"{model}\"\n")),
                     Auth + "  params:\n    autoload: [\"false\"]\n", "    - source_labels: [model]\n      target_label: __param_model\n");
         return $"""
@@ -226,9 +226,11 @@ public sealed class ControllerRelay
                 # Once a domain is active the origin has a public certificate instead.
                 include_system_ca_certs_pool: true
             """;
-        // spark_model_worker.py lists TensorFold's metrics address in spark-model.json while Qwen3.8-Flash-Next runs.
+        // spark_model_worker.py lists TensorFold's metrics address in spark-model.json while Qwen3.8-Flash-Next runs. CrowdSec, beside
+        // the gateway, publishes its Prometheus metrics on this machine's loopback.
         Write(Path.Combine(directory, "relay.yaml"), TelemetryRelay.Config("\"${env:LUCIA_NODE}\"", gpu: true,
-            [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true)], exporter));
+            [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true), new("crowdsec", "127.0.0.1:19060", Authenticated: false)],
+            exporter));
     }
 
     internal bool Accepts(string? token) =>

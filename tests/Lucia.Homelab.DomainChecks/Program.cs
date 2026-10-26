@@ -154,4 +154,5 @@ await StackChecks.Run(Check);
 await LabMapChecks.Run(Check);
 await PeopleChecks.Run(Check);
 await PublicForwardChecks.Run(Check);
+await SecurityChecks.Run(Check);
 Console.WriteLine($"Domain naming, review, and recovery checks passed ({count} assertions). No live DNS or certificates changed.");

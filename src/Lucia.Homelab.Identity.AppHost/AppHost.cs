@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Aspire.Hosting.Docker.Resources.ComposeNodes;
 using Aspire.Hosting.Docker.Resources.ServiceNodes;
+using Lucia.Homelab.Server.Security;
 
 var builder = DistributedApplication.CreateBuilder(args);
 var state = Path.GetFullPath(builder.Configuration["LUCIA_IDENTITY_STATE"]
@@ -187,6 +188,11 @@ if (hostSettings is not null)
         .WithEnvironment("DomainOnboarding__InstallationId", host.GetProperty("installation_id").GetString()!)
         .WithEnvironment("DomainOnboarding__IngressAddress", bootSettings?.RootElement.GetProperty("bind_address").GetString() ?? "")
         .WithBindMount(StatePath("gateway", "domains"), "/domain-gateway")
+        // The server rewrites the gateway's CrowdSec middlewares and the engine's allowlist when the owner edits the safe harbor.
+        .WithEnvironment("DomainOnboarding__GatewayAppSec", "true")
+        .WithEnvironment("GatewaySecurity__GatewayDirectory", "/gateway-security")
+        .WithEnvironment("GatewaySecurity__StateDirectory", "/data/security")
+        .WithBindMount(StatePath("gateway", "security"), "/gateway-security")
         .WithEnvironment("HardwareOnboarding__StateDirectory", "/data/onboarding")
         .WithEnvironment("PackageUpdates__Directory", "/data/packages")
         .WithEnvironment("Assistant__Directory", "/data/assistant")
@@ -330,36 +336,97 @@ if (hostSettings is not null)
 // Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4); Lucia's DomainIngressConfiguration.CloudflareRanges matches.
 const string CloudflareRanges = "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18," +
     "190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22";
-// Access logs go to the Observability app through the controller's relay endpoint, as the machine's relay does. The gateway
+
+// CrowdSec reads the gateway's access log, keeps the ban list and answers AppSec queries; the gateway's bouncer plugin enforces
+// both. The middlewares are written here, on every deploy, so the gateway never starts with a static configuration that names
+// a middleware it can't find. The safe harbor is Lucia's own addresses plus the owner's list from the host's data.
+var cloudflare = CloudflareRanges.Split(',');
+string[] luciaAddresses = hostSettings is null ? [] : [
+    .. hostSettings.RootElement.GetProperty("trusted_proxy_networks").EnumerateArray().Select(network => network.GetString()!),
+    .. bootSettings is null ? [] : new[] { bootSettings.RootElement.GetProperty("bind_address").GetString()! }];
+var ownerAddresses = hostSettings is null ? [] : GatewaySecurity.ReadOwner(Path.Combine(
+    hostSettings.RootElement.GetProperty("data_directory").GetString()!, "security", GatewaySecurity.StateFileName))
+    .Select(entry => GatewaySecurity.Canonical(entry, cloudflare, out var error)
+        ?? throw new InvalidOperationException("The saved safe-harbor list is invalid: " + error)).ToArray();
+GatewaySecurity.Publish(StatePath("gateway", "security"), GatewaySecurity.Harbor(luciaAddresses, ownerAddresses), cloudflare);
+var plugin = StatePath(GatewaySecurity.PluginDirectory.Split('/'));
+if (!Directory.Exists(plugin) || GatewaySecurity.TreeDigest(plugin) != GatewaySecurity.PluginTreeSha256)
+    throw new InvalidOperationException("The gateway's CrowdSec bouncer plugin is missing or changed. Run tools/identity/provision.py prepare "
+        + "to fetch and verify " + GatewaySecurity.PluginModule + " " + GatewaySecurity.PluginVersion + ".");
+CheckSecret(CheckedFile(StatePath("secrets", "crowdsec-bouncer-key")), 32);
+foreach (var directory in new[] { StatePath("access-logs"), StatePath("crowdsec", "enroll") })
+    Directory.CreateDirectory(directory);
+builder.AddContainer("identity-crowdsec", "crowdsecurity/crowdsec", "v1.8.1")
+    .WithImageSHA256("0f2523fa61ef507f15d953045cface490cc880670c62f2755ced17524107f71a")
+    .WithEntrypoint("/bin/bash")
+    .WithArgs("/lucia/config/start.sh")
+    // traefik brings the access-log parser and the HTTP scenarios; the AppSec collections are the in-band rules; good actors
+    // keeps search engines and Cloudflare's own addresses out of the scenarios.
+    .WithEnvironment("COLLECTIONS", "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/base-http-scenarios " +
+        "crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules crowdsecurity/whitelist-good-actors")
+    // The stock whitelist drops every private address before a scenario sees it; Lucia records LAN alerts instead.
+    .WithEnvironment("DISABLE_PARSERS", "crowdsecurity/whitelists")
+    .WithEnvironment("LUCIA_ENGINE_NAME", "lucia-" + Environment.MachineName.ToLowerInvariant())
+    .WithVolume("lucia-crowdsec-data", "/var/lib/crowdsec/data")
+    .WithVolume("lucia-crowdsec-config", "/etc/crowdsec")
+    .WithBindMount(StatePath("config", "crowdsec"), "/lucia/config", isReadOnly: true)
+    .WithBindMount(StatePath("gateway", "security"), "/lucia/security", isReadOnly: true)
+    .WithBindMount(StatePath("crowdsec", "enroll"), "/lucia/enroll", isReadOnly: true)
+    .WithBindMount(StatePath("access-logs"), "/var/log/traefik", isReadOnly: true)
+    .WithBindMount(StatePath("secrets", "crowdsec-bouncer-key"), GatewaySecurity.KeyFile, isReadOnly: true)
+    .PublishAsDockerComposeService((_, service) =>
+    {
+        Persistent(service, "identity-crowdsec");
+        service.Init = true;
+        // Only the Prometheus metrics leave the Docker network, on loopback for the machine's telemetry relay. The local API
+        // (8080) and the AppSec listener (7422) answer the gateway alone.
+        service.Ports.Add("127.0.0.1:19060:6060");
+        service.Healthcheck = Health("CMD", "cscli", "lapi", "status");
+        service.Healthcheck.StartPeriod = "300s";
+    });
+
+// Access logs go to a JSON file that CrowdSec reads, kept under 50 MB by truncating it in place (CrowdSec follows the
+// truncation), and to the Observability app through the controller's relay endpoint, as the machine's relay does. The gateway
 // posts to the controller directly, so its own posts aren't logged; as the controller's trusted proxy it names the public
 // origin itself. The shell expands the relay token from the environment. Credentials and query strings stay out of the logs.
-var accessLogs = hostSettings is null ? "" :
-    "--experimental.otlplogs=true --accesslog=true --accesslog.fields.headers.names.User-Agent=keep " +
-    "--accesslog.fields.queryparameters.defaultmode=drop --accesslog.otlp=true --accesslog.otlp.servicename=lucia-gateway " +
+var accessLogs = "--accesslog=true --accesslog.filepath=/logs/access.log --accesslog.format=json " +
+    "--accesslog.fields.headers.names.User-Agent=keep --accesslog.fields.queryparameters.defaultmode=drop " +
+    (hostSettings is null ? "" :
+    "--experimental.otlplogs=true --accesslog.dualoutput=true --accesslog.otlp=true --accesslog.otlp.servicename=lucia-gateway " +
     "--accesslog.otlp.http.endpoint=http://lucia-host:8080/api/host/telemetry/relay/v1/logs " +
     "--accesslog.otlp.http.headers.X-Forwarded-Proto=https --accesslog.otlp.http.headers.X-Forwarded-Host=" +
     new Uri(hostSettings.RootElement.GetProperty("authentication").GetProperty("public_origin").GetString()!).Authority + " " +
-    "--accesslog.otlp.http.headers.X-Lucia-Relay=\"$LUCIA_RELAY_TOKEN\" ";
-var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.6")
-    .WithImageSHA256("31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d")
+    "--accesslog.otlp.http.headers.X-Lucia-Relay=\"$LUCIA_RELAY_TOKEN\" ");
+// Every HTTP entrypoint ends with the bouncer's ban check, after the cheap header and source filters; crowdsec.yml defines it.
+var bouncer = GatewaySecurity.Middleware + "@file";
+var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.7.16")
+    .WithImageSHA256("1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65")
     .WithEntrypoint("/bin/sh")
     .WithArgs("-c",
         "while ! (cd /certificates && sha256sum -c ready.sha256 >/dev/null 2>&1); do sleep 1; done; " +
-        "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.authentik.http.middlewares=forwarded-strip@file " +
+        "(while :; do find /logs -maxdepth 1 -name access.log -size +51200k -exec truncate -s 0 {} \\; ; sleep 30; done) & " +
+        "exec traefik --entrypoints.authentik.address=:8443 --entrypoints.authentik.http.middlewares=forwarded-strip@file," + bouncer + " " +
         "--entrypoints.ldaps.address=:8636 " +
         // No read timeout on the host entrypoint: a stack move's upload can wait minutes for its receiver and then stream for
         // hours. Kestrel still enforces header timeouts and minimum body rates on every other route.
         // forwarded-strip (routes.yml) removes proxy headers Traefik doesn't already replace for untrusted clients.
         (hostSettings is not null ? "--entrypoints.host.address=:8444 --entrypoints.host.transport.respondingTimeouts.readTimeout=0 " +
-            "--entrypoints.host.http.middlewares=forwarded-strip@file " +
+            "--entrypoints.host.http.middlewares=forwarded-strip@file," + bouncer + " " +
             // Internet traffic arrives here through Cloudflare's proxy and the router's port forward. Only public routes join
             // this entrypoint, and its public-sources middleware (published with public access) admits only Cloudflare.
-            // Cloudflare's X-Forwarded-For and -Proto are trusted; each public route drops the other proxy headers.
-            "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file,forwarded-strip@file " +
+            // Cloudflare's X-Forwarded-For and -Proto are trusted; each public route drops the other proxy headers. Every
+            // request from the internet also passes CrowdSec's AppSec rules.
+            "--entrypoints.public.address=:8445 --entrypoints.public.http.middlewares=public-sources@file,forwarded-strip@file," +
+            bouncer + "," + GatewaySecurity.AppSecMiddleware + "@file " +
             "--entrypoints.public.forwardedHeaders.trustedIPs=" + CloudflareRanges + " " : "") +
+        // The bouncer is a local plugin, unpacked and checked by provisioning; the gateway never downloads code.
+        "--experimental.localplugins." + GatewaySecurity.PluginName + ".modulename=" + GatewaySecurity.PluginModule + " " +
         accessLogs + "--providers.file.directory=/config --providers.file.watch=true --api.dashboard=false --log.level=INFO")
     .WithBindMount(StatePath("gateway"), "/config", isReadOnly: true)
     .WithBindMount(StatePath("certificates"), "/certificates", isReadOnly: true)
+    .WithBindMount(StatePath("plugins-local"), "/plugins-local", isReadOnly: true)
+    .WithBindMount(StatePath("access-logs"), "/logs")
+    .WithBindMount(StatePath("secrets", "crowdsec-bouncer-key"), GatewaySecurity.KeyFile, isReadOnly: true)
     .WithHttpsEndpoint(port: ports.GetProperty("authentik").GetInt32(), targetPort: 8443, name: "https")
     .WithEndpoint(port: ports.GetProperty("ldaps").GetInt32(), targetPort: 8636, name: "ldaps", scheme: "tcp")
     .WaitFor(server)

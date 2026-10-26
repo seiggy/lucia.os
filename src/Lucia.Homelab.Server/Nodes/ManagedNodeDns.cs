@@ -97,7 +97,7 @@ public sealed class ManagedNodeDns : BackgroundService
         var job = await ActiveJob(_domains, ct);
         if (Path.IsPathFullyQualified(_options.GatewayDirectory) && Directory.Exists(_options.GatewayDirectory))
             Stacks.AppGateway.Publish(_options.GatewayDirectory, job is null ? null
-                : Stacks.AppGateway.Build(await _stacks.ActiveRoutes(ct), job.Plan.Naming.Namespace, job.Public ? job.Plan.Naming.Domain : null));
+                : Stacks.AppGateway.Build(await _stacks.ActiveRoutes(ct), job.Plan.Naming.Namespace, job.Public ? job.Plan.Naming.Domain : null, _options.GatewayAppSec));
         // AdGuard's own names follow the fleet, replacing a record set up by hand before it.
         var claimed = job is null ? null : (await _fleet.RecordsAsync(job.Plan.Naming.Namespace, ct)).Select(record => record.Domain).ToHashSet(StringComparer.Ordinal);
         foreach (var name in await Apply(_dns, _nodes.DnsStatePath, await Wanted(ct) ?? [], ct, claimed))

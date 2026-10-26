@@ -1,0 +1,53 @@
+---
+title: Gateway protection
+description: How Lucia keeps attackers away from your apps, and how to make sure your own computer is never caught by it.
+sidebar_position: 17
+---
+
+import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
+
+# Gateway protection
+
+<WhoWhatWhy
+  who="Anyone running Lucia, and especially anyone who has made an app reachable from the internet."
+  what="What the gateway's protection does on its own, the trusted addresses you can add, and what to do if someone gets blocked."
+  why="An app on the internet gets scanned by bots within hours. You shouldn't have to read logs to keep them out."
+/>
+
+Every request to Lucia and your apps passes through one front door, the gateway. Lucia runs a security tool called CrowdSec beside it. CrowdSec reads the gateway's request log, spots behaviour like scanning for passwords files or using known attack tools, and bans the address that did it. It also checks each request to an app against a list of known exploits and blocks the bad ones on the spot.
+
+You don't need to switch anything on. It starts with Lucia.
+
+## What it does with each kind of visitor
+
+| Who | What happens |
+|---|---|
+| Someone on the internet | Banned for 4 hours the first time they misbehave, a day the second time, and a week after that. |
+| A device on your home network | Noted, never banned automatically. Your network is yours, and a misconfigured printer shouldn't lock itself out. |
+| A trusted address | Ignored completely: never banned, never checked. |
+| Lucia's own servers and services | Treated as trusted. |
+
+A banned visitor gets a plain "Forbidden" page from every app at once. CrowdSec also shares what it sees with the CrowdSec community and receives their list of known attackers, so many bots are refused before they ever try anything.
+
+Requests to Lucia's own pages and to your managed servers' check-ins skip the exploit check. Uploading a compose file or a script there looks a lot like an attack to a generic rule, and Lucia already requires you to be signed in.
+
+## Add your own computer
+
+Give the computer you manage Lucia from a fixed address on your router, then add it to the trusted list:
+
+1. Open **Settings → Domains**. The card is there once your domain is connected.
+2. Under **Trusted addresses**, choose **Edit trusted addresses…**.
+3. Type your computer's address, for example `192.168.1.50`, one per line. A whole home network such as `192.168.1.0/24` works too.
+4. Choose **Save**.
+
+The change takes effect within a minute. The card also lists the addresses Lucia always trusts, which are its own.
+
+Lucia won't let you trust the whole internet. Addresses outside your home network must be a single address or a small block, and Cloudflare's addresses are refused because every public visitor comes through them.
+
+## If something gets blocked
+
+- **A device at home gets "Forbidden" on an app's page.** It tripped an exploit rule with that one request. Nothing is banned, so the next normal request works. If it keeps happening, add the device to the trusted list.
+- **A friend outside your network is banned.** Someone with access to the Spark can lift it. The [deploy guide](../deploy/crowdsec.mdx#everyday-commands) has the one-line command.
+- **Every app shows a 404 after an update.** That points at the gateway rather than a ban. See [Gateway protection for operators](../deploy/crowdsec.mdx#fail-open-behaviour).
+
+If CrowdSec itself stops, your apps keep working. They are just unguarded until it comes back.

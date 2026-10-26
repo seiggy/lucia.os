@@ -11,6 +11,8 @@ public sealed class DomainOnboardingOptions
     public string GatewayDirectory { get; set; } = "";
     public string CertificateGatewayDirectory { get; set; } = "/domain-certificates";
     public string? InstallationId { get; set; }
+    /// <summary>The gateway runs CrowdSec, so app routes on the LAN also pass its AppSec middleware.</summary>
+    public bool GatewayAppSec { get; set; }
 }
 
 public sealed record DomainPlanRequest(

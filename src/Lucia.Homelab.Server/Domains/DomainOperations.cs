@@ -44,14 +44,14 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
                 var published = !File.Exists(apps) ? new JsonObject()
                     : new FileInfo(apps).Length > 262144 ? throw new InvalidDataException("App gateway configuration is oversized.")
                     : JsonNode.Parse(await File.ReadAllBytesAsync(apps, ct));
-                routes = [.. routes, .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, published, zone)];
+                routes = [.. routes, .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, published, zone, options.GatewayAppSec)];
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidOperationException)
         {
             logger.LogWarning("Managed gateway configuration could not be read ({ErrorType}).", error.GetType().Name);
             gatewayError = "Lucia could not read its published gateway configuration. The addresses below are the saved configuration, not a confirmed live state.";
-            routes = [.. Routes(job, null, null), .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, null, zone)];
+            routes = [.. Routes(job, null, null), .. AppRoutes(appRoutes, job.Plan.Naming.Namespace, null, zone, options.GatewayAppSec)];
         }
         IReadOnlyList<AdGuardRewrite>? records = null;
         AdGuardHealth? health = null;
@@ -79,9 +79,9 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
     }
 
     /// <summary>App routes from the gateway's <c>apps.yml</c>, compared with what Lucia would publish for them now.</summary>
-    internal static ManagedDomainRoute[] AppRoutes(Stacks.ActiveRoute[] routes, string ns, JsonNode? actual, string? zone = null)
+    internal static ManagedDomainRoute[] AppRoutes(Stacks.ActiveRoute[] routes, string ns, JsonNode? actual, string? zone = null, bool appSec = false)
     {
-        var expected = JsonNode.Parse(Stacks.AppGateway.Build(routes, ns, zone) ?? "{}");
+        var expected = JsonNode.Parse(Stacks.AppGateway.Build(routes, ns, zone, appSec) ?? "{}");
         return routes.OrderBy(item => item.Route.Host, StringComparer.Ordinal).SelectMany(item =>
         {
             var id = $"app-{item.Stack}-{item.Route.Host}";

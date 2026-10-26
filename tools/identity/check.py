@@ -18,8 +18,14 @@ import sys
 import tempfile
 from unittest.mock import MagicMock, Mock, patch
 
-from provision import BASE_DN, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, service_hosts, settings_for, validate_host
+from provision import BASE_DN, LATE_SECRET_NAMES, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, service_hosts, settings_for, tree_digest, unpack_plugin, validate_host
 from owner import enroll_ldap_owner, finish_owner, owner_identity, validate_login_password, validate_password, validate_username, verify_login
+import provision
+import zipfile
+
+# The gateway's bouncer plugin is fetched from proxy.golang.org; these checks stay offline and test the installer separately.
+install_plugin = Provisioner.install_plugin
+patch.object(Provisioner, "install_plugin", lambda self: None).start()
 
 for host in ("192.168.0.222", "spark-9423", "auth.lucia.home.arpa", "2001:db8::1"):
     assert validate_host(host) == host
@@ -65,11 +71,21 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
     for source in (ROOT / "deployment" / "identity").iterdir():
         if source.suffix in (".sh", ".ldif"):
             (templates / source.name).write_bytes(source.read_text().replace("\n", "\r\n").encode())
+    (templates / "crowdsec").mkdir()
+    for source in (ROOT / "deployment" / "identity" / "crowdsec").iterdir():
+        (templates / "crowdsec" / source.name).write_bytes(source.read_text().replace("\n", "\r\n").encode())
     first = Provisioner(args)
     with patch("provision.ROOT", templates.parents[1]), contextlib.redirect_stdout(io.StringIO()):
         first.prepare()
     for script in (first.state / "config").glob("*.sh"):
         assert b"\r" not in script.read_bytes(), "POSIX scripts must be staged with LF even from a CRLF checkout."
+    for staged in (first.state / "config" / "crowdsec").iterdir():
+        assert b"\r" not in staged.read_bytes(), "CrowdSec's script and YAML must be staged with LF even from a CRLF checkout."
+    assert sorted(path.name for path in (first.state / "config" / "crowdsec").iterdir()) == sorted(provision.CROWDSEC_FILES)
+    for directory in ("gateway/security", "access-logs", "crowdsec/enroll", "plugins-local"):
+        assert (first.state / directory).is_dir(), directory
+    bouncer_key = first.state / "secrets" / LATE_SECRET_NAMES[0]
+    assert len(bouncer_key.read_text()) >= 32 and bouncer_key.read_text() in first.values.values()
     assert b"\r" not in (first.state / "trust" / "install-node-trust.sh").read_bytes()
     hashes = {name: hashlib.sha256((first.state / "secrets" / name).read_bytes()).hexdigest() for name in SECRET_NAMES}
     second = Provisioner(args)
@@ -536,6 +552,11 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
             raise AssertionError("An invalid or duplicate port was accepted.")
         except ValueError:
             pass
+    (second.state / "secrets" / LATE_SECRET_NAMES[0]).unlink()
+    with contextlib.redirect_stdout(io.StringIO()):
+        second.prepare()
+    assert (second.state / "secrets" / LATE_SECRET_NAMES[0]).exists(), "An existing installation must get the new bouncer key."
+    assert hashes == {name: hashlib.sha256((second.state / "secrets" / name).read_bytes()).hexdigest() for name in SECRET_NAMES}
     (second.state / "secrets" / SECRET_NAMES[0]).unlink()
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -543,4 +564,69 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
         raise AssertionError("A missing persistent credential was regenerated.")
     except RuntimeError:
         pass
-print("Identity checks passed: repeat-safe storage/credentials, private supplied passwords, interrupted enrollment, owner drift guards, LDAP-backed login, CSRF, and credential/session cleanup.")
+
+    # The plugin installer: pinned zips only, unpacked within the plugin's directory, dependencies into vendor/ without tests,
+    # and a tree that must match its digest. Fixture archives stand in for proxy.golang.org.
+    def module_zip(module, version, files):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for name, content in files.items():
+                archive.writestr(f"{module}@{version}/{name}", content)
+        return buffer.getvalue()
+
+    plugin = module_zip("example.com/plugin", "v1.0.0", {"go.mod": "module example.com/plugin\n", "bouncer.go": "package plugin\n",
+                                                         "bouncer_test.go": "package plugin\n", "vendor/modules.txt": "# example.com/dep v0.1.0\n"})
+    dependency = module_zip("example.com/dep", "v0.1.0", {"dep.go": "package dep\n", "dep_test.go": "package dep\n", "LICENSE": "MIT\n"})
+    fixture_archives = (
+        ("example.com/plugin", "v1.0.0", hashlib.sha256(plugin).hexdigest(), ""),
+        ("example.com/dep", "v0.1.0", hashlib.sha256(dependency).hexdigest(), "vendor/example.com/dep"),
+    )
+    downloads = {"example.com/plugin": plugin, "example.com/dep": dependency}
+    expected_tree = pathlib.Path(temporary) / "expected-plugin"
+    for relative, content in {"go.mod": "module example.com/plugin\n", "bouncer.go": "package plugin\n", "bouncer_test.go": "package plugin\n",
+                              "vendor/modules.txt": "# example.com/dep v0.1.0\n", "vendor/example.com/dep/dep.go": "package dep\n",
+                              "vendor/example.com/dep/LICENSE": "MIT\n"}.items():
+        (expected_tree / relative).parent.mkdir(parents=True, exist_ok=True)
+        (expected_tree / relative).write_bytes(content.encode())
+    with patch("provision.PLUGIN_ARCHIVES", fixture_archives), patch("provision.PLUGIN_TREE_SHA256", tree_digest(expected_tree)):
+        unpacked = pathlib.Path(temporary) / "unpacked-plugin"
+        unpack_plugin(downloads, unpacked)
+        assert tree_digest(unpacked) == tree_digest(expected_tree) and not (unpacked / "vendor/example.com/dep/dep_test.go").exists()
+        try:
+            unpack_plugin({**downloads, "example.com/dep": dependency + b"tampered"}, pathlib.Path(temporary) / "rejected-tampered")
+            raise AssertionError("A tampered plugin archive was installed.")
+        except RuntimeError as error:
+            assert "SHA-256" in str(error)
+        escaping = module_zip("example.com/plugin", "v1.0.0", {"../escape.go": "x"})
+        with patch("provision.PLUGIN_ARCHIVES", ((*fixture_archives[0][:2], hashlib.sha256(escaping).hexdigest(), ""), fixture_archives[1])):
+            try:
+                unpack_plugin({**downloads, "example.com/plugin": escaping}, pathlib.Path(temporary) / "rejected-escape")
+                raise AssertionError("A plugin archive entry escaped its directory.")
+            except RuntimeError as error:
+                assert "unexpected entry" in str(error)
+        assert not (pathlib.Path(temporary) / "escape.go").exists()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        fetched = []
+
+        def fake_urlopen(url, timeout):
+            fetched.append(url)
+            return Response(downloads[next(module for module in downloads if f"/{module}/@v/" in url)])
+
+        target = second.state / "plugins-local/src" / provision.PLUGIN_MODULE
+        with patch("provision.urllib.request.urlopen", side_effect=fake_urlopen), contextlib.redirect_stdout(io.StringIO()):
+            install_plugin(second)
+            assert tree_digest(target) == tree_digest(expected_tree) and len(fetched) == 2
+            install_plugin(second)
+            assert len(fetched) == 2, "A verified plugin tree must not be fetched again."
+            (target / "bouncer.go").write_text("package plugin // changed\n")
+            install_plugin(second)
+            assert len(fetched) == 4 and tree_digest(target) == tree_digest(expected_tree), "A changed plugin tree must be replaced."
+        assert not list((second.state / "plugins-local").glob(".staging-*")) and not list(target.parent.glob(".previous-*"))
+print("Identity checks passed: repeat-safe storage/credentials, the CrowdSec bouncer key and verified plugin installer, private supplied passwords, interrupted enrollment, owner drift guards, LDAP-backed login, CSRF, and credential/session cleanup.")

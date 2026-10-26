@@ -27,6 +27,11 @@
       "docs": ["guide/people-and-sign-in", "code/identity", "deploy/identity"]
     },
     {
+      "name": "Gateway protection (CrowdSec)",
+      "paths": ["src/Lucia.Homelab.Server/Security/**", "deployment/identity/crowdsec/**", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs"],
+      "docs": ["guide/gateway-protection", "code/gateway-security", "deploy/crowdsec"]
+    },
+    {
       "name": "Managed nodes and the node agent",
       "paths": ["src/Lucia.NodeAgent/**", "src/Lucia.Homelab.Server/Nodes/**", "src/Lucia.Homelab.Server/Onboarding/**", "tools/nodes/**", "tests/Lucia.NodeAgent.Checks/**"],
       "docs": ["guide/servers", "code/nodes", "deploy/nodes"]
