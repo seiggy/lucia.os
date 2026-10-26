@@ -5,8 +5,8 @@
 # Node 24.21.0 on Debian bookworm (glibc 2.36, older than the .NET image's Ubuntu 24.04, so its binary runs there).
 FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS node
 
-# .NET SDK 10.0.402 on Ubuntu 24.04.
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa
+# .NET SDK 10.0.403 (runtime 10.0.14) on Ubuntu 24.04.
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y bash ca-certificates python3 \

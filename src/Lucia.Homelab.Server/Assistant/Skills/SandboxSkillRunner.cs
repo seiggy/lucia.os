@@ -17,7 +17,7 @@ public sealed class SandboxSkillRunner(NodeExec exec, SkillStore store, SkillSan
     public const int Seconds = 300, ScriptSeconds = 200;
     public const string NoServer = "No server can run sandboxed skills: Hyperlight needs an x86_64 server with KVM.";
     /// <summary>The .NET runtime-deps image the sandbox runs in, pinned by its linux/amd64 digest.</summary>
-    public const string Image = "mcr.microsoft.com/dotnet/runtime-deps:10.0@sha256:9bc5729cebc4847b28da997c802ab71ce3a2ac42512260c3a151f61132b26f7b";
+    public const string Image = "mcr.microsoft.com/dotnet/runtime-deps:10.0@sha256:62028293921f5bd6db3d9f9119cd29cd926dfd3c2336da23b09f425e40c3c832";
     private static readonly TimeSpan SyncWait = TimeSpan.FromSeconds(60), SyncPoll = TimeSpan.FromSeconds(4);
 
     /// <summary>The language the sandbox runs a script as, or null when it only runs Python and JavaScript.</summary>
