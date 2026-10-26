@@ -95,6 +95,7 @@ AdGuard rewrites are the only local DNS Lucia touches. The reconciler `ManagedNo
 | Lucia, Authentik, Spark alias | Spark ingress address | Domain activation |
 | `<node>.<namespace>` | The node's latest heartbeat address | `ManagedNodeDns` |
 | `<app>.<namespace>` | Spark ingress address | `ManagedNodeDns` from `StackStore.ActiveRoutes` |
+| An app's direct name, such as `crowdsec.<namespace>` | The address of the server the app runs on, never the gateway | `ManagedNodeDns` from `StackStore.ActiveNames` |
 | `adguard-<node>.<namespace>`, the AdGuard connection's name | Each instance, and the primary | `AdGuardFleet` |
 
 Lucia adds only missing exact records. A matching existing rule is kept and never claimed. A different or duplicate rule blocks setup, and review lists it. Answers must be private (RFC 1918 or ULA); a public address is refused. The ownership journal for records Lucia wrote lives in the node DNS state file, so it deletes only what it created.

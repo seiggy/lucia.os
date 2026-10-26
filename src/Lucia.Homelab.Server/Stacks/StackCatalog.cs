@@ -25,7 +25,8 @@ public sealed record CatalogGpu(string Uuid, string Model, long? MemoryBytes, st
 /// <param name="Reason">Why the server can't run the app, in words, when it isn't a plain requirement.</param>
 public sealed record CatalogServer(Guid NodeId, string Hostname, string? Unmet, string? Reason, CatalogGpu[]? Gpus = null);
 /// <param name="Routes">The app's web addresses, checked and stored in its manifest.</param>
-internal sealed record CatalogOutput(string Compose, string Env, string[] Require, StackRoute[]? Routes = null);
+/// <param name="Names">DNS labels under the active domain that point straight at the app's server; see <see cref="StackManifest.Names"/>.</param>
+internal sealed record CatalogOutput(string Compose, string Env, string[] Require, StackRoute[]? Routes = null, string[]? Names = null);
 
 /// <summary>An app Lucia ships ready to install. Its compose belongs to Lucia until the owner converts the app to a custom one.</summary>
 public abstract class CatalogApp(string id, int version, string name, string summary, string needs, string[] require, CatalogField[] fields)
@@ -66,6 +67,15 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     internal virtual bool Bucket => false;
     /// <summary>True when the owner can also run the app on the Spark, started by hand and stopped when idle.</summary>
     public virtual bool RunsOnSpark => false;
+    /// <summary>Catalog apps that must already be installed before this one can be: Lucia refuses the install until they are.</summary>
+    public virtual string[] RequiresApps => [];
+    /// <summary>Why the app needs <see cref="RequiresApps"/>, as a sentence the refusal ends with.</summary>
+    public virtual string? RequiresWhy => null;
+    /// <summary>The oldest catalog version of each of <see cref="RequiresApps"/> that works with this app. An installed app below it
+    /// has to be updated first: catalog apps don't re-render on their own.</summary>
+    public virtual IReadOnlyDictionary<string, int> RequiresVersions => new Dictionary<string, int>();
+    /// <summary>True when Lucia runs at most one copy of the app, wherever it is.</summary>
+    public virtual bool Single => false;
     /// <param name="env">The app's current environment, so generated secrets survive re-rendering.</param>
     internal abstract CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env);
 }
@@ -73,7 +83,8 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 public static class StackCatalog
 {
     public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new ObjectStorageApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new LeantimeApp(), new PlexApp(),
-        .. MediaApp.All, new DownloadClientApp(), new HomeAssistantApp(), new MosquittoApp(), new VoiceApp(), .. HomeCompanionApp.All, new GitHubRunnerApp()];
+            .. MediaApp.All, new DownloadClientApp(), new HomeAssistantApp(), new MosquittoApp(), new VoiceApp(), .. HomeCompanionApp.All, new GitHubRunnerApp(),
+            new CrowdSecApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
         ?? throw new HardwareOnboardingException(404, "unknown_catalog_app", "Lucia's catalog doesn't have that app.");
@@ -522,7 +533,7 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
     "Any server with Docker ready, and room for about 20 GB of telemetry. Install Object storage to keep metric history in a bucket.",
     [],
@@ -534,6 +545,9 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Obse
         new("otlp-http-port", "OTLP HTTP port", "port", "4318"),
     ])
 {
+    public const string AppId = "observability";
+    /// <summary>The first version whose collector reads <c>LUCIA_CROWDSEC_COLLECTOR</c> and forwards the gateway's access log to CrowdSec.</summary>
+    public const int ForwardsToCrowdSec = 12;
     internal const string Collector = "otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1";
     private const string Prometheus = "prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e";
     private const string Loki = "grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193";
@@ -907,8 +921,9 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Obse
                 restart: unless-stopped
                 mem_limit: 512m
                 # Lucia sets LUCIA_LAB_* to scrape your UniFi devices over SNMP once you give it SNMP credentials; the
-                # second config adds those receivers and is empty until then.
-                command: ["--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR"]
+                # second config adds those receivers and is empty until then. While a CrowdSec app runs, Lucia sets
+                # LUCIA_CROWDSEC_*: the third config forwards the gateway's access log to it, and is empty otherwise.
+                command: ["--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR"]
                 environment:
                   OTLP_USERNAME: ${OTLP_USERNAME}
                   OTLP_PASSWORD: ${OTLP_PASSWORD}
@@ -916,6 +931,8 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Obse
                   LUCIA_LAB_SNMP_USER: ${LUCIA_LAB_SNMP_USER:-}
                   LUCIA_LAB_SNMP_AUTH: ${LUCIA_LAB_SNMP_AUTH:-}
                   LUCIA_LAB_SNMP_PRIV: ${LUCIA_LAB_SNMP_PRIV:-}
+                  LUCIA_CROWDSEC_COLLECTOR: ${LUCIA_CROWDSEC_COLLECTOR:-}
+                  LUCIA_CROWDSEC_TOKEN: ${LUCIA_CROWDSEC_TOKEN:-}
                 labels:
                   lucia.configs: "{{Hash(collector)}}"
                 configs:
@@ -931,7 +948,7 @@ internal sealed class ObservabilityApp() : CatalogApp("observability", 11, "Obse
                   init:
                     condition: service_completed_successfully
                 healthcheck:
-                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR"]
+                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR"]
                   interval: 30s
                   timeout: 10s
                   retries: 3

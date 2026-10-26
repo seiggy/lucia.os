@@ -25,8 +25,10 @@ public sealed record StackPlacement(string? Node = null, string[]? Require = nul
 /// </param>
 /// <param name="Routes">Web addresses under the active domain; see <see cref="StackRoute"/>. Catalog apps set their own; saving a custom app
 /// without them keeps the current ones, and an empty list removes them.</param>
+/// <param name="Names">Names under the active domain that local DNS points straight at the app's server rather than the gateway, such as
+/// CrowdSec's, which the gateway itself connects to. Only catalog apps have them; Lucia sets them from the app's settings.</param>
 public sealed record StackManifest(int SchemaVersion, StackPlacement Placement, StackTemplate? Template = null, StackBackup? Backup = null,
-    string? Address = null, StackRoute[]? Routes = null);
+    string? Address = null, StackRoute[]? Routes = null, string[]? Names = null);
 /// <param name="Compose">Ignored for catalog apps: Lucia renders their compose and environment.</param>
 public sealed record SaveStackRequest(string? Compose, string? Env, StackManifest Manifest, long? ExpectedRevision = null);
 public sealed record CatalogPreviewRequest(string Node, Dictionary<string, string>? Settings);
@@ -109,7 +111,9 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
         var publicZone = await ManagedNodeDns.PublicZone(domains, ct);
         var publicUrls = publicZone is null ? null : (stack.Manifest.Routes ?? []).Where(route => route.Public is not null)
             .ToDictionary(route => route.Host, route => $"https://{route.Public}.{publicZone}");
-        return new { stack = Summary(stack, names), compose = stack.Compose, env = _protector.Unprotect(stack.ProtectedEnv), manifest = stack.Manifest, address, urls,
+        var env = _protector.Unprotect(stack.ProtectedEnv);
+        // Lucia's own credentials (CrowdSec's TLS key, bouncer key and the like) never reach the browser or the assistant.
+        return new { stack = Summary(stack, names), compose = stack.Compose, env = Mask(env, ManagedSecrets(stack, env)), manifest = stack.Manifest, address, urls,
             zone = (await ManagedNodeDns.ActiveNaming(domains, ct))?.Domain, publicAccess = publicZone is not null, publicUrls };
     }
 
@@ -173,8 +177,15 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
             };
             if (app is { UsesAddress: true } && manifest.Address is null)
                 throw new HardwareOnboardingException(400, "address_required", $"{app.Name} needs an address of its own on your network.");
+            if (app is null && existing is not null)
+            {
+                var previousEnv = _protector.Unprotect(existing.ProtectedEnv);
+                env = KeepManaged(env, previousEnv, ManagedSecrets(existing, previousEnv));
+            }
             if (existing is null && stacks.Count >= MaxStacks)
                 throw new HardwareOnboardingException(409, "too_many_stacks", $"Lucia runs up to {MaxStacks} stacks. Delete one first.");
+            if (existing is null && app is not null)
+                RequireCompanions(app, stacks);
             string node;
             if (existing is not null)
             {
@@ -203,7 +214,8 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
                     Routes = await ValidRoutes(output.Routes?.Select(route => route with
                     {
                         Public = (request.Manifest.Routes ?? existing?.Manifest.Routes)?.FirstOrDefault(item => item.Host == route.Host)?.Public,
-                    }).ToArray(), name, stacks, ct) };
+                    }).ToArray(), name, stacks, ct),
+                    Names = await ValidNames(output.Names, name, stacks, app, required: existing is null, ct) };
             }
             if (existing is not null && !require.SequenceEqual(existing.Manifest.Placement.Require ?? [])
                 && facts.FirstOrDefault(item => item.Hostname == node) is var current
@@ -242,6 +254,25 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     }
 
     private static bool Ready(ManagedNodeFacts node) => node is { Online: true, Status.Runtime.State: "Ready" };
+
+    /// <summary>
+    /// A new catalog app needs the apps it depends on already installed, and an app Lucia runs once can't be installed twice.
+    /// </summary>
+    internal static void RequireCompanions(CatalogApp app, IEnumerable<StoredStack> stacks)
+    {
+        foreach (var required in app.RequiresApps)
+        {
+            var installed = stacks.Where(stack => stack.Manifest.Template?.Id == required).ToArray();
+            if (installed.Length == 0)
+                throw new HardwareOnboardingException(409, "requires_app",
+                    $"Install {StackCatalog.Find(required).Name} first.{(app.RequiresWhy is { } why ? " " + why : "")}");
+            if (app.RequiresVersions.GetValueOrDefault(required) is var minimum and > 0 && installed.All(stack => stack.Manifest.Template!.Version < minimum))
+                throw new HardwareOnboardingException(409, "requires_update",
+                    $"Update {StackCatalog.Find(required).Name} first: {app.Name} needs its version {minimum} or later, and {installed[0].Name} runs version {installed[0].Manifest.Template!.Version}. Open it under Apps and choose Update.{(app.RequiresWhy is { } reason ? " " + reason : "")}");
+        }
+        if (app.Single && stacks.FirstOrDefault(stack => stack.Manifest.Template?.Id == app.Id) is { } copy)
+            throw new HardwareOnboardingException(409, "already_installed", $"Lucia runs one {app.Name}, and it's already installed as {copy.Name}.");
+    }
 
     private static void RequireRoom(List<StoredStack> stacks, string node)
     {
@@ -488,11 +519,21 @@ public sealed partial class StackStore(IOptions<HardwareOnboardingOptions> optio
     public async Task<object> Catalog(CancellationToken ct)
     {
         var facts = await nodes.Facts(ct);
+        var stacks = await Read(ct);
+        var installed = stacks.Select(stack => stack.Manifest.Template?.Id).OfType<string>().ToHashSet(StringComparer.Ordinal);
         return new
         {
             apps = StackCatalog.Apps.Select(app => new
             {
                 app.Id, app.Version, app.Name, app.Summary, app.Needs, app.Require, app.Fields, app.ServerBound, app.UsesAddress, app.RunsOnSpark,
+                app.Single,
+                requires = app.RequiresApps.Select(id => new
+                {
+                    id, name = StackCatalog.Find(id).Name, installed = installed.Contains(id),
+                    current = !installed.Contains(id) || stacks.Any(stack => stack.Manifest.Template is { } template && template.Id == id
+                        && template.Version >= app.RequiresVersions.GetValueOrDefault(id)),
+                }).ToArray(),
+                requiresWhy = app.RequiresWhy,
                 servers = facts.Select(node => StackCatalog.Server(app, node)).ToArray(),
             }).ToArray(),
         };

@@ -1,6 +1,6 @@
 ---
 title: Gateway protection
-description: How Lucia keeps attackers away from your apps, and how to make sure your own computer is never caught by it.
+description: How Lucia keeps attackers away from your apps with the CrowdSec app, and how to make sure your own computer is never caught by it.
 sidebar_position: 17
 ---
 
@@ -10,44 +10,77 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 <WhoWhatWhy
   who="Anyone running Lucia, and especially anyone who has made an app reachable from the internet."
-  what="What the gateway's protection does on its own, the trusted addresses you can add, and what to do if someone gets blocked."
+  what="Installing the CrowdSec app, what it does with each kind of visitor, the Gateway protection page, and what to do if someone gets blocked."
   why="An app on the internet gets scanned by bots within hours. You shouldn't have to read logs to keep them out."
 />
 
-Every request to Lucia and your apps passes through one front door, the gateway. Lucia runs a security tool called CrowdSec beside it. CrowdSec reads the gateway's request log, spots behaviour like scanning for passwords files or using known attack tools, and bans the address that did it. It also checks each request to an app against a list of known exploits and blocks the bad ones on the spot.
+Every request to Lucia and your apps passes through one front door, the gateway. CrowdSec is a security app that watches that door. It reads the gateway's request log, spots behaviour like hunting for password files or trying known attack tools, and bans the address that did it. It also checks each request to an app against a list of known exploits and blocks the bad ones on the spot.
 
-You don't need to switch anything on. It starts with Lucia.
+CrowdSec runs on one of your servers, not on the Spark, so it doesn't take memory or processor time from Lucia itself.
+
+## Install it
+
+1. Set up your domain in **Settings → Domains** if you haven't. The gateway finds CrowdSec by a name under your domain, such as `crowdsec.lab.example.com`, so Lucia won't install it before the domain works.
+2. Install **Observability** from **Apps → Catalog** if you haven't. CrowdSec reads the gateway's log through it, so Lucia asks for it first. If you installed Observability a while ago, open it under **Apps** and choose **Update** when Lucia offers a new version: older ones don't pass the log on.
+3. Install **CrowdSec** from the same catalog and pick a server. The defaults are fine.
+4. Open **Your lab → Gateway protection**. After a minute or two it says **Protecting the gateway**.
+
+Lucia sets up the rest: the name in your network's DNS, a certificate for it from Lucia's own authority so the gateway can trust the app, the gateway's settings, and the log forwarding. If you move CrowdSec to another server later, all of that follows it.
 
 ## What it does with each kind of visitor
 
 | Who | What happens |
 |---|---|
 | Someone on the internet | Banned for 4 hours the first time they misbehave, a day the second time, and a week after that. |
-| A device on your home network | Noted, never banned automatically. Your network is yours, and a misconfigured printer shouldn't lock itself out. |
+| A device on your home network | Noted, never banned automatically. A misconfigured printer shouldn't lock itself out of your own network. |
 | A trusted address | Ignored completely: never banned, never checked. |
 | Lucia's own servers and services | Treated as trusted. |
 
-A banned visitor gets a plain "Forbidden" page from every app at once. CrowdSec also shares what it sees with the CrowdSec community and receives their list of known attackers, so many bots are refused before they ever try anything.
+A banned visitor gets a plain "Forbidden" page from every app at once. CrowdSec also shares what it sees with the CrowdSec community and receives their list of known attackers, so many bots are refused before they try anything.
 
-Requests to Lucia's own pages and to your managed servers' check-ins skip the exploit check. Uploading a compose file or a script there looks a lot like an attack to a generic rule, and Lucia already requires you to be signed in.
+Requests to Lucia's own pages skip the exploit check. Uploading a compose file or a script there looks a lot like an attack to a generic rule, and Lucia already requires you to be signed in.
+
+## The Gateway protection page
+
+**Your lab → Gateway protection** shows whether the gateway is using CrowdSec right now, which server it runs on, and what it has been doing:
+
+{/* TODO screenshot: security-page — the Gateway protection page with fixture data: healthy engine, two bans, a few alerts, Console pending */}
+
+- **Bans**: who is refused now, why, and for how long. **Unban…** asks you to confirm, then lets that address back in within 15 seconds.
+- **Recent alerts**: what CrowdSec noticed, newest first, including devices at home it only noted.
+- **AppSec blocks**: each request the exploit check refused, with the rule it matched, who sent it, the path it asked for and when. A device at home that trips a rule is listed here and never banned. Someone on the internet who trips two different rules within a minute gets banned like any other attacker.
+- **Activity**: how many log lines it read and how many requests the exploit check looked at and blocked.
+- **CrowdSec network**: whether it's connected to the community and receiving its blocklist.
+
+If CrowdSec isn't installed, the page tells you what to install and links straight to it. If your domain stops working, it says **Waiting for your domain**, and the gateway lets everyone through until the domain is back. If the gateway's log stops reaching CrowdSec, it says **Update Observability** or **No access log arriving** instead of **Protecting the gateway**: exploit checks and the community blocklist still work, but CrowdSec can't spot new attackers from the log.
 
 ## Add your own computer
 
 Give the computer you manage Lucia from a fixed address on your router, then add it to the trusted list:
 
-1. Open **Settings → Domains**. The card is there once your domain is connected.
+1. Open **Your lab → Gateway protection**.
 2. Under **Trusted addresses**, choose **Edit trusted addresses…**.
 3. Type your computer's address, for example `192.168.1.50`, one per line. A whole home network such as `192.168.1.0/24` works too.
 4. Choose **Save**.
 
-The change takes effect within a minute. The card also lists the addresses Lucia always trusts, which are its own.
+The gateway follows the change at once and CrowdSec within a minute. The card also lists the addresses Lucia always trusts, which are its own.
 
 Lucia won't let you trust the whole internet. Addresses outside your home network must be a single address or a small block, and Cloudflare's addresses are refused because every public visitor comes through them.
+
+## Connect the CrowdSec Console (optional)
+
+The CrowdSec Console at [app.crowdsec.net](https://app.crowdsec.net) is CrowdSec's own website, with charts and history for your engine. You don't need it, but it's free to try:
+
+1. Sign in at app.crowdsec.net and copy the enroll key it gives you.
+2. Paste it under **CrowdSec Console** on the Gateway protection page and choose **Enroll**.
+3. Back in the Console, accept the new engine. The page then says **Enrolled**.
+
+If the Console refuses the key, the page shows its reason. Copy a fresh key and try again.
 
 ## If something gets blocked
 
 - **A device at home gets "Forbidden" on an app's page.** It tripped an exploit rule with that one request. Nothing is banned, so the next normal request works. If it keeps happening, add the device to the trusted list.
-- **A friend outside your network is banned.** Someone with access to the Spark can lift it. The [deploy guide](../deploy/crowdsec.mdx#everyday-commands) has the one-line command.
-- **Every app shows a 404 after an update.** That points at the gateway rather than a ban. See [Gateway protection for operators](../deploy/crowdsec.mdx#fail-open-behaviour).
+- **A friend outside your network is banned.** Find their address under **Bans** and choose **Unban…**.
+- **Every app shows a 404 after an update.** That points at the gateway, not a ban. See [Gateway protection for operators](../deploy/crowdsec.mdx#fail-open-behaviour).
 
-If CrowdSec itself stops, your apps keep working. They are just unguarded until it comes back.
+If CrowdSec stops, or its server is off, your apps keep working. They are just unguarded until it comes back, and the page says so.

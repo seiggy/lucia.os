@@ -23,6 +23,11 @@ public sealed partial class StackStore
     internal const string OtlpPrefix = "LUCIA_OTLP_";
     /// <summary>The Observability app's extra collector config and SNMP credentials for the lab map's UniFi devices.</summary>
     internal const string LabPrefix = "LUCIA_LAB_";
+    /// <summary>
+    /// CrowdSec's TLS certificate, safe harbor and Console enroll key in its own environment, and the collector config that
+    /// forwards the gateway's access log to it in the Observability app's.
+    /// </summary>
+    internal const string CrowdSecPrefix = "LUCIA_CROWDSEC_";
 
     /// <summary>Every installed catalog app that signs in through Lucia, with its client secret.</summary>
     internal async Task<(string Stack, AppSso Sso, string Secret)[]> SsoApps(CancellationToken ct) =>
@@ -60,12 +65,46 @@ public sealed partial class StackStore
         finally { _gate.Release(); }
     }
 
-    /// <summary>The stack's sign-in, telemetry and lab map variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
+    /// <summary>The stack's sign-in, telemetry, lab map and CrowdSec variables, which Lucia sets and keeps when its catalog app re-renders.</summary>
     internal static string LuciaLines(string env) =>
         string.Concat(env.Split('\n').Where(line => line.StartsWith(SsoPrefix, StringComparison.Ordinal) || line.StartsWith(OtlpPrefix, StringComparison.Ordinal)
                 || line.StartsWith(LabPrefix, StringComparison.Ordinal) || line.StartsWith(S3Prefix, StringComparison.Ordinal)
-                || line.StartsWith(StoragePrefix, StringComparison.Ordinal))
+                || line.StartsWith(StoragePrefix, StringComparison.Ordinal) || line.StartsWith(CrowdSecPrefix, StringComparison.Ordinal))
             .Select(line => line + "\n"));
+
+    /// <summary>What the stack API shows instead of a value only Lucia uses.</summary>
+    internal const string KeptByLucia = "[kept by Lucia]";
+
+    /// <summary>
+    /// Variables whose values Lucia generates and uses itself and nobody needs to read: CrowdSec's TLS key, enroll key and
+    /// collector token anywhere, and in a CrowdSec stack (catalog or converted) its bouncer key, machine password and intake token.
+    /// </summary>
+    internal static HashSet<string> ManagedSecrets(StoredStack stack, string env)
+    {
+        var keys = StackCatalog.ReadEnv(env).Keys.Where(key => key is CrowdSecPrefix + "TLS_KEY" or CrowdSecPrefix + "ENROLL_KEY" or CrowdSecPrefix + "TOKEN")
+            .ToHashSet(StringComparer.Ordinal);
+        if (stack.Manifest.Template?.Id == CrowdSecApp.AppId || stack.Compose.Contains("image: crowdsecurity/crowdsec:", StringComparison.Ordinal))
+            keys.UnionWith(StackCatalog.ReadEnv(env).Keys.Where(key => key is CrowdSecApp.GatewayKey or CrowdSecApp.MachinePassword or CrowdSecApp.IntakeToken));
+        return keys;
+    }
+
+    private static string EnvKey(string line) => line.Split('=', 2)[0].Trim();
+
+    /// <summary>The environment as the browser and the assistant see it: <paramref name="keys"/> keep their names, not their values.</summary>
+    internal static string Mask(string env, IReadOnlySet<string> keys) => keys.Count == 0 ? env
+        : string.Join('\n', env.Split('\n').Select(line => line.Contains('=') && keys.Contains(EnvKey(line)) ? $"{EnvKey(line)}={KeptByLucia}" : line));
+
+    /// <summary>
+    /// A saved environment with Lucia's own values put back: whatever was sent for <paramref name="keys"/> (the mask, a new value or
+    /// nothing) is replaced by what <paramref name="previous"/> holds, so saving the app can neither drop nor change them.
+    /// </summary>
+    internal static string KeepManaged(string submitted, string previous, IReadOnlySet<string> keys)
+    {
+        if (keys.Count == 0) return submitted;
+        var kept = string.Join('\n', submitted.Split('\n').Where(line => !(line.Contains('=') && keys.Contains(EnvKey(line)))));
+        var managed = string.Concat(previous.Split('\n').Where(line => line.Contains('=') && keys.Contains(EnvKey(line))).Select(line => line + "\n"));
+        return managed.Length == 0 ? kept : kept.Length == 0 || kept.EndsWith('\n') ? kept + managed : $"{kept}\n{managed}";
+    }
 }
 
 /// <summary>

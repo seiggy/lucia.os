@@ -575,10 +575,162 @@ def checks(folder):
         w.remove(p, directory, removal)  # already gone: just acknowledged
         assert p.deletes == 1 and not removal.exists()
     put(journal_path, journal_bytes)
+    app_checks(folder, root_pem)
     if sys.platform == "linux":
         filesystem_checks(folder, directory, p, value)
     else:
         print("SKIP: Linux dirfd ownership/symlink/FIFO/lock/queue-bound checks (run on Linux).")
+
+
+def app_checks(folder, root_pem):
+    """App certificates: request shape, the host's stack and node records as authority, CSR and chain rules, transport."""
+    base = folder / "app"
+    for name in ("", "identity", "identity/certificates", "nodes", "nodes/identities", "nodes/app-certificate-requests",
+                 "nodes/app-certificate-responses", "stacks", "domains"):
+        (base / name).mkdir(mode=0o700, exist_ok=True)
+    address = "192.168.1.20"
+    openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", base / "app.key")
+    assert w.APP_TEMPLATES == frozenset({"crowdsec"})
+    name = "crowdsec.lab.example.com"
+    openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=lucia-app-crowdsec",
+            "-addext", "subjectAltName=DNS:" + name, "-out", base / "app.csr")
+    openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=lucia-app-crowdsec",
+            "-addext", "subjectAltName=IP:" + address + ",DNS:" + name, "-out", base / "ip.csr")
+    openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=lucia-app-crowdsec",
+            "-addext", "subjectAltName=DNS:lucia.lab.example.com", "-out", base / "dns.csr")
+    openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=lucia-app-crowdsec",
+            "-addext", "subjectAltName=DNS:" + name + ",DNS:extra.lab.example.com", "-out", base / "extra.csr")
+    openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=" + NODE,
+            "-addext", "subjectAltName=DNS:" + name, "-out", base / "node.csr")
+    put(base / "app.ext", "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+        "extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:" + name + "\n")
+    put(base / "ip.ext", "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+        "extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=IP:" + address + ",DNS:" + name + "\n")
+    openssl("x509", "-req", "-in", base / "ip.csr", "-CA", folder / "int.crt", "-CAkey", folder / "int.key",
+            "-set_serial", "41", "-days", "7", "-extfile", base / "ip.ext", "-out", base / "ip.crt")
+    openssl("x509", "-req", "-in", base / "app.csr", "-CA", folder / "int.crt", "-CAkey", folder / "int.key",
+            "-set_serial", "40", "-days", "7", "-extfile", base / "app.ext", "-out", base / "app.crt")
+    chain = (base / "app.crt").read_text() + (folder / "int.crt").read_text()
+    value = {"schemaVersion": 1, "stack": "crowdsec", "nodeId": NODE, "address": address,
+             "csrPem": (base / "app.csr").read_text(), "expiresAt": (w.now() + datetime.timedelta(minutes=10)).isoformat()}
+    assert w.app_request(copy.deepcopy(value), "crowdsec") == value
+    for changes, stack in (({"stack": "other"}, "crowdsec"), ({"address": "203.0.113.7"}, "crowdsec"), ({"address": "8.8.8.8"}, "crowdsec"), ({"address": "100.64.0.1"}, "crowdsec"),
+                           ({"address": "127.0.0.1"}, "crowdsec"), ({"address": "169.254.1.1"}, "crowdsec"),
+                           ({"address": "fd00::1"}, "crowdsec"), ({"address": "192.168.001.020"}, "crowdsec"),
+                           ({"nodeId": "not-a-guid"}, "crowdsec"), ({"schemaVersion": 2}, "crowdsec"),
+                           ({"expiresAt": (w.now() + datetime.timedelta(hours=2)).isoformat()}, "crowdsec"),
+                           ({"extra": True}, "crowdsec"), ({"stack": "Bad_Name"}, "Bad_Name")):
+        rejected(lambda: w.app_request({**value, **changes}, stack))
+
+    p = Fake(base / "identity", root_pem, chain)
+    stack = {"name": "crowdsec", "node": "node-one", "manifest": {"schemaVersion": 1, "placement": {},
+             "template": {"id": "crowdsec", "version": 1}, "names": ["crowdsec"]}, "move": None, "restore": None}
+    identity = {"nodeId": NODE, "hostname": "node-one", "address": address}
+    profile = {"schemaVersion": 1, "profileId": ENTRY}
+    job = {"id": ENTRY, "plan": {"naming": {"domain": "example.com", "namespace": "lab.example.com",
+           "localHostnames": ["lucia.lab.example.com", "auth.lab.example.com", "spark.lab.example.com"]}}}
+
+    def records(stacks=None, node=None, active=None, workflow=None):
+        put(base / "stacks" / "stacks.json", json.dumps({"schemaVersion": 1, "stacks": [stack] if stacks is None else stacks}))
+        put(base / "nodes" / "identities" / (NODE + ".json"), json.dumps(identity if node is None else node))
+        put(base / "domains" / "active.json", json.dumps(profile if active is None else active))
+        put(base / "domains" / "workflow.json", json.dumps({"version": 1, "plan": None, "job": job if workflow is None else workflow}))
+
+    def named(*names):
+        return [{**stack, "manifest": {**stack["manifest"], "names": list(names)}}]
+
+    records()
+    assert w.authorize_app(p, value) == name
+    records(named("guard"))
+    assert w.authorize_app(p, value) == "guard.lab.example.com"
+    naming = job["plan"]["naming"]
+    for stacks, node, active, workflow in (
+            ([], None, None, None), ([{**stack, "manifest": {**stack["manifest"], "template": {"id": "observability"}}}], None, None, None),
+            ([{**stack, "move": {"from": "node-one", "to": "node-two"}}], None, None, None), ([{**stack, "restore": {"id": ENTRY}}], None, None, None),
+            ([{**stack, "node": "node-two"}], None, None, None), ([stack, stack], None, None, None), (None, {**identity, "address": "192.168.1.21"}, None, None),
+            (None, {**identity, "hostname": "node-two"}, None, None), (None, {**identity, "nodeId": TASK}, None, None),
+            # The name comes from the stack's own manifest and the active domain, never from the request.
+            (named(), None, None, None), (named("crowdsec", "other"), None, None, None), (named("Bad_Label"), None, None, None),
+            (named("lucia"), None, None, None), (named("node-one"), None, None, None), (named("a.b"), None, None, None),
+            ([{**stack, "manifest": {k: v for k, v in stack["manifest"].items() if k != "names"}}], None, None, None),
+            (None, None, {**profile, "profileId": TASK}, None), (None, None, None, {**job, "id": TASK}),
+            (None, None, None, {**job, "plan": {"naming": {**naming, "namespace": "Lab.Example.com"}}}),
+            (None, None, None, {**job, "plan": {"naming": {**naming, "namespace": "localhost"}}}),
+            (None, None, None, {**job, "plan": {"naming": {**naming, "localHostnames": None}}})):
+        records(stacks, node, active, workflow)
+        rejected(lambda: w.authorize_app(p, value))
+    records(None, None, None, {**job, "plan": {"naming": {**naming, "localHostnames": [name]}}})
+    rejected(lambda: w.authorize_app(p, value))
+    (base / "domains" / "active.json").unlink()
+    rejected(lambda: w.authorize_app(p, value))
+    records()
+    p.settings["public_host"] = address
+    rejected(lambda: w.authorize_app(p, value))
+    p.settings["public_host"] = "original.example"
+
+    spki = w.validate_app_csr(p, value, name)
+    for csr in ("dns.csr", "node.csr", "ip.csr", "extra.csr"):
+        rejected(lambda: w.validate_app_csr(p, {**value, "csrPem": (base / csr).read_text()}, name))
+    rejected(lambda: w.validate_app_csr(p, value, "other.lab.example.com"))
+    assert w.inspect_app_certificate(chain, value, spki, name) <= w.now() + w.MAX_LIFETIME
+    rejected(lambda: w.inspect_app_certificate(chain, value, spki, "other.lab.example.com"))
+    rejected(lambda: w.inspect_app_certificate((base / "ip.crt").read_text() + (folder / "int.crt").read_text(), value, spki, name))
+    rejected(lambda: w.inspect_app_certificate(chain, value, spki[:-1] + bytes([spki[-1] ^ 1]), name))
+    rejected(lambda: w.inspect_app_certificate((base / "app.crt").read_text(), value, spki, name))
+
+    # Signing uses the fixed provisioner and mount paths, verifies the chain for the name, and leaves no files behind.
+    csr_hash = hashlib.sha256(value["csrPem"].encode()).hexdigest()
+    workspace = base / "identity" / "certificates" / "app-certificates" / "crowdsec"
+    commands = []
+
+    def native(command, *, check=True, input_text=None, cwd=None):
+        commands.append(command)
+        if command[0] == "openssl":
+            executed = openssl(*command[1:], input_text=input_text, check=False)
+            if check and executed.returncode:
+                raise w.Unsupported(w.UNSUPPORTED)
+            return executed
+        assert command == ["docker", "exec", "lucia-identity-ca", "step", "ca", "sign",
+                           "/certificates/app-certificates/crowdsec/" + csr_hash + ".csr",
+                           "/certificates/app-certificates/crowdsec/" + csr_hash + ".crt",
+                           "--provisioner", "lucia-installer", "--provisioner-password-file", "/run/secrets/ca-password",
+                           "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt",
+                           "--not-after", "168h", "--force"]
+        w.write_file(workspace / (csr_hash + ".crt"), p.chain)
+        return result()
+
+    p.run = native
+    assert w.process_app(p, value) == chain
+    assert any(command[:2] == ["openssl", "verify"] and command[command.index("-verify_hostname") + 1] == name for command in commands)
+    assert not list(workspace.iterdir())
+    p.chain = (folder / "leaf.crt").read_text() + (folder / "int.crt").read_text()
+    rejected(lambda: w.process_app(p, value))
+    p.chain = chain
+
+    # The queue answers once per request snapshot; a refusal names no internals.
+    path = base / "nodes" / "app-certificate-requests" / "crowdsec.json"
+    response = base / "nodes" / "app-certificate-responses" / "crowdsec.json"
+    put(path, json.dumps(value))
+    p.load_scoped = Mock(return_value=base / "nodes")
+    with patch.object(w, "lease", side_effect=lambda _: contextlib.nullcontext()):
+        w.handle_app(p, base / "nodes", path)
+        answer = json.loads(response.read_text())
+        assert answer["success"] is True and answer["certificatePem"] == chain and answer["stack"] == "crowdsec"
+        assert answer["requestHash"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        signed = len(commands)
+        w.handle_app(p, base / "nodes", path)
+        assert len(commands) == signed
+        records([])
+        put(path, json.dumps({**value, "expiresAt": (w.now() + datetime.timedelta(minutes=9)).isoformat()}))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            w.handle_app(p, base / "nodes", path)
+        answer = json.loads(response.read_text())
+        assert answer["success"] is False and answer["certificatePem"] is None and answer["message"] == w.APP_FAILURE
+        assert "app-certificate-failed" in output.getvalue()
+    assert [item.name for item in w.app_candidates(base / "nodes" / "app-certificate-requests")] == ["crowdsec.json"]
+    put(base / "nodes" / "app-certificate-requests" / "Bad.json", "{}")
+    assert [item.name for item in w.app_candidates(base / "nodes" / "app-certificate-requests")] == ["crowdsec.json"]
 
 
 def filesystem_checks(folder, directory, p, value):
@@ -646,6 +798,6 @@ if __name__ == "__main__":
                 stack.enter_context(patch.object(w, "regular", side_effect=lambda p, maximum=32768: p.read_bytes()))
                 stack.enter_context(patch.object(w, "safe_bytes", side_effect=lambda p, maximum=32768, **kwargs: p.read_bytes()))
             checks(folder)
-        print("PASS: scoped node enrollment protocol, PKI, LDAP ownership, renewal, recovery, dedup and redaction. No live services.")
+        print("PASS: scoped node enrollment protocol, PKI, LDAP ownership, renewal, recovery, dedup, redaction and app certificates. No live services.")
     finally:
         shutil.rmtree(folder)

@@ -29,12 +29,9 @@ SECRET_NAMES = (
     "identity-db-password", "authentik-secret-key", "authentik-admin-password",
     "authentik-bootstrap-token", "ldap-admin-password", "authentik-ldap-password", "ca-password",
 )
-# Secrets added after the first release. An existing installation gets them once, on its next run: the CrowdSec engine
-# registers whatever bouncer key it is given, so creating one late loses nothing. All other credentials are never regenerated.
-LATE_SECRET_NAMES = ("crowdsec-bouncer-key",)
 CONTAINERS = (
     "lucia-identity-db", "lucia-identity-ca", "lucia-identity-ldap", "lucia-identity-server",
-    "lucia-identity-worker", "lucia-identity-gateway", "lucia-identity-renewer", "lucia-identity-crowdsec",
+    "lucia-identity-worker", "lucia-identity-gateway", "lucia-identity-renewer",
 )
 BASE_DN = "dc=lucia,dc=home,dc=arpa"
 # The gateway's CrowdSec bouncer, loaded by Traefik as a local plugin. Go module zips are byte-stable, so the plugin and the two
@@ -51,7 +48,6 @@ PLUGIN_ARCHIVES = (  # module, version, zip SHA-256, where it goes below the plu
      "vendor/github.com/maxlerebourg/simpleredis"),
 )
 PLUGIN_TREE_SHA256 = "8a141217a402fcccb015d7a9b3bef1d1ee078f640df2b2b305985058653e5d90"
-CROWDSEC_FILES = ("start.sh", "profiles.yaml", "acquis.yaml", "config.yaml.local")
 
 
 class IdentityReadinessError(RuntimeError):
@@ -245,7 +241,7 @@ class Provisioner:
                 if directory.exists() and any(directory.iterdir()):
                     raise RuntimeError(f"Existing {path} data has no installation record. Restore its settings and secrets; refusing to initialize over it.")
         for path in ("secrets", "ca", "certificates", "trust", "config", "gateway", "ldap/data", "ldap/config", "deployment",
-                     "config/crowdsec", "gateway/security", "access-logs", "crowdsec/enroll", "plugins-local"):
+                     "gateway/security", "plugins-local"):
             directory = self.state / path
             if not directory.exists():
                 directory.mkdir(parents=True, mode=0o700)
@@ -263,23 +259,9 @@ class Provisioner:
                 raise RuntimeError(f"Secret {name} is unexpectedly short.")
             os.chmod(path, 0o600)
             self.values[name] = value
-        for name in LATE_SECRET_NAMES:
-            path = self.state / "secrets" / name
-            if path.is_symlink():
-                raise RuntimeError(f"Secret file is a symbolic link: {name}")
-            if not path.exists():
-                with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
-                    output.write(secrets.token_urlsafe(48))
-            value = path.read_text().rstrip("\r\n")
-            if len(value) < 32:
-                raise RuntimeError(f"Secret {name} is unexpectedly short.")
-            os.chmod(path, 0o600)
-            self.values[name] = value
         write_file(settings_path, json.dumps(self.settings, indent=2) + "\n")
         for name in ("start-ca.sh", "renew-certificate.sh", "init_org_tree.ldif", "init_org_entries.ldif"):
             write_file(self.state / "config" / name, (ROOT / "deployment/identity" / name).read_text(encoding="utf-8"))
-        for name in CROWDSEC_FILES:
-            write_file(self.state / "config/crowdsec" / name, (ROOT / "deployment/identity/crowdsec" / name).read_text(encoding="utf-8"))
         write_file(self.state / "trust" / "install-node-trust.sh",
                    (ROOT / "deployment/identity/install-node-trust.sh").read_text(encoding="utf-8"), 0o644)
         self.gateway_files()
@@ -321,7 +303,7 @@ class Provisioner:
         # untrusted client's X-Forwarded-*, but not RFC 7239 Forwarded or these older scheme headers, which apps also read.
         # deploy() writes these too, so a gateway restarted with the new static configuration always finds the middleware.
         # The CrowdSec middlewares the entrypoints also name (gateway/security/crowdsec.yml) are written by the identity
-        # AppHost on every publish and deploy, from the same inputs the server uses when the owner edits the safe harbor.
+        # AppHost on every publish and deploy, as empty chains; the server points them at the CrowdSec app once it's healthy.
         forwarded = {name: "" for name in ("Forwarded", "X-Forwarded-Ssl", "X-Forwarded-Scheme", "X-Url-Scheme",
                                            "X-Original-Url", "X-Rewrite-Url")}
         routes = {
@@ -353,10 +335,6 @@ class Provisioner:
             self.values[name] = path.read_text().rstrip("\r\n")
             if len(self.values[name]) < 32:
                 raise RuntimeError(f"Secret {name} is unexpectedly short.")
-        for name in LATE_SECRET_NAMES:
-            path = self.state / "secrets" / name
-            if path.is_file() and not path.is_symlink():
-                self.values[name] = path.read_text().rstrip("\r\n")
 
     def collision_check(self):
         for name in CONTAINERS:
@@ -588,10 +566,8 @@ class Provisioner:
     def verify(self):
         from owner import load_owner, owner_identity
 
-        # CrowdSec fails open: the gateway serves without it, so identity readiness doesn't wait for it.
         for name in CONTAINERS:
-            if name != "lucia-identity-crowdsec":
-                self.wait_container(name, timeout=30)
+            self.wait_container(name, timeout=30)
         self.check_ldap_tls()
         source = self.api("GET", "/api/v3/sources/ldap/lucia-ldap/")
         if (source["base_dn"] != self.settings["ldap_base_dn"] or not source.get("peer_certificate")

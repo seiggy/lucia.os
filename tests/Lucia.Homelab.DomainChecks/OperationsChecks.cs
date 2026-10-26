@@ -91,6 +91,12 @@ internal static class OperationsChecks
                 [new Lucia.Homelab.Server.Stacks.ActiveRoute("obs", new("grafana", 3030), "192.168.1.172")]);
             check(routed.Contains(new AdGuardRewrite("grafana.lab.example.com", plan.IngressAddress)) && routed.Length == 2,
                 "An app's web address must point at Lucia's gateway, not at the app's server.");
+            var direct = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(naming, [new("node1", "192.168.1.172")], plan.IngressAddress,
+                [new Lucia.Homelab.Server.Stacks.ActiveRoute("obs", new("grafana", 3030), "192.168.1.172")], null, null,
+                [("crowdsec", "192.168.1.172"), ("outside", "8.8.8.8"), ("grafana", "192.168.1.172")]);
+            check(direct.Contains(new AdGuardRewrite("crowdsec.lab.example.com", "192.168.1.172")) && direct.Length == 2
+                && !direct.Any(record => record.Domain.StartsWith("grafana.", StringComparison.Ordinal) || record.Answer == "8.8.8.8"),
+                "An app's direct name must point straight at its server, never at a public address, and never win over a clashing route.");
             var state = Path.Combine(root, "nodes", "dns-records.json");
             var dns = new WritableDns { Entries = [new("taken.lab.example.com", "192.168.1.50")] };
             await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(dns, state, wanted, default);

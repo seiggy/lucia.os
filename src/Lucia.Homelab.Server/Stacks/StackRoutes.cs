@@ -45,6 +45,14 @@ public sealed partial class StackStore
             .. (await ExternalRoutes(ct)).Select(route => new ActiveRoute(ExternalOwner, new(route.Host, route.Port, null, route.Public), route.Address))];
     }
 
+    /// <summary>Every app's direct names (<see cref="StackManifest.Names"/>) with the current address of the server it runs on.</summary>
+    public async Task<(string Stack, string Name, string Address)[]> ActiveNames(CancellationToken ct)
+    {
+        var addresses = (await nodes.Addresses(ct)).GroupBy(item => item.Hostname).ToDictionary(group => group.Key, group => group.First().Address);
+        return [.. (await Read(ct)).SelectMany(stack => (stack.Manifest.Address ?? addresses.GetValueOrDefault(stack.Assigned)) is { } address
+            ? (stack.Manifest.Names ?? []).Select(name => (stack.Name, name, address)) : [])];
+    }
+
     public async Task<ExternalRoute[]> ExternalRoutes(CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
@@ -66,7 +74,8 @@ public sealed partial class StackStore
         {
             var stacks = ReadUnlocked();
             var valid = await Valid([.. (routes ?? []).Select(route => new StackRoute(route.Host, route.Port, null, route.Public))],
-                stacks.SelectMany(stack => (stack.Manifest.Routes ?? []).Select(route => (stack.Name, route))), ct) ?? [];
+                stacks.SelectMany(stack => (stack.Manifest.Routes ?? []).Select(route => (stack.Name, route))), ct,
+                stacks.SelectMany(stack => (stack.Manifest.Names ?? []).Select(item => (stack.Name, item)))) ?? [];
             ExternalRoute[] saved = [.. valid.Select((route, index) => new ExternalRoute(route.Host, routes![index].Address, route.Port, route.Public))
                 .OrderBy(route => route.Host, StringComparer.Ordinal)];
             await DomainOnboardingStore.WriteJson(ExternalPath, new ExternalRouteFile(1, saved), ct);
@@ -90,13 +99,41 @@ public sealed partial class StackStore
     {
         if (routes is { Length: > MaxRoutes }) throw new HardwareOnboardingException(400, "too_many_routes", $"An app has up to {MaxRoutes} web addresses.");
         return Valid(routes, stacks.Where(stack => stack.Name != name).SelectMany(stack => (stack.Manifest.Routes ?? []).Select(route => (stack.Name, route)))
-            .Concat(ReadExternalUnlocked().Select(route => ("an outside service", new StackRoute(route.Host, route.Port, null, route.Public)))), ct);
+            .Concat(ReadExternalUnlocked().Select(route => ("an outside service", new StackRoute(route.Host, route.Port, null, route.Public)))), ct,
+            stacks.Where(stack => stack.Name != name).SelectMany(stack => (stack.Manifest.Names ?? []).Select(item => (stack.Name, item))));
     }
 
-    private async Task<StackRoute[]?> Valid(StackRoute[]? routes, IEnumerable<(string Owner, StackRoute Route)> others, CancellationToken ct)
+    /// <summary>
+    /// A catalog app's direct names, checked like web addresses: each a DNS label that no app route, other app's name, server or
+    /// Lucia itself uses. A new app that has them needs an active domain, since they only exist under it.
+    /// </summary>
+    /// <summary>A new app with direct names can't be installed before a domain is active: its names only exist under the domain.</summary>
+    internal static void RequireDomain(CatalogApp app, DomainNamingPlan? naming, bool required)
+    {
+        if (naming is null && required)
+            throw new HardwareOnboardingException(409, "domain_required",
+                $"{app.Name} needs your lab's domain: the gateway reaches it by a name under the domain, with a certificate from Lucia's own authority. Set up your domain on the Domains page first.");
+    }
+
+    private async Task<string[]?> ValidNames(string[]? names, string name, IEnumerable<StoredStack> stacks, CatalogApp app, bool required, CancellationToken ct)
+    {
+        if (names is null || names.Length == 0) return null;
+        RequireDomain(app, await ManagedNodeDns.ActiveNaming(domains, ct), required);
+        var others = stacks.Where(stack => stack.Name != name).ToArray();
+        var routes = others.SelectMany(stack => (stack.Manifest.Routes ?? []).Select(route => (stack.Name, route)))
+            .Concat(ReadExternalUnlocked().Select(route => ("an outside service", new StackRoute(route.Host, route.Port, null, route.Public))));
+        // The names share every check of a web address on port 80; only the label survives.
+        var checkedNames = await Valid([.. names.Select(item => new StackRoute(item, 80))], routes, ct,
+            others.SelectMany(stack => (stack.Manifest.Names ?? []).Select(item => (stack.Name, item))));
+        return [.. checkedNames!.Select(route => route.Host)];
+    }
+
+    private async Task<StackRoute[]?> Valid(StackRoute[]? routes, IEnumerable<(string Owner, StackRoute Route)> others, CancellationToken ct,
+        IEnumerable<(string Owner, string Name)>? direct = null)
     {
         if (routes is null || routes.Length == 0) return null;
         var other = others.ToArray();
+        var named = (direct ?? []).ToArray();
         var naming = await ManagedNodeDns.ActiveNaming(domains, ct);
         var taken = (await nodes.Names(ct)).Select(item => item.Hostname.ToLowerInvariant())
             .Concat((naming?.LocalHostnames ?? []).Select(fqdn => fqdn.Split('.')[0].ToLowerInvariant())).ToHashSet(StringComparer.Ordinal);
@@ -116,6 +153,8 @@ public sealed partial class StackStore
                 throw new HardwareOnboardingException(400, "invalid_route", $"{host} is listed twice.");
             if (other.FirstOrDefault(item => item.Route.Host == host) is { Owner: { } owner })
                 throw new HardwareOnboardingException(409, "route_in_use", $"{owner} already uses {host}.");
+            if (named.FirstOrDefault(item => item.Name == host) is { Owner: { } holder })
+                throw new HardwareOnboardingException(409, "route_in_use", $"{holder} already uses {host}.");
             if (taken.Contains(host))
                 throw new HardwareOnboardingException(409, "route_in_use", $"{host} is already one of Lucia's own names.");
             var name = string.IsNullOrWhiteSpace(route.Public) ? null : route.Public.Trim().ToLowerInvariant();
@@ -170,8 +209,8 @@ public sealed partial class StackStore
 
     private void NoticeRoutes(IEnumerable<StoredStack> stacks)
     {
-        var key = string.Join(";", stacks.Where(stack => stack.Manifest.Routes is { Length: > 0 })
-            .Select(stack => stack.Name + "@" + stack.Assigned + ":" + JsonSerializer.Serialize(stack.Manifest.Routes)));
+        var key = string.Join(";", stacks.Where(stack => stack.Manifest.Routes is { Length: > 0 } || stack.Manifest.Names is { Length: > 0 })
+            .Select(stack => stack.Name + "@" + stack.Assigned + ":" + JsonSerializer.Serialize(stack.Manifest.Routes) + JsonSerializer.Serialize(stack.Manifest.Names)));
         if (Interlocked.Exchange(ref _routeKey, key) != key) RoutesChanged?.Invoke();
     }
 

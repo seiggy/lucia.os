@@ -32,6 +32,11 @@ export interface CatalogServer { nodeId: string; hostname: string; unmet: string
 export interface CatalogApp {
   id: string; version: number; name: string; summary: string; needs: string; require: string[]; fields: CatalogField[]
   serverBound: boolean; usesAddress: boolean; onSpark: boolean; servers: CatalogServer[]
+  /** Apps that must be installed first, and why; Lucia refuses the install until they are. */
+  /** Apps this one needs; current is false when the installed copy is older than this app works with. */
+  requires: { id: string; name: string; installed: boolean; current: boolean }[]; requiresWhy: string | null
+  /** Lucia runs one copy at most. */
+  single: boolean
 }
 /** The Spark's on-demand GitHub Actions runner. `stopsAt` is when it stops itself if no job starts. */
 export interface SparkRunner {
@@ -203,12 +208,26 @@ export function parseSparkRunner(value: unknown): SparkRunner {
   }
 }
 
+/** Why the app can't be installed yet because an app it needs isn't installed or is too old, or null. */
+export function requirementProblem(app: Pick<CatalogApp, 'requires' | 'requiresWhy'>): string | null {
+  const why = app.requiresWhy ? ' ' + app.requiresWhy : ''
+  const missing = app.requires.filter(item => !item.installed)
+  if (missing.length > 0) return `Install ${missing.map(item => item.name).join(' and ')} first.${why}`
+  const old = app.requires.filter(item => !item.current)
+  return old.length === 0 ? null : `Update ${old.map(item => item.name).join(' and ')} first: open it under Apps and choose Update.${why}`
+}
+
 export function parseCatalog(value: unknown): CatalogApp[] {
   return list(object(value).apps, entry => {
     const app = object(entry)
     return { id: text(app.id), version: integer(app.version), name: text(app.name), summary: text(app.summary), needs: text(app.needs),
       require: list(app.require, text, 16), serverBound: app.serverBound === true, usesAddress: app.usesAddress === true,
-      onSpark: app.runsOnSpark === true,
+      onSpark: app.runsOnSpark === true, single: app.single === true, requiresWhy: optional(app.requiresWhy),
+      requires: absent(app.requires) ? [] : list(app.requires, item => {
+        const row = object(item)
+        if (typeof row.installed !== 'boolean' || (!absent(row.current) && typeof row.current !== 'boolean')) throw invalid()
+        return { id: text(row.id), name: text(row.name), installed: row.installed, current: row.current !== false }
+      }, 8),
       fields: list(app.fields, field => {
         const row = object(field)
         if (row.kind !== 'port' && row.kind !== 'text' && row.kind !== 'gpus' && row.kind !== 'choice' && row.kind !== 'secret' && row.kind !== 'hidden' && row.kind !== 'range') throw invalid()

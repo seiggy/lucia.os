@@ -105,7 +105,18 @@ Scrape and collection interval is 30 seconds.
 
 ### On the Spark
 
-The installer runs a relay container with `node-exporter` beside the controller. It has no Observability credentials. It posts to the controller at `/api/host/telemetry/relay/v1/{traces|metrics|logs}` with an `X-Lucia-Relay` token generated into `relay-token` in `Telemetry:RelayDirectory`. The controller forwards to wherever Observability runs now, so moving the app doesn't break the Spark's feed. The gateway's access logs take the same path, with credentials and query strings dropped, and the same records also go to a JSON file for CrowdSec. The Spark's relay also scrapes CrowdSec's metrics from `127.0.0.1:19060` as the `crowdsec` job. See [Gateway protection](./crowdsec.mdx).
+The installer runs a relay container with `node-exporter` beside the controller. It has no Observability credentials. It posts to the controller at `/api/host/telemetry/relay/v1/{traces|metrics|logs}` with an `X-Lucia-Relay` token generated into `relay-token` in `Telemetry:RelayDirectory`. The controller forwards to wherever Observability runs now, so moving the app doesn't break the Spark's feed. The gateway's access logs take the same path, with credentials and query strings dropped. While a CrowdSec app runs, the Observability collector also forwards those records to it (see below). CrowdSec's metrics come from the server it runs on: that server's relay scrapes them on loopback as the `crowdsec` job. See [Gateway protection](./crowdsec.mdx).
+
+### Forwarding the gateway's log to CrowdSec
+
+The collector loads a third config from its environment, `--config=env:LUCIA_CROWDSEC_COLLECTOR`, next to the lab map's SNMP one. Both are empty until Lucia fills them, and the health check validates all three. While a CrowdSec app is installed, settled, running and holding its certificate, Lucia sets two variables on every Observability app:
+
+| Variable | Holds |
+|---|---|
+| `LUCIA_CROWDSEC_COLLECTOR` | One line of YAML, single-quoted so compose leaves it alone. It adds a `logs/crowdsec` pipeline that keeps only records whose `service.name` is `lucia-gateway`, stamps a `time` attribute, and sends them as OTLP/JSON to CrowdSec's log intake over TLS that trusts Lucia's root alone. |
+| `LUCIA_CROWDSEC_TOKEN` | The intake's shared secret. The collector expands it into the `X-Lucia-Intake` header itself, so it never sits in the config line. |
+
+A send that fails is dropped instead of retried (`retry_on_failure: {enabled: false}`, 5 second timeout). An engine that's down therefore loses its share of the log and nothing else; the Loki pipeline never waits on it. Changing either variable bumps the stack's revision, so the collector container restarts once.
 
 ## Storage and the metric tiers
 

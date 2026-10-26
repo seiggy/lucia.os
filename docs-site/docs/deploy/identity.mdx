@@ -28,8 +28,7 @@ The stack is separate from the Lucia host on purpose. Whoever compromises the po
 | `lucia-identity-ldap` | `vegardit/openldap` | The directory: people, groups, password hashes (Argon2), 14-character minimum policy. |
 | `lucia-identity-server` | `goauthentik/server:2026.8.3` | Sign-in (OIDC) and the web UI. |
 | `lucia-identity-worker` | `goauthentik/server:2026.8.3` | Authentik's background worker. Holds the bootstrap admin password and token. |
-| `lucia-identity-gateway` | `traefik:v3.7.16` | TLS front door for Authentik, LDAPS, the Lucia host and public routes. Runs the CrowdSec bouncer. |
-| `lucia-identity-crowdsec` | `crowdsecurity/crowdsec:v1.8.1` | Reads the gateway's access log, keeps the ban list and answers AppSec checks. See [Gateway protection](./crowdsec.mdx). |
+| `lucia-identity-gateway` | `traefik:v3.7.16` | TLS front door for Authentik, LDAPS, the Lucia host and public routes. Runs the CrowdSec bouncer, which asks the CrowdSec app on a managed server. See [Gateway protection](./crowdsec.mdx). |
 | `lucia-identity-renewer` | `smallstep/step-ca:0.30.2` | Renews the gateway's certificate. |
 
 Every image is pinned by digest in the AppHost, so a rebuild can't pull something different. Containers run with `restart: unless-stopped` and `no-new-privileges`, and carry the label `io.lucia.component=identity`. When the managed host is installed, the same compose project also runs `lucia-homelab-host`, the telemetry relay and its exporters, and, when boot is prepared, `lucia-boot`. See [Host server](../code/host-server.mdx) and [Installer](./installer.mdx).
@@ -71,18 +70,18 @@ Everything mutable sits outside the checkout, under one directory.
                            authentik-admin-password, authentik-bootstrap-token,
                            ldap-admin-password, authentik-ldap-password, ca-password,
                            host-owner-api-key, host-inference-api-key,
-                           host-oidc-client-secret, crowdsec-bouncer-key
-  ca/  certificates/       CA keys and the gateway's certificate
+                           host-oidc-client-secret
+  ca/  certificates/       CA keys and the gateway's certificate; app-certificates/ is the
+                           worker's scratch space while it signs a CrowdSec certificate
   trust/                   lucia-root-ca.crt, fingerprint.txt, install-node-trust.sh
-  config/  gateway/        LDIF seeds, renewal script, CrowdSec settings, Traefik file-provider config
+  config/  gateway/        LDIF seeds, renewal script, Traefik file-provider config
   plugins-local/           the verified CrowdSec bouncer plugin, mounted read-only into the gateway
-  access-logs/  crowdsec/  the gateway's JSON access log and the optional Console enroll key
   ldap/data  ldap/config   the directory
   owner.json  host-auth.json  host-settings.json  boot-settings.json
 ~/.local/share/lucia/host/data/   Lucia host state, mounted at /data in the host container
 ```
 
-Three Docker volumes hold Authentik's data and aren't part of that directory: `lucia-identity-postgres`, `lucia-authentik-data` and `lucia-authentik-media`. Two more hold CrowdSec's database and hub: `lucia-crowdsec-data` and `lucia-crowdsec-config`.
+Three Docker volumes hold Authentik's data and aren't part of that directory: `lucia-identity-postgres`, `lucia-authentik-data` and `lucia-authentik-media`.
 
 `provision.py` writes files atomically at mode `0600` and refuses to run if the state path is a symlink. The AppHost also rejects symbolic links in every path it reads, files over 64 KiB where it expects settings, and secrets readable by group or others.
 
@@ -159,7 +158,7 @@ Back up these together, encrypted:
 - A dump of Authentik's database (`docker exec lucia-identity-db pg_dump -U postgres authentik`), plus the `lucia-authentik-data` and `lucia-authentik-media` volumes.
 - `~/.local/share/lucia/host/data`, especially `data-protection`, which holds the key ring for every stored credential.
 
-The installer refuses to regenerate missing secrets. If something is gone, you restore it. The one exception is `crowdsec-bouncer-key`: an install from before CrowdSec gets it on its next run, and a lost one is simply created again, because the engine registers whatever key it's given. You don't quietly get a new CA that nothing trusts.
+The installer refuses to regenerate missing secrets. If something is gone, you restore it. You don't quietly get a new CA that nothing trusts.
 
 :::danger
 Don't run `aspire destroy` against a running identity install. Teardown can remove the Docker volumes that hold PostgreSQL and Authentik data. Aspire also derives volume names from the AppHost path, so moving the AppHost directory looks like a fresh install.

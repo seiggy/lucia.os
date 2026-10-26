@@ -9,7 +9,7 @@ import { bytes } from './sparkTelemetry'
 import {
   ago, appAddressProblem, appAddressState, backupFolderProblem, backupOrder, formatBytes, backupState, parseBackupRecovery, parseBackups,
   catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory, secretKey,
-  parseSparkRunner, sparkIdleProblem, sparkRunnerState,
+  parseSparkRunner, requirementProblem, sparkIdleProblem, sparkRunnerState,
   parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
   validateStackDraft,
 } from './stackManagement'
@@ -897,8 +897,9 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   const nameProblem = !stackNamePattern.test(nameValue) ? 'Use lowercase letters, digits and hyphens, starting with a letter.'
     : taken.includes(nameValue) ? `You already have an app called ${nameValue}.` : null
   const addressProblem = app.usesAddress ? appAddressProblem(address) : null
-  const problem = onSpark ? settingsProblem(app, settings) ?? sparkIdleProblem(idle)
-    : !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings) ?? addressProblem
+  const missing = requirementProblem(app)
+  const problem = missing ?? (onSpark ? settingsProblem(app, settings) ?? sparkIdleProblem(idle)
+    : !server ? 'Choose a server.' : nameProblem ?? settingsProblem(app, settings) ?? addressProblem)
 
   async function install(event: React.FormEvent) {
     event.preventDefault()
@@ -924,6 +925,8 @@ function InstallApp({ id, node: wanted, ...props }: Session & { id: string; node
   return <>
     {back}
     <div className="page-intro"><h1>Install {app.name}</h1><p>{app.summary}</p></div>
+    {missing && <p className="network-warning" role="status">{missing} {app.requires.filter(item => !item.installed).map(item =>
+      <a key={item.id} className="text-link" href={`#/apps/install/${item.id}`}>Install {item.name}</a>)}</p>}
     <section className="surface network-section">
       <form onSubmit={event => void install(event)}>
         <fieldset className="stack-install-servers" disabled={busy}>

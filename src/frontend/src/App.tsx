@@ -23,6 +23,7 @@ import { NotificationPrompt, NotificationSettings } from './NotificationSettings
 import { People } from './People'
 import { DomainOnboarding } from './DomainOnboarding'
 import { SparkUpdates } from './SparkUpdates'
+import { CrowdSec } from './CrowdSec'
 import { AppUpdates, Stacks } from './Stacks'
 import { routeDestination } from './navigation'
 import { useAuthentication } from './useAuthentication'
@@ -232,6 +233,7 @@ function App() {
   const content = route.page === 'home' ? <HomeOverview session={session} refreshSession={authentication.refresh} />
     : route.page === 'devices' || route.page === 'tasks' ? <HardwareOnboarding session={session} refreshSession={authentication.refresh} view={route.page} />
       : route.page === 'updates' ? <SparkUpdates session={session} refreshSession={authentication.refresh} />
+      : route.page === 'security' ? <CrowdSec session={session} refreshSession={authentication.refresh} />
       : route.page === 'map' ? <Suspense fallback={<div className="page-intro"><h1>Map</h1><p>Loading the lab map…</p></div>}><LabMap session={session} refreshSession={authentication.refresh} /></Suspense>
       : route.page === 'apps' ? <Stacks key={`${route.view}-${route.name ?? ''}`} session={session} refreshSession={authentication.refresh} view={route.view} name={route.name} node={route.node} />
       : route.page === 'settings' ? settings()

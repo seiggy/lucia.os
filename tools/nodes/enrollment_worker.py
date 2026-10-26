@@ -21,6 +21,10 @@ Fresh renewal requests must retain taskId, hostname, key and identical CSR bytes
 Certificates are issued for 7 days and reused until <6 days remain (so a node renews about once a day). Receipts survive partial operations;
 there is no automatic deletion, password reset, trust rotation or migration.
 
+The same worker signs app certificates (app-certificate-requests/<stack>.json): the one name a catalog app the gateway
+reaches over the LAN (CrowdSec) has under the active domain, checked against the host's stack, node and domain records.
+See APP_TEMPLATES.
+
 Prerequisites: existing owned identity stack, approved user linger, default
 lucia-installer JWK leaf template and a 168h maxTLSCertDuration claim (start-ca.sh sets it).
 step's default leaf template supplies digitalSignature and clientAuth/serverAuth:
@@ -35,6 +39,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -583,6 +588,219 @@ def handle(p, directory, path):
     }) + "\n")
 
 
+# App certificates: a catalog app the gateway reaches over the LAN (CrowdSec) serves a certificate from this CA for its name
+# under the lab's domain, which local DNS points straight at its server. The web host makes the key and asks in
+# host/data/nodes/app-certificate-requests/<stack>.json with EXACT keys: schemaVersion (1), stack (the stack's name), nodeId
+# (its server), address (that server's private IPv4 address), csrPem and expiresAt (UTC, future, at most 15 minutes). The
+# CSR's subject is CN=lucia-app-<stack> and its ONLY extension is the SAN: exactly one DNS name, <label>.<namespace>, where
+# label is the stack's own name from its manifest ("names", set by Lucia from the app's settings) and namespace is the
+# active domain's, read from host/data/domains (the workflow job that active.json names), never from the request. It is
+# signed only while host/data/stacks/stacks.json holds a settled stack of that name running an app in APP_TEMPLATES on that
+# server, the server's identity record names the same address, and the name isn't one of Lucia's own; never for the CA's
+# own host. Answers go to app-certificate-responses/<stack>.json with the leaf and intermediate.
+APP_TEMPLATES = frozenset({"crowdsec"})  # catalog apps that may have a certificate for their name
+APP_FIELDS = {"schemaVersion", "stack", "nodeId", "address", "csrPem", "expiresAt"}
+APP_STACK = re.compile(r"[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?")
+APP_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+APP_NAMESPACE = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+APP_SUCCESS = "App certificate signed."
+APP_FAILURE = ("Lucia's authority refused this app certificate request. It signs only for an app that runs, settled, "
+               "on the server whose address it names.")
+
+
+def app_request(value, stack):
+    require(isinstance(value, dict) and set(value) == APP_FIELDS)
+    require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1)
+    require(isinstance(stack, str) and APP_STACK.fullmatch(stack) is not None and value["stack"] == stack)
+    require(guid(value["nodeId"]) and isinstance(value["address"], str) and len(value["address"]) <= 15)
+    address = ipaddress.ip_address(value["address"])
+    require(address.version == 4 and str(address) == value["address"]
+            and any(address in ipaddress.ip_network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
+    require(isinstance(value["csrPem"], str) and len(value["csrPem"]) <= 16384)
+    require(isinstance(value["expiresAt"], str)
+            and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?(?:Z|\+00:00)", value["expiresAt"]) is not None)
+    expires = datetime.datetime.fromisoformat(value["expiresAt"].replace("Z", "+00:00"))
+    require(now() < expires <= now() + datetime.timedelta(minutes=15))
+    return value
+
+
+def active_naming(directory):
+    """The active domain's namespace and Lucia's own names, as the host reads them: the workflow job active.json names."""
+    domains = directory.parent / "domains"
+    profile = parse_json(safe_bytes(domains / "active.json", 16384))
+    workflow = parse_json(safe_bytes(domains / "workflow.json", 16 * 1024 * 1024))
+    require(isinstance(profile, dict) and isinstance(workflow, dict) and isinstance(workflow.get("job"), dict))
+    job = workflow["job"]
+    require(isinstance(profile.get("profileId"), str) and GUID.fullmatch(profile["profileId"]) and job.get("id") == profile["profileId"])
+    plan = job.get("plan")
+    naming = plan.get("naming") if isinstance(plan, dict) else None
+    require(isinstance(naming, dict) and isinstance(naming.get("namespace"), str) and len(naming["namespace"]) <= 200
+            and APP_NAMESPACE.fullmatch(naming["namespace"]) is not None)
+    local = naming.get("localHostnames")
+    require(isinstance(local, list) and all(isinstance(item, str) for item in local))
+    return naming["namespace"], set(local)
+
+
+def authorize_app(p, value):
+    """The stack, its server and its name, from the host's own state; the request alone is never authority."""
+    directory = p.load_scoped()
+    stacks = parse_json(safe_bytes(directory.parent / "stacks" / "stacks.json", 16 * 1024 * 1024))
+    require(isinstance(stacks, dict) and stacks.get("schemaVersion") == 1 and isinstance(stacks.get("stacks"), list))
+    found = [stack for stack in stacks["stacks"] if isinstance(stack, dict) and stack.get("name") == value["stack"]]
+    require(len(found) == 1)
+    stack = found[0]
+    manifest = stack.get("manifest")
+    require(isinstance(manifest, dict) and isinstance(manifest.get("template"), dict)
+            and manifest["template"].get("id") in APP_TEMPLATES)
+    require(stack.get("move") is None and stack.get("restore") is None)
+    placement = manifest.get("placement") if isinstance(manifest.get("placement"), dict) else {}
+    assigned = stack.get("node") or placement.get("node")
+    identity = parse_json(safe_bytes(directory / "identities" / (value["nodeId"] + ".json")))
+    require(isinstance(identity, dict) and identity.get("nodeId") == value["nodeId"])
+    require(isinstance(assigned, str) and identity.get("hostname") == assigned)
+    require(value["address"] in (identity.get("address"), manifest.get("address")))
+    require(value["address"] != p.settings["public_host"])
+    names = manifest.get("names")
+    require(isinstance(names, list) and len(names) == 1 and isinstance(names[0], str) and APP_LABEL.fullmatch(names[0]) is not None
+            and names[0] != assigned)
+    namespace, local = active_naming(directory)
+    name = names[0] + "." + namespace
+    require(len(name) <= 253 and name not in local and name != p.settings["public_host"])
+    return name
+
+
+def validate_app_csr(p, value, name):
+    blocks = pem_blocks(value["csrPem"], "CERTIFICATE REQUEST")
+    require(len(blocks) == 1)
+    items = tlvs(single(blocks[0], 0x30))
+    require(len(items) == 3 and items[0][0] == 0x30)
+    require(items[1][2] == bytes.fromhex("300a06082a8648ce3d040302") and items[2][0] == 3)
+    info = tlvs(items[0][1])
+    require(len(info) == 4 and info[0][:2] == (2, b"\x00") and info[3][0] == 0xa0)
+    subject(info[1][2], "lucia-app-" + value["stack"])
+    public_key(info[2][2], hashlib.sha256(info[2][2]).hexdigest())
+    attribute = tlvs(single(info[3][1], 0x30))
+    require(len(attribute) == 2 and attribute[0][:2] == (6, bytes.fromhex("2a864886f70d01090e"))
+            and attribute[1][0] == 0x31)
+    exts = extensions(attribute[1][1])
+    require(set(exts) == {"551d11"})
+    app_san(exts["551d11"], name)
+    result = p.run(["openssl", "req", "-verify", "-noout"], input_text=value["csrPem"], check=False)
+    verified = (result.stdout + result.stderr).strip()
+    require(result.returncode == 0 and verified in ("verify OK", "Certificate request self-signature verify OK"))
+    return info[2][2]
+
+
+def app_san(extension, name):
+    names = [(tag, content) for tag, content, _ in tlvs(single(extension[1], 0x30))]
+    require(names == [(0x82, name.encode("ascii"))])
+
+
+def inspect_app_certificate(chain, value, spki, name):
+    blocks = pem_blocks(chain, "CERTIFICATE")
+    require(len(blocks) >= 2)  # The app serves the intermediate too.
+    outer = tlvs(single(blocks[0], 0x30))
+    require(len(outer) == 3 and outer[0][0] == 0x30)
+    fields = tlvs(outer[0][1])
+    require(len(fields) == 8 and fields[0][:2] == (0xa0, b"\x02\x01\x02") and fields[7][0] == 0xa3)
+    subject(fields[5][2], "lucia-app-" + value["stack"])
+    require(fields[6][2] == spki)
+    validity = tlvs(single(fields[4][2], 0x30))
+    require(len(validity) == 2)
+    starts, ends = map(cert_time, validity)
+    require(starts <= now() and ends - starts <= MAX_LIFETIME and ends > now())
+    exts = extensions(fields[7][1])
+    require({"551d11", "551d0f", "551d25"} <= set(exts))
+    app_san(exts["551d11"], name)
+    require(exts["551d0f"][1] == b"\x03\x02\x07\x80")
+    if "551d13" in exts:
+        require(exts["551d13"][1] == b"\x30\x00")
+    eku = tlvs(single(exts["551d25"][1], 0x30))
+    allowed = {bytes.fromhex("2b06010505070301"), bytes.fromhex("2b06010505070302")}
+    require(1 <= len(eku) <= 2 and all(tag == 6 and oid in allowed for tag, oid, _ in eku)
+            and len({oid for _, oid, _ in eku}) == len(eku)
+            and bytes.fromhex("2b06010505070301") in {oid for _, oid, _ in eku})
+    require(all(not critical or oid in {"551d11", "551d0f", "551d25", "551d13"}
+                for oid, (critical, _) in exts.items()))
+    return ends
+
+
+def sign_app(p, value, spki, ca_pem, name):
+    p.signing_policy()
+    csr_hash = hashlib.sha256(value["csrPem"].encode()).hexdigest()
+    certificates = p.state / "certificates" / "app-certificates"
+    private_directory(certificates)
+    workspace = certificates / value["stack"]
+    private_directory(workspace)
+    csr_path, certificate = workspace / (csr_hash + ".csr"), workspace / (csr_hash + ".crt")
+    write_file(csr_path, value["csrPem"])
+    write_file(certificate, "")
+    relative = "/certificates/app-certificates/" + value["stack"] + "/" + csr_hash
+    p.run(["docker", "exec", "lucia-identity-ca", "step", "ca", "sign",
+           relative + ".csr", relative + ".crt", "--provisioner", "lucia-installer",
+           "--provisioner-password-file", "/run/secrets/ca-password",
+           "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt",
+           "--not-after", "168h", "--force"])
+    chain = regular(certificate, 65536).decode("ascii")
+    inspect_app_certificate(chain, value, spki, name)
+    write_file(workspace / "verify.crt", chain)
+    write_file(workspace / "root.crt", ca_pem)
+    p.run(["openssl", "verify", "-CAfile", str(workspace / "root.crt"), "-untrusted", str(workspace / "verify.crt"),
+           "-purpose", "sslserver", "-verify_hostname", name, str(workspace / "verify.crt")])
+    for path in (csr_path, certificate, workspace / "verify.crt", workspace / "root.crt"):
+        path.unlink()
+    return chain
+
+
+def process_app(p, value):
+    name = authorize_app(p, value)
+    spki = validate_app_csr(p, value, name)
+    p.verify_containers()
+    return sign_app(p, value, spki, p.trust(), name)
+
+
+def handle_app(p, directory, path):
+    data = safe_bytes(path)
+    fingerprint = hashlib.sha256(data).hexdigest()
+    response_path = directory / "app-certificate-responses" / path.name
+    try:
+        previous = parse_json(regular(response_path, 131072))
+        if previous.get("requestHash") == fingerprint:
+            return
+    except FileNotFoundError:
+        pass
+    try:
+        value = app_request(parse_json(data), path.stem)
+        with lease(ROOT.parent / ".run.lock"), lease(p.state / ".provision.lock"):
+            p.deadline = time.monotonic() + 120
+            require(p.load_scoped() == directory)
+            chain = process_app(p, value)
+        success, message = True, APP_SUCCESS
+    except BlockingIOError:
+        return
+    except Exception as error:
+        success, chain = False, None
+        message = UNSUPPORTED if isinstance(error, Unsupported) else APP_FAILURE
+        print(json.dumps({"event": "app-certificate-failed", "stack": path.stem,
+                          "errorType": type(error).__name__}), flush=True)
+    write_file(response_path, json.dumps({
+        "schemaVersion": 1, "stack": path.stem, "requestHash": fingerprint, "success": success,
+        "message": message, "checkedAt": now().isoformat(), "certificatePem": chain,
+    }) + "\n")
+
+
+def app_candidates(directory):
+    fd = open_directory(directory)
+    try:
+        names = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                names.append(entry.name)
+                require(len(names) <= 128)
+        return [directory / name for name in sorted(names) if name.endswith(".json") and APP_STACK.fullmatch(name[:-5])]
+    finally:
+        os.close(fd)
+
 def remove(p, directory, path):
     # Retire a removed machine's LDAP reader and enrollment receipt, only once Lucia no longer knows the machine.
     value = parse_json(safe_bytes(path, 4096))
@@ -649,7 +867,7 @@ def run():
     p = Native(argparse.Namespace(state=str(state)))
     directory = p.load_scoped()
     private_directory(directory)
-    for name in ("enrollment-requests", "enrollment-responses", "removals"):
+    for name in ("enrollment-requests", "enrollment-responses", "removals", "app-certificate-requests", "app-certificate-responses"):
         private_directory(directory / name)
     stopping = False
     def stop(*_):
@@ -670,6 +888,13 @@ def run():
                     # Unreadable/symlink/FIFO input has no safe snapshot to acknowledge.
                     print('{"event":"node-enrollment-unsafe-queue-file"}', flush=True)
                 write_file(heartbeat, json.dumps({"schemaVersion": 1, "ready": True, "checkedAt": now().isoformat()}) + "\n")
+            for path in app_candidates(directory / "app-certificate-requests"):
+                if stopping:
+                    break
+                try:
+                    handle_app(p, directory, path)
+                except (OSError, ValueError):
+                    print('{"event":"app-certificate-unsafe-queue-file"}', flush=True)
             for path in candidates(directory / "removals"):
                 if stopping:
                     break

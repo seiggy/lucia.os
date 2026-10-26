@@ -7,8 +7,9 @@ namespace Lucia.Homelab.Server.Security;
 
 /// <summary>
 /// The gateway's CrowdSec bouncer middlewares and the safe harbor: addresses CrowdSec never bans and the bouncer never checks.
-/// The identity AppHost compiles this file too. It writes both files on every deploy, before the gateway starts with the static
-/// configuration that names the middlewares, and the server rewrites them whenever the owner edits the list, from the same inputs.
+/// The identity AppHost compiles this file too. It writes the middlewares as empty chains on every deploy, before the gateway
+/// starts with the static configuration that names them; the server then rewrites them from the CrowdSec app's state and the
+/// owner's list, pointing them at the engine while it's healthy and back to empty chains when it isn't.
 /// </summary>
 public static class GatewaySecurity
 {
@@ -30,12 +31,10 @@ public static class GatewaySecurity
     /// <summary>The engine's in-band WAF: on the public entrypoint, and on app routes on the LAN. Never on Lucia's own API.</summary>
     public const string AppSecMiddleware = "crowdsec-appsec";
     public const string FileName = "crowdsec.yml";
-    /// <summary>The whole harbor, one address or network per line, for the engine's allowlist.</summary>
-    public const string HarborFileName = "safe-harbor.txt";
+    /// <summary>The engine read the harbor from this file while it ran beside the gateway; publishing removes it.</summary>
+    private const string RetiredHarborFileName = "safe-harbor.txt";
     /// <summary>The owner's part of the harbor, in the host's data directory.</summary>
     public const string StateFileName = "safe-harbor.json";
-    public const string KeyFile = "/run/secrets/crowdsec-bouncer-key";
-    public const string Engine = "identity-crowdsec";
     public const int MaxOwnerEntries = 32;
     public static readonly string[] Loopback = ["127.0.0.0/8", "::1"];
 
@@ -108,47 +107,60 @@ public static class GatewaySecurity
     }
 
     /// <summary>
-    /// The two bouncer middlewares. Both fail open: a stream that can't reach the engine keeps the decisions it has and lets
-    /// everyone else through, and an engine that can't answer an AppSec query lets the request through. Visitors are read from
-    /// X-Forwarded-For only behind Cloudflare; the gateway drops that header from everyone else before this runs.
+    /// The two bouncer middlewares. Without a <paramref name="link"/> (no CrowdSec app, or one that is stopped, moving or
+    /// unreachable) both are empty chains, so the entrypoints that name them keep working and nothing waits on an engine.
+    /// With one, both reach the engine over TLS, trusting only Lucia's authority, and both fail open: a stream that can't
+    /// reach the engine keeps the decisions it has and lets everyone else through, and an engine that can't answer an AppSec
+    /// query within two seconds lets the request through. Visitors are read from X-Forwarded-For only behind Cloudflare; the
+    /// gateway drops that header from everyone else before this runs.
     /// </summary>
-    public static string Render(IReadOnlyCollection<string> harbor, IReadOnlyCollection<string> cloudflare)
+    public static string Render(IReadOnlyCollection<string> harbor, IReadOnlyCollection<string> cloudflare, CrowdSecLink? link = null)
     {
-        Dictionary<string, object> Common(string mode) => new()
+        Dictionary<string, object> Common(string mode, CrowdSecLink live) => new()
         {
             ["enabled"] = true,
             ["logLevel"] = "INFO",
             ["crowdsecMode"] = mode,
-            ["crowdsecLapiScheme"] = "http",
-            ["crowdsecLapiHost"] = Engine + ":8080",
-            ["crowdsecLapiKeyFile"] = KeyFile,
-            ["httpTimeoutSeconds"] = 5,
+            ["crowdsecLapiScheme"] = "https",
+            ["crowdsecLapiHost"] = live.Authority(live.LapiPort),
+            ["crowdsecLapiKey"] = live.Key,
+            ["crowdsecLapiTLSCertificateAuthority"] = live.CaPem,
+            // A LAN round trip: an engine that hasn't answered in two seconds won't.
+            ["httpTimeoutSeconds"] = 2,
             ["forwardedHeadersTrustedIps"] = cloudflare,
             ["clientTrustedIps"] = harbor,
         };
-        var decisions = Common("stream");
-        decisions["updateIntervalSeconds"] = 15;
-        decisions["updateMaxFailure"] = -1;
-        decisions["streamStartupBlock"] = false;
-        var appsec = Common("appsec");
-        appsec["crowdsecAppsecEnabled"] = true;
-        appsec["crowdsecAppsecScheme"] = "http";
-        appsec["crowdsecAppsecHost"] = Engine + ":7422";
-        appsec["crowdsecAppsecFailureBlock"] = false;
-        appsec["crowdsecAppsecUnreachableBlock"] = false;
-        // HTTP/2 uploads without a length can't be read ahead; they are checked on their headers alone.
-        appsec["crowdsecAppsecUnreadableBodyBlock"] = false;
-        appsec["crowdsecAppsecBodyLimit"] = 10485760;
-        // A hung engine delays each checked request by at most this long, then lets it through.
-        appsec["httpTimeoutSeconds"] = 2;
+        object Define(Func<CrowdSecLink, Dictionary<string, object>> live) => link is null
+            ? new { chain = new { middlewares = Array.Empty<string>() } }
+            : new { plugin = new Dictionary<string, object> { [PluginName] = live(link) } };
         return JsonSerializer.Serialize(new
         {
             http = new
             {
                 middlewares = new Dictionary<string, object>
                 {
-                    [Middleware] = new { plugin = new Dictionary<string, object> { [PluginName] = decisions } },
-                    [AppSecMiddleware] = new { plugin = new Dictionary<string, object> { [PluginName] = appsec } },
+                    [Middleware] = Define(live =>
+                    {
+                        var decisions = Common("stream", live);
+                        decisions["updateIntervalSeconds"] = 15;
+                        decisions["updateMaxFailure"] = -1;
+                        decisions["streamStartupBlock"] = false;
+                        return decisions;
+                    }),
+                    [AppSecMiddleware] = Define(live =>
+                    {
+                        var appsec = Common("appsec", live);
+                        appsec["crowdsecAppsecEnabled"] = true;
+                        appsec["crowdsecAppsecScheme"] = "https";
+                        appsec["crowdsecAppsecHost"] = live.Authority(live.AppSecPort);
+                        appsec["crowdsecAppsecTLSCertificateAuthority"] = live.CaPem;
+                        appsec["crowdsecAppsecFailureBlock"] = false;
+                        appsec["crowdsecAppsecUnreachableBlock"] = false;
+                        // HTTP/2 uploads without a length can't be read ahead; they are checked on their headers alone.
+                        appsec["crowdsecAppsecUnreadableBodyBlock"] = false;
+                        appsec["crowdsecAppsecBodyLimit"] = 10485760;
+                        return appsec;
+                    }),
                 },
             },
         }, new JsonSerializerOptions { WriteIndented = true }) + "\n";
@@ -170,13 +182,20 @@ public static class GatewaySecurity
             : throw new InvalidDataException("The safe-harbor list is invalid."))];
     }
 
-    /// <summary>Writes the middlewares and the engine's list atomically, then touches the directory so the gateway reloads.</summary>
-    public static bool Publish(string directory, IReadOnlyCollection<string> harbor, IReadOnlyCollection<string> cloudflare)
+    /// <summary>
+    /// Writes the middlewares atomically, then touches the directory so the gateway reloads. The engine's old harbor file goes.
+    /// </summary>
+    public static bool Publish(string directory, IReadOnlyCollection<string> harbor, IReadOnlyCollection<string> cloudflare, CrowdSecLink? link = null)
     {
         if (!Path.IsPathFullyQualified(directory)) throw new ArgumentException("The gateway security directory must be absolute.");
         Directory.CreateDirectory(directory);
-        var changed = Write(Path.Combine(directory, HarborFileName), string.Concat(harbor.Select(entry => entry + "\n")));
-        changed |= Write(Path.Combine(directory, FileName), Render(harbor, cloudflare));
+        var changed = Write(Path.Combine(directory, FileName), Render(harbor, cloudflare, link));
+        var retired = Path.Combine(directory, RetiredHarborFileName);
+        if (File.Exists(retired) && new FileInfo(retired).LinkTarget is null)
+        {
+            File.Delete(retired);
+            changed = true;
+        }
         // The gateway watches only its top-level directory; a changed time on this one is an event there.
         if (changed) Directory.SetLastWriteTimeUtc(directory, DateTime.UtcNow);
         return changed;
@@ -236,4 +255,15 @@ public static class GatewaySecurity
     private static bool Overlaps(IPNetwork left, IPNetwork right) =>
         left.BaseAddress.AddressFamily == right.BaseAddress.AddressFamily
         && (left.Contains(right.BaseAddress) || right.Contains(left.BaseAddress));
+}
+
+/// <summary>Where the gateway's bouncer reaches a healthy CrowdSec engine, with its key and Lucia's authority to verify it by.</summary>
+/// <param name="Host">The engine's name under the domain, which local DNS points at its server and its certificate names.</param>
+/// <param name="CaPem">Lucia's root certificate, the only authority the bouncer trusts for the engine.</param>
+public sealed record CrowdSecLink(string Host, int LapiPort, int AppSecPort, string Key, string CaPem)
+{
+    public string Authority(int port) =>
+        (IPAddress.TryParse(Host, out var ip) && ip.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{Host}]" : Host) + ":" + port;
+
+    public override string ToString() => $"CrowdSecLink({Host}, {LapiPort}, {AppSecPort}, <key>)";
 }

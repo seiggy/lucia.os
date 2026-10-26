@@ -64,7 +64,7 @@ FILES = frozenset((
     "deployment/host/Dockerfile",
     "deployment/identity/start-ca.sh", "deployment/identity/renew-certificate.sh",
     "deployment/identity/install-node-trust.sh", "deployment/identity/init_org_tree.ldif",
-    "deployment/identity/init_org_entries.ldif", "deployment/identity/crowdsec/acquis.yaml", "deployment/identity/crowdsec/config.yaml.local", "deployment/identity/crowdsec/profiles.yaml", "deployment/identity/crowdsec/start.sh", "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs", APPHOST,
+    "deployment/identity/init_org_entries.ldif", "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs", APPHOST,
     "src/Lucia.Homelab.Identity.AppHost/AppHost.cs",
     "src/Lucia.Homelab.Identity.AppHost/aspire.config.json",
 ))

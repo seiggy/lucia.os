@@ -5,7 +5,6 @@ import { parseDomainOperations } from './networkManagement'
 import type { DomainOperations, DomainState } from './networkManagement'
 import { Icon } from './Icon'
 import { PublicAccess } from './PublicAccess'
-import { TrustedAddresses } from './TrustedAddresses'
 
 export function DomainOverview({ state, session, refreshSession, replaceToken }: {
   state: DomainState; session: AuthenticationSession; refreshSession: () => Promise<void>; replaceToken: () => void
@@ -68,7 +67,6 @@ export function DomainOverview({ state, session, refreshSession, replaceToken }:
       </table>}
     </section>
     {job && <PublicAccess job={job} ingressAddress={snapshot?.ingressAddress ?? state.defaults.ingressAddress} session={session} refreshSession={refreshSession} />}
-    <TrustedAddresses session={session} refreshSession={refreshSession} />
     <section className="surface network-section">
       <h2>Let’s Encrypt</h2>
       {certificate ? <dl className="network-facts">

@@ -226,11 +226,9 @@ public sealed class ControllerRelay
                 # Once a domain is active the origin has a public certificate instead.
                 include_system_ca_certs_pool: true
             """;
-        // spark_model_worker.py lists TensorFold's metrics address in spark-model.json while Qwen3.8-Flash-Next runs. CrowdSec, beside
-        // the gateway, publishes its Prometheus metrics on this machine's loopback.
+        // spark_model_worker.py lists TensorFold's metrics address in spark-model.json while Qwen3.8-Flash-Next runs.
         Write(Path.Combine(directory, "relay.yaml"), TelemetryRelay.Config("\"${env:LUCIA_NODE}\"", gpu: true,
-            [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true), new("crowdsec", "127.0.0.1:19060", Authenticated: false)],
-            exporter));
+            [new("spark-model", "/etc/lucia-relay/spark-model.json", TargetsFile: true)], exporter));
     }
 
     internal bool Accepts(string? token) =>

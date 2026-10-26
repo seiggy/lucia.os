@@ -57,7 +57,7 @@ public sealed class ManagedNodeDns : BackgroundService
     public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct) =>
         await ActiveJob(_domains, ct) is { Plan: var plan } job
             ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct), job.Public ? plan.Naming.Domain : null,
-                await _fleet.RecordsAsync(plan.Naming.Namespace, ct)) : null;
+                await _fleet.RecordsAsync(plan.Naming.Namespace, ct), (await _stacks.ActiveNames(ct)).Select(item => (item.Name, item.Address))) : null;
 
     internal static async Task<DomainSetupJob?> ActiveJob(DomainOnboardingStore domains, CancellationToken ct)
     {
@@ -78,9 +78,11 @@ public sealed class ManagedNodeDns : BackgroundService
     /// <summary>
     /// Node names point at each node; app route names point at the gateway, which forwards to the app's server. With public
     /// access, public names point at the gateway too, so the network reaches them directly rather than through Cloudflare.
+    /// An app's direct names (CrowdSec's, which the gateway itself connects to) point straight at the server it runs on.
     /// </summary>
     internal static AdGuardRewrite[] Wanted(DomainNamingPlan naming, IEnumerable<ManagedNodeAddress> nodes, string? ingress = null,
-        IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null, IEnumerable<AdGuardRewrite>? fleet = null) =>
+        IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null, IEnumerable<AdGuardRewrite>? fleet = null,
+        IEnumerable<(string Name, string Address)>? direct = null) =>
         nodes.Where(node => IPAddress.TryParse(node.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
                 && AdGuardTransport.IsPrivate(ip))
             .Select(node => new AdGuardRewrite($"{node.Hostname}.{naming.Namespace}".ToLowerInvariant(), node.Address))
@@ -88,6 +90,9 @@ public sealed class ManagedNodeDns : BackgroundService
             .Concat(ingress is null || zone is null ? [] : (routes ?? []).Where(route => route.Route.Public is not null)
                 .Select(route => new AdGuardRewrite($"{route.Route.Public}.{zone}".ToLowerInvariant(), ingress)))
             .Concat(fleet ?? [])
+            .Concat((direct ?? []).Where(item => IPAddress.TryParse(item.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                    && AdGuardTransport.IsPrivate(ip))
+                .Select(item => new AdGuardRewrite($"{item.Name}.{naming.Namespace}".ToLowerInvariant(), item.Address)))
             .Where(record => !naming.LocalHostnames.Contains(record.Domain, StringComparer.OrdinalIgnoreCase))
             .GroupBy(record => record.Domain, StringComparer.Ordinal).Where(group => group.Count() == 1)
             .Select(group => group.Single()).ToArray();

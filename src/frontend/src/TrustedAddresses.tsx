@@ -43,15 +43,14 @@ export function TrustedAddresses({ session, refreshSession }: { session: Authent
       const addresses = draft.split(/[\s,]+/).map(item => item.trim()).filter(Boolean)
       setHarbor(parseSafeHarbor(await (await ownerRequest(session, refreshSession, '/api/host/security/safe-harbor', 'PUT', { addresses })).json()))
       setDraft(null)
-      setNotice('Saved. The gateway and CrowdSec follow the new list within a minute.')
+      setNotice('Saved. The gateway follows the new list at once, and CrowdSec within a minute.')
     } catch (failure) { setError(failed(failure, 'The trusted addresses could not be saved.')) } finally { setBusy(false) }
   }
 
   return <section className="surface network-section" aria-labelledby="trusted-addresses">
     <h2 id="trusted-addresses">Trusted addresses</h2>
-    <p className="section-note">Lucia’s gateway runs CrowdSec. It bans internet addresses that probe or attack your apps, records what devices on your
-      network do without banning them, and blocks known exploit requests to your apps. Addresses here are never banned or checked, so add your own
-      computer.{harbor && !harbor.enabled && ' CrowdSec isn’t installed on this gateway yet; the list applies once it is.'}</p>
+    <p className="section-note">CrowdSec never bans addresses here, and the gateway never sends their requests to AppSec. Add your own computer, so a
+      slip while testing can’t lock you out.{harbor && !harbor.enabled && ' Lucia doesn’t manage this gateway’s protection; the list is kept for when it does.'}</p>
     {harbor && draft === null && <>
       {harbor.addresses.length > 0
         ? <ul className="network-review-list">{harbor.addresses.map(address => <li key={address}><code>{address}</code></li>)}</ul>

@@ -383,9 +383,6 @@ class HostTests(unittest.TestCase):
         sys.path.insert(0, str(host.ROOT / "tools/identity"))
         import provision as identity
         state = self.provisioner.state
-        key = state / "secrets/crowdsec-bouncer-key"
-        key.write_text("fixture-bouncer-key-not-a-real-credential-0000000")
-        key.chmod(0o600)
         # The AppHost refuses to publish without the verified plugin tree; this opt-in test fetches the pinned release.
         with contextlib.redirect_stdout(io.StringIO()):
             identity.Provisioner.install_plugin(SimpleNamespace(state=state))
@@ -422,22 +419,17 @@ class HostTests(unittest.TestCase):
         self.assertIn("entrypoints.host.http.middlewares=forwarded-strip@file,crowdsec@file", enabled)
         self.assertIn("entrypoints.authentik.http.middlewares=forwarded-strip@file,crowdsec@file", enabled)
         self.assertIn("--experimental.localplugins.crowdsec-bouncer.modulename=github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin", enabled)
-        self.assertIn("--accesslog.dualoutput=true", enabled)
-        self.assertIn("--accesslog.filepath=/logs/access.log --accesslog.format=json", enabled)
-        self.assertIn("find /logs -maxdepth 1 -name access.log -size +51200k -exec truncate -s 0 {}", enabled)
+        # CrowdSec runs as a catalog app on a managed server: nothing of the engine runs or is written on the Spark.
+        for retired in ("identity-crowdsec", "crowdsecurity/crowdsec", "dualoutput", "accesslog.filepath", "truncate", "crowdsec-bouncer-key", "19060"):
+            self.assertNotIn(retired, enabled)
+        self.assertIn("--accesslog.otlp=true --accesslog.otlp.servicename=lucia-gateway", enabled)
         gateway_command = re.search(r"(?ms)^  identity-gateway:\n(.*?)(?=^  [a-z]|\Z)", enabled)[1]
         self.assertNotIn("$(", gateway_command, "Compose would interpolate a command substitution.")
         self.assertIn("traefik@sha256:1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65", enabled)
-        crowdsec = re.search(r"(?ms)^  identity-crowdsec:\n(.*?)(?=^  [a-z]|\Z)", enabled)[1]
-        self.assertIn("crowdsecurity/crowdsec@sha256:0f2523fa61ef507f15d953045cface490cc880670c62f2755ced17524107f71a", crowdsec)
-        self.assertIn('      - "127.0.0.1:19060:6060"', crowdsec)
-        self.assertNotIn("8080", crowdsec.split("ports:")[1].split("volumes:")[0], "The local API must not be published.")
-        self.assertNotIn("7422", crowdsec.split("ports:")[1].split("volumes:")[0], "AppSec must not be published.")
-        self.assertNotIn("fixture-bouncer-key", enabled)
+        # Publishing writes both middlewares as empty chains; the server points them at the CrowdSec app once it's healthy.
         middlewares = json.loads((state / "gateway/security/crowdsec.yml").read_text())["http"]["middlewares"]
-        trusted = middlewares["crowdsec"]["plugin"]["crowdsec-bouncer"]["clientTrustedIps"]
-        self.assertEqual(trusted, ["127.0.0.0/8", "::1", *record["trusted_proxy_networks"], "192.168.1.50"])
-        self.assertEqual((state / "gateway/security/safe-harbor.txt").read_text(), "".join(entry + "\n" for entry in trusted))
+        self.assertEqual(middlewares, {"crowdsec": {"chain": {"middlewares": []}}, "crowdsec-appsec": {"chain": {"middlewares": []}}})
+        self.assertFalse((state / "gateway/security/safe-harbor.txt").exists())
         self.assertIn("GatewaySecurity__GatewayDirectory", service_text := re.search(r"(?ms)^  lucia-host:\n(.*?)(?=^  [a-z]|\Z)", enabled)[1])
         self.assertIn('DomainOnboarding__GatewayAppSec: "true"', service_text)
         self.assertNotIn("8080:8080", enabled)

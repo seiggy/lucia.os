@@ -82,6 +82,11 @@ public sealed partial class StackStore
                 && await LlamaModels(nodeId, node, port, key, ct) is { Length: > 0 } models)
                 scrapes.Add(new("llama-cpp", target, models));
         }
+        // CrowdSec publishes its Prometheus metrics on the server's loopback for this relay alone.
+        if (stacks.FirstOrDefault(item => item.Manifest.Template?.Id == CrowdSecApp.AppId && item.Assigned == hostname && item is { Desired: "Running", Move: null })
+            is { Manifest.Template: { } crowdsec })
+            scrapes.Add(new("crowdsec", $"127.0.0.1:{CrowdSecApp.Ports(StackCatalog.Settings(StackCatalog.Find(CrowdSecApp.AppId), crowdsec.Settings)).Metrics}",
+                Authenticated: false));
         var config = TelemetryRelay.Config(JsonSerializer.Serialize(hostname), gpu, scrapes, TelemetryRelay.EnvExporter, dockerStats: true);
         var compose = TelemetryRelay.Compose(config, gpu, dockerStats: true);
         var env = $"OTLP_ENDPOINT={destination.Endpoint.AbsoluteUri.TrimEnd('/')}\nOTLP_AUTHORIZATION={destination.Authorization}\nLOCAL_AI_KEY={key}\n";

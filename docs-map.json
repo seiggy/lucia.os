@@ -28,7 +28,7 @@
     },
     {
       "name": "Gateway protection (CrowdSec)",
-      "paths": ["src/Lucia.Homelab.Server/Security/**", "deployment/identity/crowdsec/**", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs"],
+      "paths": ["src/Lucia.Homelab.Server/Security/**", "src/Lucia.Homelab.Server/Stacks/CrowdSecApp.cs", "src/Lucia.Homelab.Server/Stacks/StackCrowdSec.cs", "src/frontend/src/CrowdSec.tsx", "src/frontend/src/crowdsecStatus.ts", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs", "tools/nodes/enrollment_worker.py"],
       "docs": ["guide/gateway-protection", "code/gateway-security", "deploy/crowdsec"]
     },
     {

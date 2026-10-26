@@ -1,6 +1,6 @@
 ---
 title: Gateway protection (CrowdSec)
-description: How CrowdSec watches and guards Lucia's Traefik gateway, what it bans, what it never touches, and how to run, unban and recover it.
+description: How the CrowdSec app guards Lucia's Traefik gateway from a managed server, how the pieces authenticate to each other, and how to run, unban and recover it.
 sidebar_position: 42
 ---
 
@@ -11,38 +11,95 @@ import Source from '@site/src/components/Source';
 
 <WhoWhatWhy
   who="Operators running the Spark who expose apps to the internet or want to see who is poking at the gateway."
-  what="The CrowdSec engine beside the gateway, the bouncer plugin inside Traefik, the ban policy, the safe harbor, and the commands to check, unban and recover."
-  why="Port 8445 faces the internet through Cloudflare. Scanners find it within hours, and a banned address should stay out of every app at once, without anyone babysitting logs."
+  what="The CrowdSec catalog app, the bouncer plugin inside Traefik, the log path through Observability, the certificates that tie them together, the ban policy, and how to check, unban and recover."
+  why="Port 8445 faces the internet through Cloudflare, and scanners find it within hours. A banned address should stay out of every app at once, and none of that work should cost the Spark CPU or memory."
 />
 
-CrowdSec runs as `lucia-identity-crowdsec` in the identity compose project. The gateway writes a JSON access log, CrowdSec reads it and decides who to ban, and a Traefik plugin enforces those bans on every HTTP entrypoint. The same plugin sends requests to CrowdSec's AppSec engine, which blocks known exploit requests one at a time. The design choice that matters most: everything fails open. If CrowdSec is down, traffic keeps flowing.
+CrowdSec is a catalog app, installed from **Apps** on a managed server like any other. The Spark keeps only the cheap half: the gateway's bouncer plugin, which asks the engine about each request. The engine itself, its database and the log parsing all run on the server you pick, and the app moves, updates and backs up the way every other app does.
+
+Everything fails open. If the engine, its server or the network between them goes away, traffic keeps flowing.
 
 ```mermaid
 flowchart LR
-  cf[Cloudflare] -->|8445| gw[Traefik gateway]
+  cf[Cloudflare] -->|8445| gw[Traefik gateway on the Spark]
   lan[LAN clients] -->|443| gw
-  gw -->|JSON access log| log[(access-logs/access.log)]
-  log --> cs[CrowdSec engine]
-  gw -->|"decision stream, every 15 s"| cs
-  gw -->|"AppSec check per request"| cs
+  gw -->|OTLP access log via the host relay| otel[Observability collector]
+  otel -->|"OTLP/JSON over TLS + token"| cs[CrowdSec app on a managed server]
+  gw -->|"decision stream every 15 s, TLS"| cs
+  gw -->|"AppSec check per request, TLS"| cs
+  host[Lucia host] -->|"status, alerts, unban, TLS"| cs
+  ca[Lucia CA on the Spark] -.->|"7-day certificate, renewed"| cs
   cs <-->|signals and community blocklist| capi[CrowdSec Central API]
-  gw --> apps[Apps and Lucia]
 ```
+
+## Install it
+
+1. Set up your domain first (**Settings → Domains**). The gateway reaches CrowdSec by a name under it, so Lucia refuses the install without an active domain (`409 domain_required`).
+2. Install **Observability**, at catalog version 12 or later. CrowdSec reads the gateway's access log through Observability's collector, and only version 12 forwards it. Lucia refuses the install without Observability (`409 requires_app`) or with an older one (`409 requires_update`). Catalog apps don't update themselves, so an Observability installed before this release needs **Update** on its app page first.
+3. Install **CrowdSec** from **Apps → Catalog** on the server you want. Lucia runs one copy at most. Its **Name** setting (`crowdsec-host`, default `crowdsec`) becomes `crowdsec.<your namespace>`, for example `crowdsec.lab.example.com`.
+4. Within a minute or two Lucia publishes that name in AdGuard, asks its CA for the engine's certificate, the engine starts, and the **Gateway protection** page (`#/security`) shows **Protecting the gateway**.
+
+The engine's first start needs internet: it registers with the Central API and downloads the hub collections. Until it answers over TLS, the gateway's middlewares are empty chains and nothing waits on it.
+
+### Its name
+
+The name points straight at the server CrowdSec runs on, never at the gateway, because the gateway itself is the client. `ManagedNodeDns` publishes it next to the servers' own names, from the app's `names` in its manifest, and moves it when the app moves. It shares the checks of an app's web address: one DNS label that no web address, other app, server or Lucia service already uses.
+
+Everything that talks to the engine uses the name: the gateway, Observability's collector, the host's page queries, and the engine itself. Inside the engine's container `extra_hosts` points the name at loopback, so AppSec's key check and `cscli` reach the local API under the same name and certificate.
+
+If the Spark can't resolve the name (the network's DNS isn't AdGuard, or AdGuard is down), the host's check fails with "`crowdsec.…` doesn't resolve here", the middlewares become empty chains and traffic flows. Point the Spark at AdGuard for DNS.
+
+If the domain is taken away after install, the app keeps running but has no name. The page says **Waiting for your domain** and the gateway lets everything through.
 
 ## What runs where
 
 | Piece | Where | Notes |
 |---|---|---|
-| Engine | `lucia-identity-crowdsec`, `crowdsecurity/crowdsec:v1.8.1` pinned by digest | Local API on 8080 and AppSec on 7422, both reachable only on the compose network. Prometheus metrics on `127.0.0.1:19060`. |
-| Engine state | Docker volumes `lucia-crowdsec-data` (database, hub data) and `lucia-crowdsec-config` (`/etc/crowdsec`) | Survive restarts and upgrades. |
-| Lucia's engine settings | `identity/config/crowdsec/` (from <Source path="deployment/identity/crowdsec" />), read-only at `/lucia/config` | `start.sh`, `profiles.yaml`, `acquis.yaml`, `config.yaml.local`. Rewritten by every `provision.py` run. |
-| Bouncer plugin | `identity/plugins-local/`, read-only at `/plugins-local` in the gateway | `maxlerebourg/crowdsec-bouncer-traefik-plugin` v1.8.1, loaded as a local plugin. Traefik never downloads code. |
-| Middlewares | `identity/gateway/security/crowdsec.yml` | Defines `crowdsec` and `crowdsec-appsec`. Written by the AppHost on every publish and deploy, and by the host when the safe harbor changes. |
-| Access log | `identity/access-logs/access.log` | Written by the gateway, read-only for the engine. Truncated in place once it passes 50 MB. |
-| Bouncer key | `identity/secrets/crowdsec-bouncer-key` | Mounted into both containers. Created by `provision.py`, also on an install that predates CrowdSec. |
-| Console enroll key | `identity/crowdsec/enroll/enroll-key` | Optional. See [Console](#crowdsec-console). |
+| Engine | `crowdsec` service in the app's stack, `crowdsecurity/crowdsec:v1.8.1@sha256:0f2523fa…7f71a` (multi-arch) | Runs as root with every capability dropped, `no-new-privileges`, 512 processes and 1 GB of memory at most. Not read-only: compose writes the app's inline configs into the container. |
+| Sidecar | `lucia` service, `alpine:3.22.1` pinned by digest | No network, read-only, no capabilities, 32 MB. Writes what Lucia sends (certificate, root CA, safe harbor, enroll key) into the in-memory `state` volume. |
+| Engine data | Volumes `data` (SQLite database, hub data) and `config` (`/etc/crowdsec`, including Central API credentials) under `/srv/lucia/stacks/<name>/volumes/` | Backed up with the app, with the app stopped, because SQLite is only consistent then. `state` is tmpfs and skipped. |
+| Bouncer plugin | `identity/plugins-local/` on the Spark, read-only in the gateway | `maxlerebourg/crowdsec-bouncer-traefik-plugin` v1.8.1, a local plugin. Traefik never downloads code. |
+| Middlewares | `identity/gateway/security/crowdsec.yml` on the Spark | Written as empty chains by every identity deploy, then pointed at the engine by the host while it's healthy. |
 
-The gateway image moved to `traefik:v3.7.16` for this. Version 3.7 added `--accesslog.dualoutput`, which writes the JSON file and keeps sending the same records to Observability over OTLP. Query strings are still dropped and the only header kept is `User-Agent`.
+### Ports
+
+| Default port | Published on | Used by |
+|---|---|---|
+| 8088 → 8080 | The server's LAN addresses | The gateway's decision stream and the host's page queries (local API). |
+| 7422 | The server's LAN addresses | The gateway's AppSec checks. |
+| 7423 | The server's LAN addresses | Observability's collector, posting the gateway's access log. |
+| 19060 → 6060 | `127.0.0.1` on the server | That server's telemetry relay, which scrapes the metrics as the `crowdsec` job. |
+
+All four are settings on the app, and they must differ. Every LAN listener serves TLS only; plain HTTP gets `400`.
+
+## How the pieces trust each other
+
+| Link | Server proves itself with | Client proves itself with |
+|---|---|---|
+| Gateway → local API and AppSec | A certificate from Lucia's CA naming `crowdsec.<namespace>`. The plugin trusts only `lucia-root-ca.crt` (`crowdsecLapiTLSCertificateAuthority`, `crowdsecAppsecTLSCertificateAuthority`) and checks the name. | The bouncer key, `GATEWAY_KEY` in the app's environment. |
+| Collector → log intake | The same certificate. The collector's `ca_pem` is Lucia's root. | The `X-Lucia-Intake` header, `INTAKE_TOKEN` in the app's environment. |
+| Host → local API | The same certificate, checked against `HostAuthentication:CaCertificatePath`. | The `lucia-host` machine and `LUCIA_MACHINE_PASSWORD`, registered by the image's start script on every start. |
+| Engine → its own local API | The same certificate under the same name, which `extra_hosts` points at the container's loopback. | The engine's own machine credential. |
+
+The three secrets are generated when the app is first rendered and kept on every re-render. They stay in the app's encrypted environment; the gateway's copy of the bouncer key is in `crowdsec.yml`, mode `0600`.
+
+`GET /api/host/stacks/<name>` (the Apps page, and the assistant's `get_app`) shows them, the TLS key, the enroll key and Observability's `LUCIA_CROWDSEC_TOKEN` as `[kept by Lucia]`. Saving the app, or converting it to a custom app, puts the stored values back whatever was sent, so nobody can read, drop or replace them from there.
+
+### The certificate
+
+The host never holds CA credentials. It makes a P-256 key, writes a signing request to `~/.local/share/lucia/host/data/nodes/app-certificate-requests/<stack>.json`, and the scoped enrollment worker on the Spark (`lucia-node-enrollment.service`, the one that already signs node certificates) signs it with the `lucia-installer` provisioner for 168 hours. The worker refuses unless:
+
+- the request names a stack that runs the `crowdsec` app, settled, on the server named in the request;
+- the address is that server's address from Lucia's records, in `10/8`, `172.16/12` or `192.168/16`, and isn't the CA's own host;
+- the request's subject is `CN=lucia-app-<stack>` and its only name is `<label>.<namespace>`. The worker reads the label from the stack's own manifest and the namespace from the active domain (`host/data/domains`), never from the request, and refuses Lucia's own names and the server's.
+
+The certificate names the app, not its server, so a move keeps it: AdGuard follows the app. The host renews once fewer than 4 days remain, and at once when the name changes (a new **Name** setting or another domain). The new certificate reaches the sidecar only, so compose recreates the sidecar and leaves the engine running; the engine's start script sees the new files and sends CrowdSec `SIGHUP`, which reloads the local API, AppSec and the log intake in about two seconds. A new name is different: it changes the engine's `LOCAL_API_URL` and `extra_hosts`, so the engine restarts. If the enrollment worker isn't running, the page says so and the current certificate keeps serving until it expires.
+
+## The log path
+
+The gateway on the Spark still sends its access log over OTLP to the host's relay endpoint, as it did before CrowdSec existed. The host forwards it to Observability. Observability's collector, given `LUCIA_CROWDSEC_COLLECTOR` by Lucia, filters the `lucia-gateway` records and posts them as OTLP/JSON to the intake ([details](./observability.mdx#forwarding-the-gateways-log-to-crowdsec)).
+
+CrowdSec's `http` datasource takes each post and a `transform` expression turns every log record's attributes back into the JSON line Traefik would have written. From there `crowdsecurity/traefik-logs` parses it as usual. The source address is the last entry of `ClientHost`: on the public entrypoint that's the visitor Cloudflare saw, because Traefik trusts `X-Forwarded-For` only from Cloudflare's ranges; everywhere else Traefik drops the header first, so a LAN client that forges one is recorded under its real address.
 
 ## Who gets checked
 
@@ -54,35 +111,29 @@ The gateway image moved to `traefik:v3.7.16` for this. Version 3.7 added `--acce
 | LAN to Authentik on 9443 | Yes | No |
 | Safe-harbor addresses | Skipped | Skipped |
 
-AppSec stays off Lucia's own API on purpose. Node agents and the console upload compose files, `.env` files, scripts and stack-move streams that can be hours long. A generic WAF rule tripping on a shell script in a compose file would break a deploy, and the API already requires an owner session or a signed node proof. Apps are third-party code, so they get the rules.
-
-The entrypoint order is `forwarded-strip@file,crowdsec@file` on `host` and `authentik`, and `public-sources@file,forwarded-strip@file,crowdsec@file,crowdsec-appsec@file` on `public`. The cheap filters run first, so a connection that isn't from Cloudflare is refused before the bouncer spends anything on it.
-
-### Real client addresses
-
-Public visitors arrive from Cloudflare's proxies. Only on the `public` entrypoint does Traefik trust `X-Forwarded-For`, and only from Cloudflare's ranges. Everywhere else it drops the header, so a LAN client can't claim to be someone else. The access log's `ClientHost` then holds the visitor chain, and CrowdSec's Traefik parser takes its last address, the one Cloudflare itself saw. The bouncer reads the same header with `forwardedHeadersTrustedIps` set to Cloudflare's ranges. Banning a visitor never bans the Cloudflare proxy in front of them.
+AppSec stays off Lucia's own API on purpose. Node agents and the console upload compose files, scripts and hours-long stack moves, and a generic WAF rule tripping on a shell script would break a deploy. The API already requires an owner session or a signed node proof.
 
 ## Ban policy
 
-`profiles.yaml` decides what an alert does. The first matching profile wins.
+The app's `profiles.yaml` decides what an alert does, first match wins:
 
 | Source | Result |
 |---|---|
 | Safe harbor | Nothing. The `lucia-safe-harbor` allowlist drops the alert. |
 | Cloudflare's ranges | Alert recorded, never banned. |
-| Private addresses (`10/8`, `172.16/12`, `192.168/16`, loopback, IPv6 ULA and link-local) | Alert recorded, no automatic ban. You can still ban by hand. |
+| Private addresses (`10/8`, `172.16/12`, `192.168/16`, loopback, CGNAT, link-local, IPv6 ULA and link-local) | Alert recorded, no automatic ban. A ban by hand still applies. |
 | Any range alert | Alert recorded only. |
-| Every other address | Ban for 4 hours the first time, 24 hours the second, 7 days from then on, counting that address's decisions from the last 30 days. |
+| Every other address | Ban for 4 hours, then 24 hours, then 7 days, counting that address's decisions from the last 30 days. |
 
-`config.yaml.local` keeps alerts for 30 days (`db_config.flush.max_age: 30d`) so the escalation has something to count. An address that keeps hitting the gateway while banned can climb the ladder quickly, since each new alert adds a decision.
+`db_config.flush.max_age: 30d` keeps the history the escalation counts. Scenarios have a blackhole window (two minutes for `http-probing`), so an address that keeps scanning right after a ban doesn't raise a second alert straight away.
 
-The engine installs these hub collections: `crowdsecurity/traefik`, `crowdsecurity/http-cve`, `crowdsecurity/base-http-scenarios`, `crowdsecurity/appsec-virtual-patching`, `crowdsecurity/appsec-generic-rules` and `crowdsecurity/whitelist-good-actors`. The last one keeps search-engine crawlers and CDN addresses out of the scenarios, which matters once a public app gets indexed. The stock `crowdsecurity/whitelists` parser is removed at every start (`DISABLE_PARSERS`), because it would silently drop all private addresses and the LAN alerts with them.
+AppSec blocks show up as alerts too, of kind `waf`, named after the rule that matched (`crowdsecurity/vpatch-env-access`). One block on its own bans nobody, because CrowdSec marks those alerts as already handled. Trip two different rules within a minute and `crowdsecurity/appsec-vpatch` raises a normal alert, which the table above turns into a ban for a public address and a note for a LAN one. If AppSec blocks reach the counter but never the alert list, check that the AppSec source in `acquis.yaml` still has `unique_id: lucia-appsec` (see [Gateway security](../code/gateway-security.mdx#the-log-transform)).
 
-The Central API is on. The engine shares signals and pulls the community blocklist, so well-known attackers are refused before they touch anything.
+Collections: `crowdsecurity/traefik`, `http-cve`, `base-http-scenarios`, `appsec-virtual-patching`, `appsec-generic-rules` and `whitelist-good-actors`. The stock `crowdsecurity/whitelists` parser is removed at every start, since it would drop every private address and the LAN alerts with it. Signal sharing and the community blocklist are on.
 
 ## The safe harbor
 
-The safe harbor is Lucia's own addresses plus a list you keep. Lucia's part is loopback, the compose network's subnets (the host's trusted proxy networks) and the Spark's LAN address. Your part is stored in the host's data at `/data/security/safe-harbor.json` and edited on the **Settings → Domains** page (the **Trusted addresses** card, shown once a domain is connected) or through the API:
+Lucia's own addresses (loopback, the identity network's subnets and the Spark's LAN address) plus your list, kept in `/data/security/safe-harbor.json` on the Spark and edited on the **Gateway protection** page or through the API:
 
 ```bash title="Trust your desktop"
 curl -s -X PUT https://lucia.lab.example.com/api/host/security/safe-harbor \
@@ -91,61 +142,89 @@ curl -s -X PUT https://lucia.lab.example.com/api/host/security/safe-harbor \
   -d '{"addresses": ["192.168.1.50"]}'
 ```
 
-`GET` on the same path shows the list, Lucia's part and who changed it last. The host accepts up to 32 entries. Private networks may be as wide as their range. Internet addresses must be a /24 (IPv6 /48) or narrower. It refuses `0.0.0.0/0`, loopback, multicast, anything overlapping Cloudflare, and a network written with host bits set.
+On save the host rewrites `crowdsec.yml` (the bouncer's `clientTrustedIps`) at once, and hands the whole list to the app as `LUCIA_CROWDSEC_HARBOR`. The engine's start script syncs the `lucia-safe-harbor` allowlist within 20 seconds; AppSec rereads allowlists once a minute.
 
-On save, the host rewrites `gateway/security/crowdsec.yml` (the bouncer's `clientTrustedIps`) and `gateway/security/safe-harbor.txt`, then touches the directory so Traefik reloads. The engine's start script checks `safe-harbor.txt` every 20 seconds and syncs the `lucia-safe-harbor` allowlist. AppSec refreshes allowlists once a minute, so give a change a minute before testing it.
+## Gateway configuration follows the app
+
+Every 15 seconds the host checks the app and rewrites the middlewares when something changed:
+
+| App | `crowdsec` and `crowdsec-appsec` |
+|---|---|
+| Not installed, stopped, moving or restoring | Empty chains. |
+| No active domain, so no name | Empty chains. |
+| Waiting for its first certificate | Empty chains. |
+| Running, and `GET /health` answers over verified TLS at its name | The bouncer plugin, pointed at `crowdsec.<namespace>`. |
+| Running, but `/health` failed twice in a row (about 30 seconds) | Empty chains, until it answers again. |
+
+The identity deploy always writes empty chains first, so a restarted gateway never names a middleware it can't build.
 
 ## Fail-open behaviour
 
+Checked on a local copy of the whole path with the real images:
+
 | Failure | What visitors see |
 |---|---|
-| Engine stopped | The bouncer keeps the bans it already has and lets everyone else through. AppSec checks fail in about a second and pass. |
-| Engine hung | AppSec checks time out after 2 seconds and pass. The ban check isn't affected. |
-| Gateway starts while the engine is down | No bans until the first successful stream pull (`streamStartupBlock: false`). |
-| Plugin missing or changed | Traefik can't build any middleware that uses it, and every HTTP route fails. The AppHost refuses to publish unless the plugin tree matches its pinned digest, so this only happens if files change after a deploy. |
+| Engine stopped or its server off | Requests pass at once. The plugin keeps the bans it already pulled. |
+| Engine hung (connections accepted, nothing answered) | Requests on AppSec routes wait 2 seconds (`httpTimeoutSeconds`), then pass. Lucia's console isn't affected. After about 30 seconds the host switches to empty chains and the delay goes. |
+| Engine's certificate not from Lucia's CA, or not for its name | The plugin refuses the connection and everything passes. |
+| The engine's name doesn't resolve on the Spark | Requests pass at once (AppSec logs `unreachable`). The host's check fails the same way and switches to empty chains. |
+| Gateway restarts while the engine is down | No bans until the first pull (`streamStartupBlock: false`). |
 
-The bouncer uses `updateMaxFailure: -1`, `crowdsecAppsecFailureBlock: false`, `crowdsecAppsecUnreachableBlock: false` and `crowdsecAppsecUnreadableBodyBlock: false`. The last one lets HTTP/2 uploads without a length through on their headers alone. Bodies are inspected up to 10 MB and the rest streams on untouched.
+One case blocks: AppSec answering `401`, which means it doesn't know the gateway's key. The plugin treats any status other than 200, 403 and 5xx as a block. Lucia only points the middlewares at an engine whose key it rendered, so this shows up only if someone changes the key by hand.
 
 :::warning
-The plugin is the one piece that fails closed. If routes on 443 and 8445 all return 404 after an upgrade, check `docker logs lucia-identity-gateway` for `Plugins are disabled`, then rerun `tools/identity/provision.py prepare` to restore the verified tree.
+The plugin itself is the other piece that fails closed. If routes on 443 and 8445 all return 404 after an upgrade, check `docker logs lucia-identity-gateway` for `Plugins are disabled`, then rerun `tools/identity/provision.py prepare` to restore the verified tree.
 :::
 
-## Deploying
+## The Gateway protection page
 
-`provision.py prepare` (and `apply`) does the preparation:
+Owners see engine health, version, server, certificate expiry, the Central API state, the gateway's last ban pull, counters since the engine started, active bans with **Unban**, recent alerts, AppSec blocks and the trusted-address list. The host serves it from:
 
-1. Creates `crowdsec-bouncer-key` if it's missing.
-2. Copies the engine settings to `config/crowdsec/`.
-3. Downloads the plugin's Go module zip and the two modules it vendors (`leprosus/golang-ttl-map` v1.1.7, `maxlerebourg/simpleredis` v1.0.12) from `proxy.golang.org`, checks each zip's SHA-256, unpacks them and checks the tree digest. This needs internet once. Later runs reuse the verified tree.
+| Endpoint | Does |
+|---|---|
+| `GET /api/host/security/crowdsec` | Status. Engine facts come from the `lucia-status` line the engine logs every minute, read through the server's agent. |
+| `GET /api/host/security/crowdsec/alerts?limit=50` | Recent alerts, community blocklist excluded. Each has a `kind` (`waf` for an AppSec block) and, for blocks, the `path`. Add `kind=appsec` for blocks only or `kind=scenario` for the rest; the page asks for both. |
+| `GET /api/host/security/crowdsec/decisions` | Bans in force from alerts with an active decision. |
+| `POST /api/host/security/crowdsec/unban` | `{"ip": "203.0.113.7"}` or a network. Lifts every decision on it. |
+| `PUT` / `DELETE /api/host/security/crowdsec/enrollment` | Saves or forgets a Console enroll key. |
+| `GET` / `PUT /api/host/security/safe-harbor` | The trusted-address list. |
 
-Then the AppHost checks the plugin tree again, writes `crowdsec.yml`, and Aspire restarts the gateway with the new static configuration. Expect a few seconds without the gateway while Traefik restarts.
+All are owner-only. Nothing secret reaches the browser.
 
-The engine's first start needs internet too. It registers with the Central API and downloads the hub collections, usually in under a minute. Without internet it exits and Docker restarts it until it gets through, and the gateway serves traffic unprotected meanwhile. `provision.py verify` doesn't wait for the engine.
+The page says **Protecting the gateway** only when the log path works too. Two warnings replace it while the gateway still checks every request:
 
-## Everyday commands
-
-```bash
-docker exec lucia-identity-crowdsec cscli decisions list            # who is banned, and for how long
-docker exec lucia-identity-crowdsec cscli alerts list               # everything noticed, LAN included
-docker exec lucia-identity-crowdsec cscli decisions delete --ip 203.0.113.7   # unban
-docker exec lucia-identity-crowdsec cscli decisions add --ip 192.168.1.66 --duration 24h --reason "manual"
-docker exec lucia-identity-crowdsec cscli allowlists inspect lucia-safe-harbor
-docker exec lucia-identity-crowdsec cscli capi status
-docker exec lucia-identity-crowdsec cscli metrics
-```
-
-An unban reaches the gateway at its next stream pull, within 15 seconds.
+| State | Means |
+|---|---|
+| `needs-observability` | Observability is missing or older than version 12, so no access log reaches CrowdSec. Only AppSec and the community blocklist protect the gateway. |
+| `no-logs` | The engine's access-log line count hasn't moved for 15 minutes (from its `lucia-status` line). Check that Observability runs and its collector reaches the engine's name. A quiet lab with nobody using the gateway shows this too. |
 
 ## CrowdSec Console
 
-To see and manage the engine from [app.crowdsec.net](https://app.crowdsec.net), put your enroll key in the identity state:
+Paste the enroll key from [app.crowdsec.net](https://app.crowdsec.net) on the page. Lucia stores it in the app's encrypted environment as `LUCIA_CROWDSEC_ENROLL_KEY` and the sidecar hands it to the engine. Within a minute the engine runs `cscli console enroll --name lucia-<server> --tags lucia` and the page shows **pending**; once you accept the engine in the Console it shows **accepted**, and the engine reloads to pick up Console features. A wrong key shows the Console's own error and is retried every ten minutes. The key never appears in the engine's log.
+
+## Everyday commands
+
+On the CrowdSec server, where `<name>` is the app's name:
 
 ```bash
-install -m 0600 /dev/stdin ~/.local/share/lucia/identity/crowdsec/enroll/enroll-key <<< "YOUR-ENROLL-KEY"
+docker exec lucia-<name>-crowdsec-1 cscli decisions list                    # who is banned
+docker exec lucia-<name>-crowdsec-1 cscli alerts list                       # everything noticed
+docker exec lucia-<name>-crowdsec-1 cscli decisions delete --ip 203.0.113.7 # unban
+docker exec lucia-<name>-crowdsec-1 cscli allowlists inspect lucia-safe-harbor
+docker exec lucia-<name>-crowdsec-1 cscli capi status
+docker exec lucia-<name>-crowdsec-1 cscli metrics
+docker logs lucia-<name>-crowdsec-1 2>&1 | grep lucia-status | tail -1      # what the page reads
 ```
 
-Within 20 seconds the engine enrolls as `lucia-<spark name>` and logs `lucia: enrollment sent to the CrowdSec Console`. Accept it in the Console. A wrong key logs a failure and is retried every ten minutes; the engine keeps running either way. CrowdSec 1.8 turns Console decision management on by itself when your plan includes it, which is how you ban and unban from the Console.
+An unban reaches the gateway at its next pull, within 15 seconds.
 
-## Metrics
+## Moving from the engine on the Spark
 
-The engine's Prometheus metrics (level `aggregated`) are published on `127.0.0.1:19060`. The controller's telemetry relay scrapes them as the `crowdsec` job, so they show up in Observability next to the node exporter. See [Observability](./observability.mdx).
+Lucia's first CrowdSec release ran the engine beside the gateway as `lucia-identity-crowdsec`. To move:
+
+1. Deploy the host with this release. Make sure a domain is active and the Spark resolves names through AdGuard, install Observability if it isn't there, then install the CrowdSec app on a managed server.
+2. Wait for **Protecting the gateway** on the page, and check `docker exec lucia-<name>-crowdsec-1 cscli bouncers list` shows a recent last pull. `getent hosts crowdsec.<namespace>` on the Spark should answer with the server's address.
+3. Deploy the identity stack (`tools/identity/provision.py apply`). It no longer has the engine, the JSON access-log file or the Spark relay's `crowdsec` scrape. If `docker ps` still lists `lucia-identity-crowdsec`, remove it with `docker rm -f lucia-identity-crowdsec`.
+4. Delete what the old engine left: the volumes ending in `_lucia-crowdsec-data` and `_lucia-crowdsec-config` (`docker volume ls | grep lucia-crowdsec`), and under `~/.local/share/lucia/identity/` the folders `config/crowdsec`, `access-logs`, `crowdsec` and the file `secrets/crowdsec-bouncer-key`.
+
+Ban and alert history starts fresh on the new engine. The community blocklist comes back with its first Central API pull.

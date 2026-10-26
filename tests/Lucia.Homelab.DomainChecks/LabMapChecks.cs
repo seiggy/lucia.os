@@ -168,7 +168,7 @@ internal static class LabMapChecks
         var observability = StackCatalog.Find("observability");
         var obs = observability.Render(StackCatalog.Settings(observability, null), new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
         check(obs.Compose.Contains("- \"2055:2055/udp\"", StringComparison.Ordinal)
-            && obs.Compose.Contains("\"--config=env:LUCIA_LAB_COLLECTOR\"]", StringComparison.Ordinal)
+            && obs.Compose.Contains("\"--config=env:LUCIA_LAB_COLLECTOR\", \"--config=env:LUCIA_CROWDSEC_COLLECTOR\"]", StringComparison.Ordinal)
             && obs.Compose.Contains("LUCIA_LAB_SNMP_AUTH: ${LUCIA_LAB_SNMP_AUTH:-}", StringComparison.Ordinal)
             && obs.Compose.Contains("netflow:", StringComparison.Ordinal) && obs.Compose.Contains("signal_to_metrics/flows:", StringComparison.Ordinal)
             && obs.Compose.Contains("--enable-feature=otlp-native-delta-ingestion", StringComparison.Ordinal)

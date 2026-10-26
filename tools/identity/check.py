@@ -18,7 +18,7 @@ import sys
 import tempfile
 from unittest.mock import MagicMock, Mock, patch
 
-from provision import BASE_DN, LATE_SECRET_NAMES, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, service_hosts, settings_for, tree_digest, unpack_plugin, validate_host
+from provision import BASE_DN, ROOT, IdentityReadinessError, Provisioner, SECRET_NAMES, authority, command_failure_message, configure_authentik, configure_browser_session, service_hosts, settings_for, tree_digest, unpack_plugin, validate_host
 from owner import enroll_ldap_owner, finish_owner, owner_identity, validate_login_password, validate_password, validate_username, verify_login
 import provision
 import zipfile
@@ -71,21 +71,16 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
     for source in (ROOT / "deployment" / "identity").iterdir():
         if source.suffix in (".sh", ".ldif"):
             (templates / source.name).write_bytes(source.read_text().replace("\n", "\r\n").encode())
-    (templates / "crowdsec").mkdir()
-    for source in (ROOT / "deployment" / "identity" / "crowdsec").iterdir():
-        (templates / "crowdsec" / source.name).write_bytes(source.read_text().replace("\n", "\r\n").encode())
     first = Provisioner(args)
     with patch("provision.ROOT", templates.parents[1]), contextlib.redirect_stdout(io.StringIO()):
         first.prepare()
     for script in (first.state / "config").glob("*.sh"):
         assert b"\r" not in script.read_bytes(), "POSIX scripts must be staged with LF even from a CRLF checkout."
-    for staged in (first.state / "config" / "crowdsec").iterdir():
-        assert b"\r" not in staged.read_bytes(), "CrowdSec's script and YAML must be staged with LF even from a CRLF checkout."
-    assert sorted(path.name for path in (first.state / "config" / "crowdsec").iterdir()) == sorted(provision.CROWDSEC_FILES)
-    for directory in ("gateway/security", "access-logs", "crowdsec/enroll", "plugins-local"):
+    # CrowdSec runs as a catalog app on a managed server now: the Spark keeps only the gateway's middlewares and the plugin.
+    for retired in ("config/crowdsec", "access-logs", "crowdsec", "secrets/crowdsec-bouncer-key"):
+        assert not (first.state / retired).exists(), retired
+    for directory in ("gateway/security", "plugins-local"):
         assert (first.state / directory).is_dir(), directory
-    bouncer_key = first.state / "secrets" / LATE_SECRET_NAMES[0]
-    assert len(bouncer_key.read_text()) >= 32 and bouncer_key.read_text() in first.values.values()
     assert b"\r" not in (first.state / "trust" / "install-node-trust.sh").read_bytes()
     hashes = {name: hashlib.sha256((first.state / "secrets" / name).read_bytes()).hexdigest() for name in SECRET_NAMES}
     second = Provisioner(args)
@@ -552,10 +547,6 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
             raise AssertionError("An invalid or duplicate port was accepted.")
         except ValueError:
             pass
-    (second.state / "secrets" / LATE_SECRET_NAMES[0]).unlink()
-    with contextlib.redirect_stdout(io.StringIO()):
-        second.prepare()
-    assert (second.state / "secrets" / LATE_SECRET_NAMES[0]).exists(), "An existing installation must get the new bouncer key."
     assert hashes == {name: hashlib.sha256((second.state / "secrets" / name).read_bytes()).hexdigest() for name in SECRET_NAMES}
     (second.state / "secrets" / SECRET_NAMES[0]).unlink()
     try:
@@ -629,4 +620,4 @@ with tempfile.TemporaryDirectory(prefix=".lucia-identity-check-", dir=ROOT / "to
             install_plugin(second)
             assert len(fetched) == 4 and tree_digest(target) == tree_digest(expected_tree), "A changed plugin tree must be replaced."
         assert not list((second.state / "plugins-local").glob(".staging-*")) and not list(target.parent.glob(".previous-*"))
-print("Identity checks passed: repeat-safe storage/credentials, the CrowdSec bouncer key and verified plugin installer, private supplied passwords, interrupted enrollment, owner drift guards, LDAP-backed login, CSRF, and credential/session cleanup.")
+print("Identity checks passed: repeat-safe storage/credentials, the verified CrowdSec bouncer plugin installer, private supplied passwords, interrupted enrollment, owner drift guards, LDAP-backed login, CSRF, and credential/session cleanup.")
