@@ -611,7 +611,7 @@ internal static class StackChecks
         var rendered = localAi.Render(settings, gpuNode, new Dictionary<string, string>());
         var env = StackCatalog.ReadEnv(rendered.Env);
         check(!rendered.Compose.Contains('\r'), "Local AI's compose has Windows line endings.");
-        check(rendered.Compose.Contains("lucia-inference:0.1.9-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
+        check(rendered.Compose.Contains("lucia-inference:0.1.10-cuda13@sha256:") && rendered.Compose.Contains($"device_ids: [\"{uuid}\"]")
             && rendered.Compose.Contains("HostPlatform__MemoryBudgetGiB: \"23\"") && rendered.Require.Contains("cuda=13")
             && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
             "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");

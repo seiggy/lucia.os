@@ -176,7 +176,7 @@ Downloads call the `hf` CLI (`HostPlatform__HuggingFaceExecutable`, `/opt/hf/bin
 ```yaml
 services:
   inference:
-    image: seiggy/lucia-inference:0.1.9-cuda13@sha256:d925446dc536136b7340689cc6586e6ceeadb315033f226e48ec3cf6a7ccb09b
+    image: seiggy/lucia-inference:0.1.10-cuda13@sha256:a8ccd79e7d4f5f0da1c29478c53340faa9dffca67ffaa9658fd2e0f56bd4a5c6
     restart: unless-stopped
     ports: ["8080:8080"]
     environment:

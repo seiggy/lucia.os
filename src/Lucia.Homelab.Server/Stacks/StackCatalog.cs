@@ -161,7 +161,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 13, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 14, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -206,8 +206,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 13, "Local A
     // Pinned by digest so every server runs exactly what was tested. Published from deployment/inference/Dockerfile.
     private static readonly Dictionary<int, string> Images = new()
     {
-        [12] = "seiggy/lucia-inference:0.1.9-cuda12@sha256:7461869ff942e713a4d224abecd50777ac4669bcd45e4778b47e1b12dcec2d9f",
-        [13] = "seiggy/lucia-inference:0.1.9-cuda13@sha256:d925446dc536136b7340689cc6586e6ceeadb315033f226e48ec3cf6a7ccb09b",
+        [12] = "seiggy/lucia-inference:0.1.10-cuda12@sha256:c63c029840db4f990f7fee127ad96dabb40f8a45269d4e613f02389ff21d77d3",
+        [13] = "seiggy/lucia-inference:0.1.10-cuda13@sha256:a8ccd79e7d4f5f0da1c29478c53340faa9dffca67ffaa9658fd2e0f56bd4a5c6",
     };
 
     private static readonly Dictionary<int, string> VllmImages = new()
