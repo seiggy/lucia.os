@@ -146,7 +146,7 @@ are downloaded, and certificate warnings must not be bypassed.
 
 ### Develop and publish the desktop
 
-Only the .NET 10 SDK is needed to build the desktop UI projects. Building a
+Only the .NET 10 SDK (10.0.403 or a later 10.0.4xx patch, pinned in global.json) is needed to build the desktop UI projects. Building a
 complete deployable package additionally requires Node/npm, Python, and the
 TensorSharp package feed described below for the bundled Linux ARM64 host:
 

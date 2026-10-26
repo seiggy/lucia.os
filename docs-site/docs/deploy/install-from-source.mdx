@@ -20,7 +20,7 @@ This page assumes the Spark meets the [requirements](../guide/requirements.mdx):
 
 | Tool | Used for |
 |---|---|
-| .NET 10 SDK | Server, node agent, desktop app |
+| .NET SDK 10.0.403 or a later 10.0.4xx patch (global.json) | Server, node agent, desktop app. The node agent bundles the runtime, so an older SDK would ship an older one |
 | Node.js and npm | The React portal (`src/frontend`). Needs Node `^20.19.0` or `>=22.12.0` |
 | Python 3 | `tools/host/package.py`, which packs the host archive |
 | PowerShell 7 (`pwsh`) | `tools/desktop/publish.ps1` |
@@ -67,7 +67,7 @@ As the account you will use for setup:
 loginctl enable-linger "$USER"
 ```
 
-The desktop installs the domain, enrollment and Spark model/runner user services only if lingering is already on. Leave .NET and Aspire alone. If they are missing, the desktop installs .NET 10.0.401 and Aspire 13.5.4 under your home from pinned, checksummed packages, after you approve.
+The desktop installs the domain, enrollment and Spark model/runner user services only if lingering is already on. Leave .NET and Aspire alone. If they are missing, the desktop installs the .NET 10.0.403 SDK and Aspire 13.5.4 under your home from pinned, checksummed packages, after you approve.
 
 ## 4. Run the desktop
 

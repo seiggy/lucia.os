@@ -1,5 +1,5 @@
-# MCR index verified 2026-09-22: linux/amd64, linux/arm/v7, linux/arm64; ASP.NET 10.0.12.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble@sha256:2d584d8147faddb0d678c5748d47953e5b8e18621ed4fb7049a91381d9d7746f
+# MCR index verified 2026-10-26: linux/amd64, linux/arm/v7, linux/arm64; ASP.NET 10.0.14.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee
 
 # TensorSharp supplies CUDA user-mode libraries; Docker CDI injects the host driver.
 RUN apt-get update \

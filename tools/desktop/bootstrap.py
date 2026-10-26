@@ -47,7 +47,7 @@ import uuid
 
 SCHEMA = 1
 VERSION = "0.1.0"
-DOTNET_VERSION = "10.0.401"
+DOTNET_VERSION = "10.0.403"
 ASPIRE_VERSION = "13.5.4"
 APPHOST = "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj"
 FILES = frozenset((
