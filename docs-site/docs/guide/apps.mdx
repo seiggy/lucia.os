@@ -39,6 +39,7 @@ The first install of a big app can take several minutes while Docker downloads i
 | Lab infrastructure | AdGuard Home, Object storage, Observability, GitHub Actions runner |
 | AI | Local AI, LiteLLM |
 | Photos and media | Immich, Plex, MusicBrainz |
+| Work | Leantime |
 | Media automation | Sonarr, Radarr, Lidarr, Seerr, Jackett, NZBHydra 2, FlareSolverr, a download client behind a VPN |
 | Home | Home Assistant, Mosquitto, Voice, ESPHome, Matter Server, Music Assistant, Node-RED |
 
@@ -47,7 +48,8 @@ A few of them come with extras:
 - **AdGuard Home** gets an address of its own on your network, so devices never lose their DNS server when it moves.
 - **Observability** gives you Grafana graphs of your servers. See [Monitoring](./monitoring.mdx).
 - **Object storage** hands out private storage buckets to apps that need one. Observability is the first.
-- **Grafana, Immich, LiteLLM and the Object storage console** sign you in with your Lucia account. Nothing to set up.
+- **Grafana, Immich, LiteLLM, Leantime and the Object storage console** sign you in with your Lucia account. Nothing to set up.
+- **Leantime** asks for your email when you install it. That's its first account, and signing in through Lucia opens it, so use the email on your Lucia account. It runs locked down, because PHP apps are a common target: it can't change its own files, and its database can't reach the internet.
 - **The GitHub Actions runner** can also run on the Spark itself when a build needs an ARM64 machine. It starts when you ask and stops when idle.
 
 ### Your own app

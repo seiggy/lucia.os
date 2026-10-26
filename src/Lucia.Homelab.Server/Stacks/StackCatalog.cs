@@ -72,7 +72,7 @@ public abstract class CatalogApp(string id, int version, string name, string sum
 
 public static class StackCatalog
 {
-    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new ObjectStorageApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new PlexApp(),
+    public static readonly CatalogApp[] Apps = [new LocalAiApp(), new AdGuardApp(), new ObservabilityApp(), new ObjectStorageApp(), new MusicBrainzApp(), new ImmichApp(), new LiteLlmApp(), new LeantimeApp(), new PlexApp(),
         .. MediaApp.All, new DownloadClientApp(), new HomeAssistantApp(), new MosquittoApp(), new VoiceApp(), .. HomeCompanionApp.All, new GitHubRunnerApp()];
 
     public static CatalogApp Find(string id) => Apps.FirstOrDefault(app => app.Id == id)
@@ -1729,6 +1729,140 @@ internal sealed class LiteLlmApp() : CatalogApp("litellm", 1, "LiteLLM",
             + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
         return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
     }
+}
+/// <summary>
+/// Leantime, a project manager for small teams. It's PHP, so the app runs locked down: no capabilities, no privilege gain,
+/// a read-only root file system with only its data folders writable, and MySQL on a network with no way out. A one-shot
+/// init installs the database with the owner's account, so the installer page is never open, and migrates it on every
+/// update. Once Lucia registers its Authentik client, owners sign in through Lucia and the password form goes away.
+/// </summary>
+internal sealed partial class LeantimeApp() : CatalogApp("leantime", 1, "Leantime",
+    "Plan projects, track tasks and time, and keep goals in view, for you and a small team.",
+    "Any server with Docker ready and 1 GB of memory.",
+    [],
+    [
+        new("web-host", "Web name", "text", "leantime", "Leantime's web address is this name under your domain."),
+        new("port", "Web port", "port", "8085", "Leantime also answers on http://<server>:<port>."),
+        new("admin-email", "Your email", "text", Help: "Leantime's first account, its owner. Use the email on your Lucia account, so signing in through Lucia opens it."),
+    ])
+{
+    private const string Image = "leantime/leantime:3.12.0@sha256:8e093293224cf48a24cfac7f32631aa5335014a065cd62b8ced4a74e4d548b80";
+    private const string MySql = "mysql:8.4@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69";
+
+    // MySQL's data is only consistent while it's stopped.
+    public override string BackupMode => "stop";
+
+    public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
+        new("Leantime", settings["web-host"].ToLowerInvariant(), "/oidc/callback");
+
+    internal override CatalogOutput Render(IReadOnlyDictionary<string, string> settings, ManagedNodeFacts node, IReadOnlyDictionary<string, string> env)
+    {
+        var (host, port, email) = (settings["web-host"].ToLowerInvariant(), settings["port"], settings["admin-email"].Trim());
+        if (!Email().IsMatch(email))
+            throw new HardwareOnboardingException(400, "invalid_setting", "Enter the email for Leantime's first account, such as you@example.com.");
+        var appUrl = "${" + StackStore.RouteVariable(host) + $":-http://{node.Hostname}:{port}}}";
+        var compose = $$"""
+            # Installed from Lucia's catalog (leantime, version {{Version}}). Lucia rewrites this file when you change the
+            # app's settings. Convert the app to a custom app to edit it by hand.
+            x-leantime: &leantime
+              image: {{Image}}
+              environment:
+                LEAN_APP_URL: {{appUrl}}
+                LEAN_DB_HOST: db
+                LEAN_DB_USER: leantime
+                LEAN_DB_PASSWORD: ${DB_PASSWORD}
+                LEAN_DB_DATABASE: leantime
+                LEAN_SESSION_PASSWORD: ${SESSION_PASSWORD}
+                LEAN_NEWS_ENABLED: "false"
+                # Lucia sets LUCIA_SSO_* once Leantime's Authentik client exists. Only Lucia's owners get in, as admins, and the
+                # password form goes away; it comes back if sign-in through Lucia is ever off.
+                LEAN_OIDC_ENABLE: ${LUCIA_SSO_ENABLED:-false}
+                LEAN_DISABLE_LOGIN_FORM: ${LUCIA_SSO_ENABLED:-false}
+                LEAN_OIDC_CLIENT_ID: ${LUCIA_SSO_CLIENT_ID:-}
+                LEAN_OIDC_CLIENT_SECRET: ${SSO_CLIENT_SECRET}
+                LEAN_OIDC_PROVIDER_URL: ${LUCIA_SSO_ORIGIN:-https://invalid}/application/o/${LUCIA_SSO_CLIENT_ID:-x}/
+                LEAN_OIDC_CREATE_USER: "true"
+                LEAN_OIDC_DEFAULT_ROLE: "40"
+                # Accounts come from Lucia's directory, never self sign-up, so their emails are trusted.
+                LEAN_OIDC_REQUIRE_VERIFIED_EMAIL: "false"
+              security_opt: ["no-new-privileges:true"]
+              cap_drop: [ALL]
+              read_only: true
+              tmpfs:
+                - /run:uid=1000,gid=1000,mode=0755
+                - /tmp:uid=1000,gid=1000,mode=1777
+                - /var/www/html/bootstrap/cache:uid=1000,gid=1000,mode=0775
+                - /var/lib/nginx/tmp:uid=1000,gid=1000,mode=0770
+                - /var/log/nginx:uid=1000,gid=1000,mode=0775
+              pids_limit: 256
+              mem_limit: 1g
+              volumes:
+                - userfiles:/var/www/html/userfiles
+                - public-userfiles:/var/www/html/public/userfiles
+                - plugins:/var/www/html/app/Plugins
+                - logs:/var/www/html/storage/logs
+                - framework:/var/www/html/storage/framework
+            services:
+              # Installs the database with the owner's account the first time, so the installer page is never open, and
+              # migrates it after every update.
+              init:
+                <<: *leantime
+                restart: on-failure:5
+                entrypoint: ["php", "/var/www/html/bin/leantime", "db:migrate", "--email={{email}}", "--password=${ADMIN_PASSWORD}",
+                  "--first-name=Lucia", "--last-name=Owner", "--company-name=Lucia"]
+                networks: [data]
+                depends_on:
+                  db:
+                    condition: service_healthy
+              leantime:
+                <<: *leantime
+                restart: unless-stopped
+                ports:
+                  - "{{port}}:8080"
+                networks: [default, data]
+                depends_on:
+                  init:
+                    condition: service_completed_successfully
+              db:
+                image: {{MySql}}
+                restart: unless-stopped
+                command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+                environment:
+                  MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+                  MYSQL_DATABASE: leantime
+                  MYSQL_USER: leantime
+                  MYSQL_PASSWORD: ${DB_PASSWORD}
+                # Over TCP: MySQL's first start runs a server without networking, which a socket ping would call ready.
+                healthcheck:
+                  test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u\"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\" --silent"]
+                  interval: 5s
+                  retries: 60
+                  start_period: 2m
+                volumes:
+                  - mysql:/var/lib/mysql
+                networks: [data]
+            networks:
+              # The database's network has no route out, and only Leantime joins it.
+              data:
+                internal: true
+            volumes:
+              userfiles:
+              public-userfiles:
+              plugins:
+              logs:
+              framework:
+              mysql:
+
+            """;
+        var envText = $"DB_PASSWORD={StackCatalog.Secret(env, "DB_PASSWORD")}\n"
+            + $"SESSION_PASSWORD={StackCatalog.Secret(env, "SESSION_PASSWORD")}\n"
+            + $"ADMIN_PASSWORD={StackCatalog.Secret(env, "ADMIN_PASSWORD")}\n"
+            + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
+        return new(compose.ReplaceLineEndings("\n"), envText, [], [new(host, int.Parse(port, CultureInfo.InvariantCulture))]);
+    }
+
+    [GeneratedRegex(@"\A[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\z")]
+    private static partial Regex Email();
 }
 /// <summary>
 /// Plex Media Server over media folders on NAS shares. It uses the host's network, as Plex's discovery and remote access

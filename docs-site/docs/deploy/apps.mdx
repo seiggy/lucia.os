@@ -145,7 +145,13 @@ Backups use restic into one repository on a NAS share you choose under **Apps â†
 
 Every node writes to the same repository. The Spark generates the repository password once and keeps it encrypted. The portal reveals it under **Show recovery key**, and so does `GET /api/host/backups/recovery`. Store a copy outside the Spark, because backups taken with a lost key can't be opened.
 
-An app's mode is `live` or `stop`. `stop` runs `docker compose stop` for the length of the backup, which Plex, LiteLLM and Object storage use because their data is only consistent while stopped. Some apps exclude rebuildable paths such as downloaded models.
+An app's mode is `live` or `stop`. `stop` runs `docker compose stop` for the length of the backup, which Plex, LiteLLM, Leantime and Object storage use because their data is only consistent while stopped. Some apps exclude rebuildable paths such as downloaded models.
+
+### Leantime's lockdown
+
+Leantime is PHP, so its catalog compose hardens it beyond the other apps. Its containers run as uid 1000 with `cap_drop: [ALL]`, `no-new-privileges`, a read-only root, `pids_limit: 256` and a 1 GB memory limit. Only its data volumes (`userfiles`, `public-userfiles`, `plugins`, `logs`, `storage/framework`) and uid-1000 tmpfs mounts for `/run`, `/tmp`, `bootstrap/cache` and nginx's temp and log folders can be written. MySQL 8.4 sits alone on a Compose network with `internal: true`, so it publishes no port and has no route out. A one-shot `init` service runs `db:migrate` with the owner's email and a generated `ADMIN_PASSWORD`. The installer page is therefore never open, and each update migrates the database before the app starts. MySQL's healthcheck pings over TCP, because its first boot runs a server without networking that a socket ping reports as ready.
+
+Once the Authentik client exists, `LEAN_OIDC_ENABLE` and `LEAN_DISABLE_LOGIN_FORM` both follow `LUCIA_SSO_ENABLED`. Owners sign in through Lucia, accounts are created as admins (role 40), and the password form only comes back if sign-in through Lucia is off. Leantime trusts `X-Forwarded-*` only from private addresses, which is how it sees HTTPS behind the gateway.
 
 To open the repository without Lucia:
 

@@ -220,6 +220,25 @@ internal static class StackChecks
             && ll.Compose.Contains("        disable_env_credential_login: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
             && ll.Routes is [{ Host: "litellm", Port: 4000, GrpcPort: null }],
             "LiteLLM must keep its keys, sign in through Lucia only once its client exists and export telemetry only with an Observability app.");
+        var leantime = StackCatalog.Find("leantime");
+        var ltSettings = StackCatalog.Settings(leantime, new() { ["admin-email"] = " owner@example.com " });
+        var lt = leantime.Render(ltSettings, new(Guid.NewGuid(), "lucialab01", true, null), new Dictionary<string, string>());
+        var ltEnv = StackCatalog.ReadEnv(lt.Env);
+        check(leantime.Render(ltSettings, new(Guid.NewGuid(), "lucialab01", true, null), ltEnv).Env == lt.Env
+            && new[] { "DB_PASSWORD", "SESSION_PASSWORD", "ADMIN_PASSWORD", StackStore.SsoSecret }.All(key => ltEnv[key].Length >= 32)
+            && leantime.BackupMode == "stop" && leantime.Sso(ltSettings) == new AppSso("Leantime", "leantime", "/oidc/callback")
+            && lt.Routes is [{ Host: "leantime", Port: 8085 }] && !lt.Compose.Contains('\r')
+            && lt.Compose.Contains("    LEAN_APP_URL: ${LUCIA_URL_LEANTIME:-http://lucialab01:8085}\n", StringComparison.Ordinal)
+            && lt.Compose.Contains("\"--email=owner@example.com\"", StringComparison.Ordinal)
+            && lt.Compose.Contains("    LEAN_DISABLE_LOGIN_FORM: ${LUCIA_SSO_ENABLED:-false}\n", StringComparison.Ordinal)
+            && lt.Compose.Contains("  cap_drop: [ALL]\n  read_only: true\n", StringComparison.Ordinal)
+            && lt.Compose.Contains("security_opt: [\"no-new-privileges:true\"]", StringComparison.Ordinal)
+            && lt.Compose.Contains("  data:\n    internal: true\n", StringComparison.Ordinal)
+            && lt.Compose.Split("networks: [data]").Length == 3 && !lt.Compose.Contains("3306"),
+            "Leantime must keep its secrets, run locked down with its database cut off from the network, install itself and sign in through Lucia.");
+        foreach (var bad in new[] { "", "owner", "a@b", "x\"@example.com", "$x@example.com" })
+            Rejects(() => leantime.Render(StackCatalog.Settings(leantime, new() { ["admin-email"] = bad }), new(Guid.NewGuid(), "lucialab01", true, null),
+                new Dictionary<string, string>()), $"Leantime accepted the owner email '{bad}'.");
         var plex = StackCatalog.Find("plex");
         var plexSettings = StackCatalog.Settings(plex, new() { ["media"] = "/mnt/lucia/nas/truenas/media/", ["media-2"] = "/mnt/lucia/nas/unas/Media", ["plex-claim"] = "claim-abc" });
         var plexEnv = StackCatalog.KeepSecrets(plex, plexSettings, []);
