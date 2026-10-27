@@ -33,7 +33,7 @@ internal static class CrowdSecDashboard
         return reader.ReadToEnd();
     }
 
-    private const string Alerts = "{service_name=\"crowdsec\"} | crowdsec_source_class=~\"$class\"";
+    private const string Alerts = "{service_name=\"crowdsec\", crowdsec_kind=~\".+\"} | crowdsec_source_class=~\"$class\"";
     private const string Blocks = "{service_name=\"crowdsec\", crowdsec_kind=\"waf\"} | crowdsec_source_class=~\"$class\"";
     // One line per alert, ready to paste to Lucia's assistant.
     private const string Assistant = " | line_format \"CrowdSec alert: {{.source_address}} ({{.crowdsec_source_class}}) {{.crowdsec_scenario}}"
@@ -218,7 +218,7 @@ internal static class CrowdSecDashboard
                 {
                     new
                     {
-                        name = "class", label = "Source", type = "custom", query = string.Join(",", classes), multi = true, includeAll = true, allValue = ".*",
+                        name = "class", label = "Source", type = "custom", query = string.Join(",", classes), multi = true, includeAll = true, allValue = ".+",
                         current = new { text = new[] { "All" }, value = new[] { "$__all" } },
                         options = Array.Empty<object>(),
                     },

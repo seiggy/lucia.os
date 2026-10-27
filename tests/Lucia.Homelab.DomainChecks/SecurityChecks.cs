@@ -302,7 +302,7 @@ internal static class SecurityChecks
         check(Refusal(Stored("observability", ObservabilityApp.AppId, 12)) is { } old && old.StartsWith("requires_update: Update Observability first", StringComparison.Ordinal)
             && old.Contains("version 13 or later", StringComparison.Ordinal) && old.Contains("runs version 12", StringComparison.Ordinal)
             && Refusal(Stored("observability", ObservabilityApp.AppId, 12), Stored("metrics", ObservabilityApp.AppId, 13)) is null
-            && app.RequiresVersions[ObservabilityApp.AppId] == ObservabilityApp.ShowsCrowdSec && ObservabilityApp.ShowsCrowdSec == StackCatalog.Find(ObservabilityApp.AppId).Version
+            && app.RequiresVersions[ObservabilityApp.AppId] == ObservabilityApp.ShowsCrowdSec && ObservabilityApp.ShowsCrowdSec <= StackCatalog.Find(ObservabilityApp.AppId).Version
             && ObservabilityApp.ForwardsToCrowdSec < ObservabilityApp.ShowsCrowdSec,
             "A new CrowdSec needs an Observability with its dashboards and alert labels (version 13), so an older one must be updated first.");
         var secretEnv = "GATEWAY_KEY=gk-0123456789abcdef0123456789abcdef\nLUCIA_MACHINE_PASSWORD=mp-0123456789abcdef0123456789abcdef\n"
@@ -339,7 +339,7 @@ internal static class SecurityChecks
 
         var observability = StackCatalog.Find(ObservabilityApp.AppId);
         var collector = observability.Render(StackCatalog.Settings(observability, null), node, new Dictionary<string, string>()).Compose;
-        check(observability.Version == 13 && collector.Contains("\"--config=env:LUCIA_CROWDSEC_COLLECTOR\", \"--config=env:LUCIA_CROWDSEC_INTAKE\"]", StringComparison.Ordinal)
+        check(observability.Version == 14 && collector.Contains("\"--config=env:LUCIA_CROWDSEC_COLLECTOR\", \"--config=env:LUCIA_CROWDSEC_INTAKE\"]", StringComparison.Ordinal)
             && collector.Contains("      LUCIA_CROWDSEC_COLLECTOR: ${LUCIA_CROWDSEC_COLLECTOR:-}\n", StringComparison.Ordinal)
             && collector.Contains("      LUCIA_CROWDSEC_TOKEN: ${LUCIA_CROWDSEC_TOKEN:-}\n", StringComparison.Ordinal)
             && collector.Split("--config=env:LUCIA_CROWDSEC_COLLECTOR").Length == 3,

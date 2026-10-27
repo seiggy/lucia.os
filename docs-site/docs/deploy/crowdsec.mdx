@@ -298,7 +298,7 @@ Version 3 adds the alert notifications, custom rules and full metrics. Update in
 1. Deploy the host and the enrollment worker on the Spark (`tools/nodes/enrollment_worker.py`), which now signs for the Observability app too. Nothing on the servers changes yet.
 2. Update **Observability** to version 13 on its app page. Loki restarts with the `crowdsec.kind` label and Grafana gets the CrowdSec dashboards. Records already in Loki have no `crowdsec_kind` label. Lucia then gets the alert intake's certificate, publishes `otlp-alerts.<namespace>` in AdGuard and redeploys the collector with the intake on 4319.
 3. Update **CrowdSec** to version 3. The engine restarts once, since its config and capabilities changed. From then on, rules and the collector reach it through the sidecar and a reload.
-4. Check that `cscli notifications list` shows five `lucia_alerts_*` entries, that the Gateway protection page shows **Alerts to Grafana** as on, that the engine's log has `lucia: alerts go to Observability's collector at https://otlp-alerts.…:4319`, and that `{service_name="crowdsec"}` in Grafana's Explore returns records after the next alert.
+4. Check that `cscli notifications list` shows five `lucia_alerts_*` entries, that the Gateway protection page shows **Alerts to Grafana** as on, that the engine's log has `lucia: alerts go to Observability's collector at https://otlp-alerts.…:4319`, and that `{service_name="crowdsec", crowdsec_kind=~".+"}` in Grafana's Explore returns records after the next alert. Leave out `crowdsec_kind` and you also get the engine's own container log, which the node's relay ships under the same `service_name`.
 
 ## Moving from the engine on the Spark
 
