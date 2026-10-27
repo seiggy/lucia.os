@@ -239,7 +239,10 @@ internal static partial class StackRunner
         WritePrivate(Path.Combine(directory, ".env"), stack.Env);
         var overridePath = Path.Combine(directory, "compose.lucia.json");
         File.Delete(overridePath);
-        var config = await ComposeAsync(stack.Name, ["config", "--format", "json"], TimeSpan.FromMinutes(1), token);
+        var config = await ComposeAsync(stack.Name, ["config", "--format", "json"], TimeSpan.FromMinutes(1), token, keep: ConfigLimit);
+        // Output past the limit keeps only its tail, which isn't JSON; say so instead of failing to parse it.
+        if (config.Length >= ConfigLimit)
+            throw new NodeAgentException($"This app's compose file resolves to more than {ConfigLimit / (1024 * 1024)} MB, too large to apply.");
         var redirect = VolumeOverride(config, directory);
         var logging = LoggingOverride(config);
         if (redirect is not null || logging is not null)
@@ -393,13 +396,16 @@ internal static partial class StackRunner
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    private static Task<string> ComposeAsync(string name, string[] arguments, TimeSpan limit, CancellationToken token)
+    // A catalog app's resolved compose carries its inline configs, such as Observability's Grafana dashboards (about 340 KB).
+    internal const int ConfigLimit = 16 * 1024 * 1024;
+
+    private static Task<string> ComposeAsync(string name, string[] arguments, TimeSpan limit, CancellationToken token, int keep = 256 * 1024)
     {
         var directory = Path.Combine(Root, name);
         List<string> command = ["compose", "-p", Project(name), "--project-directory", directory,
             "--env-file", Path.Combine(directory, ".env"), "-f", Path.Combine(directory, "compose.yaml")];
         if (File.Exists(Path.Combine(directory, "compose.lucia.json"))) command.AddRange(["-f", Path.Combine(directory, "compose.lucia.json")]);
-        return Commands.RunAsync("/usr/bin/docker", [.. command, .. arguments], limit, token, environment: RegistryLogins.Environment);
+        return Commands.RunAsync("/usr/bin/docker", [.. command, .. arguments], limit, token, keep, environment: RegistryLogins.Environment);
     }
 
     /// <summary>

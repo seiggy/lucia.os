@@ -586,6 +586,7 @@ internal static class InstallationChecks
             && value.Json.Contains("\"device\":\"/srv/lucia/stacks/media/volumes/config\"", StringComparison.Ordinal),
             "Only plain named volumes may be redirected to the stack directory.");
         Check(StackRunner.VolumeOverride("""{"services":{}}""", "/srv/lucia/stacks/x") is null, "A stack without volumes needs no override.");
+        Check(StackRunner.ConfigLimit >= 4 * 1024 * 1024, "compose config keeps a whole catalog app's resolved compose (Observability's is about 340 KB), not just its tail.");
         var logging = StackRunner.LoggingOverride("""{"services":{"web":{"image":"a"},"db":{"image":"b","logging":{"driver":"syslog"}}}}""")?.ToJsonString() ?? "";
         Check(logging.Contains("\"web\":{\"logging\":{\"driver\":\"json-file\"", StringComparison.Ordinal) && logging.Contains("com.docker.compose.service", StringComparison.Ordinal)
             && logging.Contains("\"max-size\":\"20m\"", StringComparison.Ordinal) && !logging.Contains("\"db\"", StringComparison.Ordinal)
