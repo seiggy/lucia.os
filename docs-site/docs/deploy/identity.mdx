@@ -23,11 +23,11 @@ The stack is separate from the Lucia host on purpose. Whoever compromises the po
 
 | Container | Image | Role |
 |---|---|---|
-| `lucia-identity-db` | `postgres:16-alpine` | Authentik's database. Never published. |
+| `lucia-identity-db` | `postgres:16.15-alpine` | Authentik's database. Never published. |
 | `lucia-identity-ca` | `smallstep/step-ca:0.30.2` | The private certificate authority. |
-| `lucia-identity-ldap` | `vegardit/openldap` | The directory: people, groups, password hashes (Argon2), 14-character minimum policy. |
-| `lucia-identity-server` | `goauthentik/server:2026.8.3` | Sign-in (OIDC) and the web UI. |
-| `lucia-identity-worker` | `goauthentik/server:2026.8.3` | Authentik's background worker. Holds the bootstrap admin password and token. |
+| `lucia-identity-ldap` | `vegardit/openldap:2.6.10` | The directory: people, groups, password hashes (Argon2), 14-character minimum policy. |
+| `lucia-identity-server` | `goauthentik/server:2026.8.5` | Sign-in (OIDC) and the web UI. |
+| `lucia-identity-worker` | `goauthentik/server:2026.8.5` | Authentik's background worker. Holds the bootstrap admin password and token. |
 | `lucia-identity-gateway` | `traefik:v3.7.16` | TLS front door for Authentik, LDAPS, the Lucia host and public routes. Runs the CrowdSec bouncer, which asks the CrowdSec app on a managed server. See [Gateway protection](./crowdsec.mdx). |
 | `lucia-identity-renewer` | `smallstep/step-ca:0.30.2` | Renews the gateway's certificate. |
 

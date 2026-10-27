@@ -55,8 +55,8 @@ var bootstrapPassword = Secret("authentik-admin-password");
 var bootstrapToken = Secret("authentik-bootstrap-token");
 
 var postgres = builder.AddPostgres("identity-db", password: databasePassword)
-    .WithImageTag("16-alpine")
-    .WithImageSHA256("721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea")
+    .WithImageTag("16.15-alpine")
+    .WithImageSHA256("0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab")
     .WithVolume("lucia-identity-postgres", "/var/lib/postgresql/data")
     .WithEnvironment("POSTGRES_DB", "authentik")
     .PublishAsDockerComposeService((_, service) =>
@@ -85,8 +85,8 @@ var ca = builder.AddContainer("identity-ca", "smallstep/step-ca", "0.30.2")
         service.Healthcheck = Health("CMD", "step", "ca", "health", "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt");
     });
 
-var ldap = builder.AddContainer("identity-ldap", "vegardit/openldap", "latest")
-    .WithImageSHA256("b81f6c360830b21b9e6d8878563e3e11bd81e243693c83fa371efeee34556ce9")
+var ldap = builder.AddContainer("identity-ldap", "vegardit/openldap", "2.6.10")
+    .WithImageSHA256("a151f73be24a7c7ce086b1df15880fd9f5a21f9c0b09bc8fb0768f5a890e44f4")
     .WithEnvironment("LDAP_INIT_ORG_DN", baseDn)
     .WithEnvironment("LDAP_INIT_ORG_NAME", "Lucia")
     .WithEnvironment("LDAP_INIT_ROOT_USER_DN", $"uid=admin,{baseDn}")
@@ -109,9 +109,9 @@ var ldap = builder.AddContainer("identity-ldap", "vegardit/openldap", "latest")
         service.Healthcheck = Health("CMD", "ldapsearch", "-x", "-H", "ldap://127.0.0.1:389", "-b", "", "-s", "base", "namingContexts");
     });
 
-var server = builder.AddContainer("identity-server", "goauthentik/server", "2026.8.3")
+var server = builder.AddContainer("identity-server", "goauthentik/server", "2026.8.5")
     .WithImageRegistry("ghcr.io")
-    .WithImageSHA256("ab9b4e8cc4ab3f8d1198d2db6aeea66bafea1963b3f2843589e0d163f97d9849")
+    .WithImageSHA256("602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5")
     .WithArgs("server")
     .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", postgres.Resource.Name)
     .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", "authentik")
@@ -131,9 +131,9 @@ var server = builder.AddContainer("identity-server", "goauthentik/server", "2026
         service.ShmSize = "512mb";
     });
 
-builder.AddContainer("identity-worker", "goauthentik/server", "2026.8.3")
+builder.AddContainer("identity-worker", "goauthentik/server", "2026.8.5")
     .WithImageRegistry("ghcr.io")
-    .WithImageSHA256("ab9b4e8cc4ab3f8d1198d2db6aeea66bafea1963b3f2843589e0d163f97d9849")
+    .WithImageSHA256("602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5")
     .WithArgs("worker")
     .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", postgres.Resource.Name)
     .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", "authentik")
@@ -257,8 +257,8 @@ if (hostSettings is not null)
         service.Networks.Clear();
         service.NetworkMode = "host";
     }
-    builder.AddContainer("telemetry-relay", "otel/opentelemetry-collector-contrib", "0.161.0")
-        .WithImageSHA256("fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1")
+    builder.AddContainer("telemetry-relay", "otel/opentelemetry-collector-contrib", "0.164.0")
+        .WithImageSHA256("340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b")
         .WithArgs("--config=/etc/lucia-relay/relay.yaml")
         .WithEnvironment("LUCIA_NODE", Environment.MachineName.ToLowerInvariant())
         .WithBindMount(relayDirectory, "/etc/lucia-relay", isReadOnly: true)
@@ -269,8 +269,8 @@ if (hostSettings is not null)
             service.User = $"{uid}:{gid}";
             service.DependsOn["lucia-host"] = new ServiceDependency { Condition = "service_healthy" };
         });
-    builder.AddContainer("telemetry-node-exporter", "prom/node-exporter", "v1.10.2")
-        .WithImageSHA256("3ac34ce007accad95afed72149e0d2b927b7e42fd1c866149b945b84737c62c3")
+    builder.AddContainer("telemetry-node-exporter", "prom/node-exporter", "v1.12.1")
+        .WithImageSHA256("1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0")
         .WithArgs("--path.rootfs=/host", "--web.listen-address=127.0.0.1:19100")
         .WithBindMount("/", "/host", isReadOnly: true)
         .PublishAsDockerComposeService((_, service) =>
@@ -278,8 +278,8 @@ if (hostSettings is not null)
             Relay(service, "telemetry-node-exporter");
             service.Pid = "host";
         });
-    builder.AddContainer("telemetry-gpu-exporter", "utkuozdemir/nvidia_gpu_exporter", "1.15.1")
-        .WithImageSHA256("7aee2d42836ad29d4adb2722b7cfdc806ec9cc8d45fd0b8971ebbad2d9f3d087")
+    builder.AddContainer("telemetry-gpu-exporter", "utkuozdemir/nvidia_gpu_exporter", "1.16.0")
+        .WithImageSHA256("cec17e3ddfce7baefbdf116d1a259e208bb1519e4e0b18b7b0879bde0fcad5a2")
         .WithArgs("--web.listen-address=127.0.0.1:19835")
         .PublishAsDockerComposeService((_, service) =>
         {
