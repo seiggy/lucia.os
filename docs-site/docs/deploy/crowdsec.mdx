@@ -131,6 +131,8 @@ AppSec blocks show up as alerts too, of kind `waf`, named after the rule that ma
 
 Collections: `crowdsecurity/traefik`, `http-cve`, `base-http-scenarios`, `appsec-virtual-patching`, `appsec-generic-rules` and `whitelist-good-actors`. The stock `crowdsecurity/whitelists` parser is removed at every start, since it would drop every private address and the LAN alerts with it. Signal sharing and the community blocklist are on.
 
+Lucia adds one parser of its own, `lucia/telemetry-collectors` in `s02-enrich`. OpenTelemetry Collectors send `User-Agent: OpenTelemetry Collector Contrib/<version> (<os>/<arch>)`, and the bad-user-agent list's `\bCollector\b` entry matched every export from the nodes' telemetry relays to Observability. The parser drops a request only when all of these hold: it's a `POST`, the user agent starts with `OpenTelemetry Collector`, the path is `/v1/logs`, `/v1/metrics`, `/v1/traces` or a gRPC `/opentelemetry.proto.collector.*` method, and the source is a private address. The same user agent from the internet, or on any other path, still reaches every scenario.
+
 ## The safe harbor
 
 Lucia's own addresses (loopback, the identity network's subnets and the Spark's LAN address) plus your list, kept in `/data/security/safe-harbor.json` on the Spark and edited on the **Gateway protection** page or through the API:

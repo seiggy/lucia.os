@@ -14,7 +14,7 @@ namespace Lucia.Homelab.Server.Stacks;
 /// restart. A small sidecar holds what Lucia sends after install (that certificate, the safe harbor and a Console enroll key)
 /// in memory, so a change recreates only the sidecar.
 /// </summary>
-internal sealed class CrowdSecApp() : CatalogApp(AppId, 1, "CrowdSec",
+internal sealed class CrowdSecApp() : CatalogApp(AppId, 2, "CrowdSec",
     "Protects Lucia's gateway: bans internet addresses that attack your apps and blocks known exploit requests.",
     "Any server with Docker ready and 1 GB of memory. Install Observability first: CrowdSec reads the gateway's access log through its collector.",
     [],
@@ -100,6 +100,7 @@ internal sealed class CrowdSecApp() : CatalogApp(AppId, 1, "CrowdSec",
             ("settings", "/lucia/config/config.yaml.local", Settings),
             ("acquisition", "/lucia/config/acquis.yaml", Acquisition),
             ("profiles", "/lucia/config/profiles.yaml", Profiles(DomainIngressConfiguration.CloudflareRanges)),
+            ("telemetry", "/lucia/config/lucia-telemetry.yaml", TelemetryWhitelist),
         };
         static string Mounts(IEnumerable<(string Name, string Target, string Content)> items) =>
             string.Concat(items.Select(item => $"      - source: {item.Name}\n        target: {item.Target}\n"));
@@ -229,6 +230,25 @@ internal sealed class CrowdSecApp() : CatalogApp(AppId, 1, "CrowdSec",
         """;
 
     /// <summary>
+    /// OpenTelemetry Collectors on the LAN (Lucia's telemetry relays, or the owner's own) sending OTLP to Observability.
+    /// Their user agent, <c>OpenTelemetry Collector Contrib/…</c>, trips http-bad-user-agent's <c>\bCollector\b</c> entry on
+    /// every export. Only a POST to an OTLP path, from a private address, with that user agent is dropped; the same user agent
+    /// from the internet, or on any other path, is still checked.
+    /// </summary>
+    internal const string TelemetryWhitelist = """
+        name: lucia/telemetry-collectors
+        description: "OpenTelemetry Collectors on the LAN exporting OTLP to Lucia's Observability app"
+        whitelist:
+          reason: "Lucia telemetry export"
+          expression:
+            - >-
+              evt.Meta.log_type == 'http_access-log' && evt.Meta.http_verb == 'POST'
+              && evt.Meta.http_user_agent startsWith 'OpenTelemetry Collector'
+              && (evt.Meta.http_path in ['/v1/logs', '/v1/metrics', '/v1/traces'] || evt.Meta.http_path startsWith '/opentelemetry.proto.collector.')
+              && (IpInRange(evt.Meta.source_ip, '10.0.0.0/8') || IpInRange(evt.Meta.source_ip, '172.16.0.0/12') || IpInRange(evt.Meta.source_ip, '192.168.0.0/16'))
+        """;
+
+    /// <summary>
     /// Waits for the certificate, registers the gateway's bouncer, then runs the image's own start script. A loop beside the
     /// engine follows the sidecar's files (reloading on a renewed certificate, syncing the safe-harbor allowlist, enrolling in
     /// the Console) and logs a <c>lucia-status</c> line every minute for Lucia's CrowdSec page. Nothing in it can stop the engine.
@@ -239,6 +259,7 @@ internal sealed class CrowdSecApp() : CatalogApp(AppId, 1, "CrowdSec",
         state=/lucia/state
         install -d -m 0755 /etc/crowdsec
         install -m 0644 /lucia/config/config.yaml.local /etc/crowdsec/config.yaml.local
+        install -D -m 0644 /lucia/config/lucia-telemetry.yaml /etc/crowdsec/parsers/s02-enrich/lucia-telemetry.yaml
 
         waited=0
         until [ -s "$state/tls.sha256" ]; do

@@ -238,6 +238,13 @@ internal static class SecurityChecks
         check(CrowdSecApp.Acquisition.Contains("  evt.Line.Labels.type != \"traefik\" ? nil : map(", StringComparison.Ordinal)
             && CrowdSecApp.Acquisition.Contains("unique_id: lucia-appsec", StringComparison.Ordinal),
             "The access-log split never runs on AppSec's events (CrowdSec 1.8.1 applies the http transform to them too), so AppSec blocks stay alerts.");
+        check(CrowdSecApp.Start.Contains("/lucia/config/lucia-telemetry.yaml /etc/crowdsec/parsers/s02-enrich/lucia-telemetry.yaml", StringComparison.Ordinal)
+            && compose.Contains("target: /lucia/config/lucia-telemetry.yaml", StringComparison.Ordinal)
+            && CrowdSecApp.TelemetryWhitelist.Contains("evt.Meta.http_user_agent startsWith 'OpenTelemetry Collector'", StringComparison.Ordinal)
+            && CrowdSecApp.TelemetryWhitelist.Contains("evt.Meta.http_verb == 'POST'", StringComparison.Ordinal)
+            && CrowdSecApp.TelemetryWhitelist.Contains("IpInRange(evt.Meta.source_ip, '192.168.0.0/16')", StringComparison.Ordinal)
+            && !CrowdSecApp.TelemetryWhitelist.Contains("0.0.0.0/0", StringComparison.Ordinal),
+            "Only LAN OpenTelemetry Collectors posting OTLP skip the scenarios; the same user agent from the internet or on other paths is still checked.");
         using (var waf = System.Text.Json.JsonDocument.Parse("""
             [{"id":5,"kind":"waf","scenario":"crowdsecurity/vpatch-env-access","source":{"scope":"Ip","value":"203.0.113.77","cn":"NL"},
               "created_at":"2026-10-26T20:30:20Z","events_count":1,"decisions":null,"simulated":false,
