@@ -111,7 +111,7 @@ Questions use a different path. `ask_owner` and `request_secret` call `broker.As
 
 ## Adding a tool
 
-The tool list lives in `AssistantTools.Create`. Each entry is `Tool(tier, name, description, delegate)`. Here is a real small one, `check_node_updates`:
+The tool list lives in `AssistantTools.Create`. Each entry is `Tool(tier, name, description, delegate)`. A group of tools for one domain can live in its own partial file, as the CrowdSec tools do in `AssistantCrowdSec.cs`, and join the list from there. Here is a real small one, `check_node_updates`:
 
 ```csharp title="src/Lucia.Homelab.Server/Assistant/AssistantTools.cs"
 Tool(ToolTier.Change, "check_node_updates", "Asks a server to check for OS package updates now.",

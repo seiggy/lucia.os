@@ -1,4 +1,5 @@
 export type CrowdSecState = 'absent' | 'stopped' | 'moving' | 'waiting-domain' | 'waiting-certificate' | 'unreachable' | 'needs-observability' | 'no-logs' | 'healthy'
+export type AlertState = 'on' | 'off' | 'update-observability' | 'waiting-domain' | 'waiting-certificate' | 'stopped' | 'unreachable'
 export type ConsoleState = 'not-enrolled' | 'sending' | 'pending' | 'accepted' | 'failed'
 export interface CrowdSecStatus {
   state: CrowdSecState; message: string | null; protecting: boolean; observabilityInstalled: boolean
@@ -9,6 +10,12 @@ export interface CrowdSecStatus {
   bouncer: { name: string; lastPull: string | null; revoked: boolean } | null
   metrics: { linesRead: number; linesParsed: number; linesUnparsed: number; appSecProcessed: number; appSecBlocked: number } | null
   harborEntries: number | null; reportedAt: string | null
+  /** Custom AppSec rules the engine has loaded, from its last report. */
+  customRules: number | null
+  /** Custom rules the engine couldn't read and runs without, in its own words. */
+  customRulesProblem: string | null
+  /** Where the engine's alerts go: Observability's TLS alert intake when on, otherwise why not. */
+  alerts: { state: AlertState; message: string | null; intake: string | null } | null
 }
 export interface CrowdSecAlert {
   id: number; scenario: string; scope: string | null; value: string | null; country: string | null; asName: string | null
@@ -17,6 +24,12 @@ export interface CrowdSecAlert {
   kind: string; path: string | null
 }
 export interface CrowdSecDecision { id: number; value: string; scope: string; type: string; origin: string; scenario: string | null; until: string | null }
+export type RuleField = 'path' | 'query' | 'user-agent' | 'header' | 'method'
+export type RuleOperator = 'equals' | 'prefix' | 'contains' | 'regex'
+/** One of the owner's custom AppSec rules; a block it causes is an alert named after it. */
+export interface CrowdSecRule {
+  id: string; name: string; field: RuleField; header: string | null; operator: RuleOperator; value: string; reason: string; createdAt: string; createdBy: string
+}
 
 const invalid = () => new Error('Lucia returned incomplete CrowdSec data. The engine’s current state could not be confirmed.')
 function object(value: unknown): Record<string, unknown> {
@@ -48,6 +61,7 @@ export function parseCrowdSecStatus(value: unknown): CrowdSecStatus {
   const consoleData = object(data.console)
   const bouncer = data.bouncer === null || data.bouncer === undefined ? null : object(data.bouncer)
   const metrics = data.metrics === null || data.metrics === undefined ? null : object(data.metrics)
+  const alerts = data.alerts === null || data.alerts === undefined ? null : object(data.alerts)
   const url = text(consoleData.url)
   if (url !== 'https://app.crowdsec.net') throw invalid()
   return {
@@ -65,7 +79,11 @@ export function parseCrowdSecStatus(value: unknown): CrowdSecStatus {
       linesRead: count(metrics.linesRead), linesParsed: count(metrics.linesParsed), linesUnparsed: count(metrics.linesUnparsed),
       appSecProcessed: count(metrics.appSecProcessed), appSecBlocked: count(metrics.appSecBlocked),
     },
-    harborEntries: optionalCount(data.harborEntries), reportedAt: optionalText(data.reportedAt, 64),
+    harborEntries: optionalCount(data.harborEntries), reportedAt: optionalText(data.reportedAt, 64), customRules: optionalCount(data.customRules), customRulesProblem: optionalText(data.customRulesProblem, 400),
+    alerts: alerts && {
+      state: oneOf(alerts.state, ['on', 'off', 'update-observability', 'waiting-domain', 'waiting-certificate', 'stopped', 'unreachable'] as const),
+      message: optionalText(alerts.message), intake: optionalText(alerts.intake, 253),
+    },
   }
 }
 
@@ -91,11 +109,59 @@ export function parseDecisions(value: unknown): CrowdSecDecision[] {
   })
 }
 
+export function parseRules(value: unknown): { rules: CrowdSecRule[]; max: number } {
+  const data = object(value)
+  return {
+    max: count(data.max),
+    rules: list(value, 'rules', 50).map(item => {
+      const rule = object(item)
+      const id = text(rule.id, 8)
+      if (!/^[0-9a-f]{8}$/.test(id) || rule.name !== `lucia/custom-${id}`) throw invalid()
+      return {
+        id, name: rule.name, field: oneOf(rule.field, ['path', 'query', 'user-agent', 'header', 'method'] as const), header: optionalText(rule.header, 64),
+        operator: oneOf(rule.operator, ['equals', 'prefix', 'contains', 'regex'] as const), value: text(rule.value, 200), reason: text(rule.reason, 200),
+        createdAt: text(rule.createdAt, 64), createdBy: text(rule.createdBy, 120),
+      }
+    }),
+  }
+}
+
+const ruleParts: Record<RuleField, string> = { path: 'Path', query: 'A query value', 'user-agent': 'User agent', header: 'Header', method: 'Method' }
+const ruleVerbs: Record<RuleOperator, string> = { equals: 'is', prefix: 'starts with', contains: 'contains', regex: 'matches' }
+/** "Path starts with /wp-admin", "X-Api-Version header contains beta". */
+export function describeRule(rule: CrowdSecRule): string {
+  const part = rule.field === 'header' ? `The ${rule.header ?? 'named'} header` : ruleParts[rule.field]
+  return `${part} ${ruleVerbs[rule.operator]} ${rule.value}`
+}
+
+/** Where the engine's alerts go, in words, for the page. */
+export function alertsSummary(status: CrowdSecStatus): string {
+  const alerts = status.alerts
+  if (!alerts) return 'Not reported yet'
+  if (alerts.state === 'on') return `To Observability over TLS${alerts.intake ? ` at ${alerts.intake}` : ''}, for Grafana`
+  return alerts.message ?? 'Kept in CrowdSec only for now'
+}
+
+/** Who placed a ban, in words: CrowdSec itself, the owner on this page, Lucia's assistant, or another CrowdSec tool. */
+export function banOrigin(origin: string): string {
+  switch (origin) {
+    case 'crowdsec': return 'CrowdSec'
+    case 'lucia': return 'You, from Lucia'
+    case 'lucia-assistant': return 'Lucia’s assistant'
+    case 'cscli': return 'cscli'
+    case 'console': return 'The CrowdSec Console'
+    default: return origin
+  }
+}
+
 /** The same rule as the host's: one plain token, so a key can never add lines to the app's environment. */
 export const validEnrollKey = (key: string): boolean => /^[A-Za-z0-9_-]{8,128}$/.test(key)
 
-/** crowdsecurity/http-probing becomes "http-probing"; the hub author stays in the tooltip. */
+/** crowdsecurity/http-probing becomes "http-probing"; the hub author stays in the tooltip. Lucia's own names read as words. */
 export function scenarioName(scenario: string): string {
+  if (scenario === 'lucia/manual-ban') return 'banned by hand'
+  const custom = /^lucia\/custom-([0-9a-f]{8})$/.exec(scenario)
+  if (custom) return `custom rule ${custom[1]}`
   const name = scenario.includes('/') ? scenario.slice(scenario.lastIndexOf('/') + 1) : scenario
   return name.length > 0 ? name : scenario
 }

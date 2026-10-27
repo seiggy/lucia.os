@@ -3,20 +3,23 @@ import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { Icon } from './Icon'
 import { TrustedAddresses } from './TrustedAddresses'
-import { consoleSummary, isAppSec, parseAlerts, parseCrowdSecStatus, parseDecisions, remaining, scenarioName, summarize, validEnrollKey } from './crowdsecStatus'
-import type { CrowdSecAlert, CrowdSecDecision, CrowdSecStatus } from './crowdsecStatus'
+import { alertsSummary, banOrigin, consoleSummary, describeRule, isAppSec, parseAlerts, parseCrowdSecStatus, parseDecisions, parseRules, remaining, scenarioName, summarize, validEnrollKey } from './crowdsecStatus'
+import type { CrowdSecAlert, CrowdSecDecision, CrowdSecRule, CrowdSecStatus } from './crowdsecStatus'
 import './NetworkSettings.css'
 
 const when = (value: string | null) => value ? new Date(value).toLocaleString() : 'never'
 const failed = (failure: unknown, fallback: string) => failure instanceof Error ? failure.message : fallback
 const yesNo = (value: boolean | null | undefined, yes: string, no: string) => value === null || value === undefined ? 'Not reported yet' : value ? yes : no
 
-/** The gateway's CrowdSec protection: the engine's health, its bans and alerts, CrowdSec Console enrollment and the safe harbor. */
+/** The gateway's CrowdSec protection: the engine's health, its bans and alerts, custom AppSec rules, CrowdSec Console enrollment and the safe harbor. */
 export function CrowdSec({ session, refreshSession }: { session: AuthenticationSession; refreshSession: () => Promise<void> }) {
   const [status, setStatus] = useState<CrowdSecStatus | null>(null)
   const [alerts, setAlerts] = useState<CrowdSecAlert[] | null>(null)
   const [blocks, setBlocks] = useState<CrowdSecAlert[] | null>(null)
   const [decisions, setDecisions] = useState<CrowdSecDecision[] | null>(null)
+  const [rules, setRules] = useState<{ rules: CrowdSecRule[]; max: number } | null>(null)
+  const [rulesError, setRulesError] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -36,6 +39,12 @@ export function CrowdSec({ session, refreshSession }: { session: AuthenticationS
       if (controller.signal.aborted) return
       setStatus(next)
       setError(null)
+      if (next.state !== 'absent') {
+        try {
+          const ruleList = parseRules(await (await ownerRequest(session, refreshSession, '/api/host/security/crowdsec/rules', 'GET', undefined, controller.signal)).json())
+          if (!controller.signal.aborted) { setRules(ruleList); setRulesError(null) }
+        } catch (failure) { if (!controller.signal.aborted) setRulesError(failed(failure, 'The custom AppSec rules could not be read.')) }
+      }
       if (next.state === 'healthy') {
         try {
           const [alertList, blockList, decisionList] = await Promise.all([
@@ -66,6 +75,15 @@ export function CrowdSec({ session, refreshSession }: { session: AuthenticationS
       setNotice(`Lifted ${result.deleted ?? 0} ban${result.deleted === 1 ? '' : 's'} on ${value}. The gateway lets it through within 15 seconds.`)
       await load()
     } catch (failure) { setListError(failed(failure, `The ban on ${value} could not be lifted.`)) }
+  }
+
+  async function removeRule(rule: CrowdSecRule) {
+    setRemoving(null); setNotice(''); setRulesError(null)
+    try {
+      await ownerRequest(session, refreshSession, `/api/host/security/crowdsec/rules/${rule.id}`, 'DELETE')
+      setNotice(`Removed the rule ${rule.id}. CrowdSec reloads within a minute; requests it blocked go through again.`)
+      await load()
+    } catch (failure) { setRulesError(failed(failure, `The rule ${rule.id} could not be removed.`)) }
   }
 
   async function enroll(remove = false) {
@@ -104,6 +122,7 @@ export function CrowdSec({ session, refreshSession }: { session: AuthenticationS
           <div><dt>Engine</dt><dd>{status.version ?? 'Version not reported yet'} on {status.node ?? 'an unknown server'}{status.address ? ` (${status.address})` : ''}{status.name && <>, reached at <code>{status.name}</code></>}{status.stack && <> · <a className="text-link" href={`#/apps/${status.stack}`}>Manage the app</a></>}</dd></div>
           <div><dt>Certificate</dt><dd>{status.certificateExpiresAt ? `From Lucia’s authority, renewed automatically; current one expires ${when(status.certificateExpiresAt)}` : 'Not issued yet'}</dd></div>
           <div><dt>Last report</dt><dd>{status.reportedAt ? when(status.reportedAt) : 'The engine hasn’t reported yet'}</dd></div>
+          <div><dt>Alerts to Grafana</dt><dd className={status.alerts && status.alerts.state !== 'on' && status.alerts.state !== 'off' ? 'network-warning' : undefined}>{alertsSummary(status)}</dd></div>
         </dl>}
     </section>}
     {status && status.state !== 'absent' && <>
@@ -147,10 +166,11 @@ export function CrowdSec({ session, refreshSession }: { session: AuthenticationS
         {listError && <p className="network-error" role="alert">{listError}</p>}
         {decisions && (decisions.length === 0 ? <p className="section-note">Nobody is banned.</p>
           : <table className="network-table"><caption className="network-table-caption">Active bans</caption>
-            <thead><tr><th>Address</th><th>Why</th><th>Time left</th><th><span className="visually-hidden">Action</span></th></tr></thead>
+            <thead><tr><th>Address</th><th>Why</th><th>Placed by</th><th>Time left</th><th><span className="visually-hidden">Action</span></th></tr></thead>
             <tbody>{decisions.map(decision => <tr key={decision.id}>
               <th scope="row"><code>{decision.value}</code>{decision.scope !== 'Ip' && <span className="network-cell-note">{decision.scope}</span>}</th>
-              <td data-label="Why" title={decision.scenario ?? undefined}>{decision.scenario ? scenarioName(decision.scenario) : decision.origin}{decision.origin !== 'crowdsec' && <span className="network-cell-note">From {decision.origin}</span>}</td>
+              <td data-label="Why" title={decision.scenario ?? undefined}>{decision.scenario ? scenarioName(decision.scenario) : decision.origin}</td>
+              <td data-label="Placed by">{banOrigin(decision.origin)}</td>
               <td data-label="Time left">{remaining(decision.until, now)}</td>
               <td data-label="Action">{unbanning === decision.value
                 ? <><button className="button secondary" onClick={() => void unban(decision.value)}>Unban {decision.value}</button> <button className="text-link" onClick={() => setUnbanning(null)}>Keep the ban</button></>
@@ -186,6 +206,25 @@ export function CrowdSec({ session, refreshSession }: { session: AuthenticationS
             </tr>)}</tbody>
           </table>)}
       </section>}
+      <section className="surface network-section" aria-labelledby="crowdsec-rules">
+        <h2 id="crowdsec-rules">Custom rules</h2>
+        <p className="section-note">Your own AppSec rules: the gateway refuses every request that matches one, except from trusted addresses. Ask Lucia’s assistant to add one; it checks the rule and asks you first. A block a rule causes shows up as an alert named after it.</p>
+        {rulesError && <p className="network-error" role="alert">{rulesError}</p>}
+        {status.customRulesProblem && <p className="network-error" role="alert">{status.customRulesProblem} Remove those rules and add them again with plain text.</p>}
+        {rules && (rules.rules.length === 0 ? <p className="section-note">No custom rules.</p>
+          : <table className="network-table"><caption className="network-table-caption">Custom AppSec rules</caption>
+            <thead><tr><th>Blocks when</th><th>Why</th><th>Added</th><th><span className="visually-hidden">Action</span></th></tr></thead>
+            <tbody>{rules.rules.map(rule => <tr key={rule.id}>
+              <th scope="row"><code>{describeRule(rule)}</code><span className="network-cell-note">{rule.name}</span></th>
+              <td data-label="Why">{rule.reason}</td>
+              <td data-label="Added">{when(rule.createdAt)}<span className="network-cell-note">by {rule.createdBy}</span></td>
+              <td data-label="Action">{removing === rule.id
+                ? <><button className="button secondary" onClick={() => void removeRule(rule)}>Remove rule {rule.id}</button> <button className="text-link" onClick={() => setRemoving(null)}>Keep it</button></>
+                : <button className="text-link" onClick={() => setRemoving(rule.id)}>Remove…</button>}</td>
+            </tr>)}</tbody>
+          </table>)}
+        {rules && <p className="section-note">{rules.rules.length} of {rules.max} rules{status.customRules !== null ? `; the engine has ${status.customRules} loaded` : ''}.</p>}
+      </section>
     </>}
     <TrustedAddresses session={session} refreshSession={refreshSession} />
   </>

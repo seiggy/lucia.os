@@ -76,12 +76,13 @@ public sealed partial class StackStore
     internal const string KeptByLucia = "[kept by Lucia]";
 
     /// <summary>
-    /// Variables whose values Lucia generates and uses itself and nobody needs to read: CrowdSec's TLS key, enroll key and
-    /// collector token anywhere, and in a CrowdSec stack (catalog or converted) its bouncer key, machine password and intake token.
+    /// Variables whose values Lucia generates and uses itself and nobody needs to read: CrowdSec's TLS key, enroll key, collector
+    /// token, alert collector credentials and alert intake config (it holds its key) anywhere, and in a CrowdSec stack (catalog or converted) its bouncer key, machine password and intake token.
     /// </summary>
     internal static HashSet<string> ManagedSecrets(StoredStack stack, string env)
     {
-        var keys = StackCatalog.ReadEnv(env).Keys.Where(key => key is CrowdSecPrefix + "TLS_KEY" or CrowdSecPrefix + "ENROLL_KEY" or CrowdSecPrefix + "TOKEN")
+        var keys = StackCatalog.ReadEnv(env).Keys.Where(key => key is CrowdSecPrefix + "TLS_KEY" or CrowdSecPrefix + "ENROLL_KEY" or CrowdSecPrefix + "TOKEN"
+                or CrowdSecPrefix + "OTLP_AUTHORIZATION" or CrowdSecPrefix + "INTAKE")
             .ToHashSet(StringComparer.Ordinal);
         if (stack.Manifest.Template?.Id == CrowdSecApp.AppId || stack.Compose.Contains("image: crowdsecurity/crowdsec:", StringComparison.Ordinal))
             keys.UnionWith(StackCatalog.ReadEnv(env).Keys.Where(key => key is CrowdSecApp.GatewayKey or CrowdSecApp.MachinePassword or CrowdSecApp.IntakeToken));

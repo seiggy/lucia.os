@@ -41,13 +41,15 @@ The page also shows the address and login that other apps can use to send their 
 
 ## The dashboards
 
-Lucia adds three read-only dashboards in a Grafana folder called **Lucia**. They refresh every 30 seconds.
+Lucia adds read-only dashboards in a Grafana folder called **Lucia**. They refresh every 30 seconds.
 
 | Dashboard | What it shows |
 |---|---|
 | **Hardware** | One row per machine, then processor and memory, storage and network, temperatures and graphics cards. This opens first |
 | **Containers** | How much processor, memory, network and disk each running container uses |
 | **Inference** | Speed, delay and volume for each local AI engine, side by side |
+| **Lucia CrowdSec** | Attacks on your gateway: alerts, bans, the worst offenders and recent blocked requests. Useful once you install [CrowdSec](./gateway-protection.mdx#watch-it-in-grafana) |
+| **CrowdSec overview** and three more | CrowdSec's own community dashboards, about the engine itself. They cover about the last hour |
 
 Use the machine picker at the top of a dashboard to focus on one server. Use the time picker at the top right to go back in time.
 

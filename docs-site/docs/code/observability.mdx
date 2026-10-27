@@ -201,6 +201,8 @@ Each dashboard class builds a Grafana JSON document in C#: `Uid`, `title`, tag `
 
 A dashboard is provisioned as a config mounted at `/etc/grafana/dashboards/lucia/<name>.json`, so changing one means a version bump and a re-render. They are read-only in Grafana by design. Edits belong in the C# so they survive a re-render.
 
+`CrowdSecDashboard` is the exception to "queries come from `MetricTiers`": most of its panels query Loki for CrowdSec's alert records, and the offenders table groups log lines with Grafana transformations (`extractFields`, `groupBy`, `organize`). Its links carry `CrowdSecDashboard.ConsolePlaceholder`, which the Observability render swaps for `${LUCIA_CROWDSEC_CONSOLE:-}` after escaping, so compose fills in Lucia's address. CrowdSec's four community dashboards are vendored JSON, embedded in the assembly and read by `CommunityJson`. Regenerate them with `node tools/telemetry/crowdsec-dashboards.mjs`, which pins the upstream commit and makes every adaptation, rather than editing the JSON. See [Gateway security](./gateway-security.mdx#alerts-to-observability).
+
 Grafana signs in through Authentik. The Observability app declares `Sso` as `AppSso("Grafana", host, "/login/generic_oauth")`, and the compose maps `groups` containing `lucia-owners` to the Admin role, everyone else to Viewer. Until Authentik's client exists, `LUCIA_SSO_ENABLED` is false and the admin login works. See [Identity](./identity.mdx).
 
 ## Testing

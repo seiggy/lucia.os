@@ -22,7 +22,7 @@ Certificates are issued for 7 days and reused until <6 days remain (so a node re
 there is no automatic deletion, password reset, trust rotation or migration.
 
 The same worker signs app certificates (app-certificate-requests/<stack>.json): the one name a catalog app the gateway
-reaches over the LAN (CrowdSec) has under the active domain, checked against the host's stack, node and domain records.
+reaches over the LAN (CrowdSec, Observability's alert intake) has under the active domain, checked against the host's stack, node and domain records.
 See APP_TEMPLATES.
 
 Prerequisites: existing owned identity stack, approved user linger, default
@@ -588,7 +588,7 @@ def handle(p, directory, path):
     }) + "\n")
 
 
-# App certificates: a catalog app the gateway reaches over the LAN (CrowdSec) serves a certificate from this CA for its name
+# App certificates: a catalog app reached over the LAN by name (CrowdSec, and Observability's alert intake for CrowdSec) serves a certificate from this CA for its name
 # under the lab's domain, which local DNS points straight at its server. The web host makes the key and asks in
 # host/data/nodes/app-certificate-requests/<stack>.json with EXACT keys: schemaVersion (1), stack (the stack's name), nodeId
 # (its server), address (that server's private IPv4 address), csrPem and expiresAt (UTC, future, at most 15 minutes). The
@@ -598,7 +598,7 @@ def handle(p, directory, path):
 # signed only while host/data/stacks/stacks.json holds a settled stack of that name running an app in APP_TEMPLATES on that
 # server, the server's identity record names the same address, and the name isn't one of Lucia's own; never for the CA's
 # own host. Answers go to app-certificate-responses/<stack>.json with the leaf and intermediate.
-APP_TEMPLATES = frozenset({"crowdsec"})  # catalog apps that may have a certificate for their name
+APP_TEMPLATES = frozenset({"crowdsec", "observability"})  # catalog apps that may have a certificate for their name
 APP_FIELDS = {"schemaVersion", "stack", "nodeId", "address", "csrPem", "expiresAt"}
 APP_STACK = re.compile(r"[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?")
 APP_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")

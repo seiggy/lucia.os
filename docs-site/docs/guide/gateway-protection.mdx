@@ -46,13 +46,38 @@ Requests to Lucia's own pages skip the exploit check. Uploading a compose file o
 
 {/* TODO screenshot: security-page — the Gateway protection page with fixture data: healthy engine, two bans, a few alerts, Console pending */}
 
-- **Bans**: who is refused now, why, and for how long. **Unban…** asks you to confirm, then lets that address back in within 15 seconds.
+- **Bans**: who is refused now, why, for how long, and who placed the ban: CrowdSec itself, you, or Lucia's assistant. **Unban…** asks you to confirm, then lets that address back in within 15 seconds.
 - **Recent alerts**: what CrowdSec noticed, newest first, including devices at home it only noted.
 - **AppSec blocks**: each request the exploit check refused, with the rule it matched, who sent it, the path it asked for and when. A device at home that trips a rule is listed here and never banned. Someone on the internet who trips two different rules within a minute gets banned like any other attacker.
 - **Activity**: how many log lines it read and how many requests the exploit check looked at and blocked.
 - **CrowdSec network**: whether it's connected to the community and receiving its blocklist.
+- **Alerts to Grafana**: whether CrowdSec's alerts are reaching Grafana. When they aren't, it says why, for example that Observability needs updating or is still waiting for its certificate. CrowdSec keeps blocking either way; the alerts just stay in CrowdSec until the problem clears.
+- **Custom rules**: your own exploit-check rules, such as "refuse any path starting with /wp-admin", with why each was added and by whom. **Remove…** asks you to confirm, then CrowdSec stops using the rule within a minute. You add rules by asking the assistant (see below).
 
 If CrowdSec isn't installed, the page tells you what to install and links straight to it. If your domain stops working, it says **Waiting for your domain**, and the gateway lets everyone through until the domain is back. If the gateway's log stops reaching CrowdSec, it says **Update Observability** or **No access log arriving** instead of **Protecting the gateway**: exploit checks and the community blocklist still work, but CrowdSec can't spot new attackers from the log.
+
+## Watch it in Grafana
+
+With CrowdSec installed, the Observability app's Grafana gets a **Lucia CrowdSec** dashboard in the **Lucia** folder. It shows the last day by default: how many alerts and bans there were, which attacks came in over time, and an **Offenders** table with one row per address and attack. Each row has the address, the attack, the path it asked for, its browser name (user agent), its country, how many times it happened, when it was last seen and whether it was banned.
+
+The last column, **For the assistant**, is a ready-made sentence about that row. Click the cell, choose the inspect icon, and copy it. Click an address to jump to this page in Lucia.
+
+CrowdSec's own community dashboards sit in the same folder: **CrowdSec overview**, **CrowdSec details per server**, **CrowdSec insight** and **CrowdSec local API**. They show the engine's inner workings and only cover the last hour or so, which is how long Grafana keeps every reading.
+
+CrowdSec sends its alerts to Grafana over an encrypted connection that it checks against Lucia's own certificate authority, so nobody else on your network can read them or pose as Grafana. Grafana keeps alerts for 7 days. CrowdSec's own free website stops showing them after 50 a month, which a lab on the internet passes in a day, so Grafana is the place to look.
+
+## Ask the assistant to respond
+
+Paste a row from the dashboard into the assistant and ask what it is, or ask it to deal with it. The assistant has a built-in guide for this, **crowdsec-response**: it looks at the alert first, then suggests the smallest thing that works.
+
+| It can | Asks you first? |
+|---|---|
+| List and look into alerts and bans | No |
+| Lift a ban | Yes, unless you let it run without asking in **Settings → Assistant**. In Plan mode it only suggests it. |
+| Ban an address or a small block of addresses for a while, with a reason | Yes, unless you let it run without asking in **Settings → Assistant** |
+| Add or remove a custom rule | Always |
+
+Unbanning asks first because the assistant reads alerts, and alerts carry whatever text an attacker put in their requests. That text could try to talk the assistant into letting the attacker back in, so the assistant treats it as evidence only and you decide every unban. Lucia checks every request the assistant makes. It refuses to ban your trusted addresses, Lucia's own, or Cloudflare's, and anything wider than a block of 65,536 addresses. A ban lasts from a minute to 30 days. A rule can't block every request, ordinary browsers, Lucia's own pages, or headers every browser sends, and you can have up to 50. A rule's pattern uses plain English letters, digits and punctuation; its reason can be in any language. When a rule is added or removed, CrowdSec reloads, which pauses the checks for a few seconds; requests go through during that time.
 
 ## Add your own computer
 

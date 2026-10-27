@@ -47,6 +47,11 @@ public abstract class CatalogApp(string id, int version, string name, string sum
     public virtual bool ServerBound => false;
     /// <summary>True when the app needs an address of its own, which its compose binds as <c>${LUCIA_ADDRESS}</c>.</summary>
     public virtual bool UsesAddress => false;
+    /// <summary>
+    /// Whether a new install with direct names (<see cref="CatalogOutput.Names"/>) needs an active domain. False for an app that
+    /// works without its names and only uses them once a domain exists.
+    /// </summary>
+    internal virtual bool NamesNeedDomain => true;
     /// <summary><c>live</c>, or <c>stop</c> for apps whose data is only consistent while they're stopped.</summary>
     public virtual string BackupMode => "live";
     /// <summary>Paths under the app's directory, such as <c>volumes/models</c>, that backups skip because they're rebuildable.</summary>
@@ -533,7 +538,7 @@ internal sealed class AdGuardApp() : CatalogApp("adguard", 1, "AdGuard Home",
 /// metrics in Prometheus and logs in Loki, with Grafana to explore them. Both get web addresses under the active domain,
 /// and Grafana signs in through Lucia's Authentik there: owners become Grafana admins.
 /// </summary>
-internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12, "Observability",
+internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 13, "Observability",
     "Collect traces, metrics and logs from your servers and apps, and explore them in Grafana.",
     "Any server with Docker ready, and room for about 20 GB of telemetry. Install Object storage to keep metric history in a bucket.",
     [],
@@ -543,11 +548,21 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
         new("grafana-port", "Grafana port", "port", "3030", "Grafana also answers on http://<server>:<port>."),
         new("otlp-grpc-port", "OTLP gRPC port", "port", "4317"),
         new("otlp-http-port", "OTLP HTTP port", "port", "4318"),
+        new("alerts-host", "CrowdSec alert intake name", "text", "otlp-alerts",
+            "CrowdSec sends its alerts to this name under your domain, over TLS with a certificate from Lucia's own authority. Lucia's DNS points it straight at this server."),
+        new("alerts-port", "CrowdSec alert intake port", "port", "4319", "OTLP over HTTPS, for CrowdSec's alerts only. It listens once CrowdSec is installed and the certificate is issued."),
     ])
 {
     public const string AppId = "observability";
     /// <summary>The first version whose collector reads <c>LUCIA_CROWDSEC_COLLECTOR</c> and forwards the gateway's access log to CrowdSec.</summary>
     public const int ForwardsToCrowdSec = 12;
+    /// <summary>
+    /// The first version with CrowdSec's dashboards in Grafana, Loki indexing CrowdSec alerts by kind, and the TLS alert intake:
+    /// a name of its own under the domain and a port where the collector takes CrowdSec's alerts with a certificate from Lucia's CA.
+    /// </summary>
+    public const int ShowsCrowdSec = 13;
+    /// <summary>The collector's TLS alert intake inside the container; the <c>alerts-port</c> setting publishes it.</summary>
+    internal const int AlertsContainerPort = 4319;
     internal const string Collector = "otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1";
     private const string Prometheus = "prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e";
     private const string Loki = "grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193";
@@ -561,6 +576,12 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
     /// <summary>Metric history goes to the bucket Object storage grants this stack.</summary>
     internal override bool Bucket => true;
 
+    /// <summary>The alert intake's name only matters once a domain and CrowdSec exist, so Observability still installs without a domain.</summary>
+    internal override bool NamesNeedDomain => false;
+
+    /// <summary>The alert intake's full name, <c>alerts-host.namespace</c>, which its certificate carries.</summary>
+    internal static string AlertsName(IReadOnlyDictionary<string, string> settings, string ns) => $"{settings["alerts-host"].ToLowerInvariant()}.{ns}";
+
     public override AppSso Sso(IReadOnlyDictionary<string, string> settings) =>
         new("Grafana", settings["grafana-host"].ToLowerInvariant(), "/login/generic_oauth");
 
@@ -568,6 +589,11 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
     {
         var (grafanaHost, otlpHost) = (settings["grafana-host"].ToLowerInvariant(), settings["otlp-host"].ToLowerInvariant());
         var (grafanaPort, grpcPort, httpPort) = (settings["grafana-port"], settings["otlp-grpc-port"], settings["otlp-http-port"]);
+        var (alertsHost, alertsPort) = (settings["alerts-host"].ToLowerInvariant(), settings["alerts-port"]);
+        if (!StackStore.RouteHostPattern().IsMatch(alertsHost) || alertsHost == grafanaHost || alertsHost == otlpHost)
+            throw new HardwareOnboardingException(400, "invalid_setting", "The alert intake's name is one label, such as otlp-alerts, different from Grafana's and OTLP's names.");
+        if (new[] { grafanaPort, grpcPort, httpPort, alertsPort, "2055" }.Distinct().Count() != 5)
+            throw new HardwareOnboardingException(400, "invalid_setting", "Observability's ports must all be different.");
         // The collector expands ${env:...} itself, so compose must leave it alone; Grafana expands $var, so its literal needs a second escape.
         var collector = """
             extensions:
@@ -759,6 +785,13 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
             limits_config:
               allow_structured_metadata: true
               retention_period: 168h
+              # CrowdSec's alerts carry their kind (crowdsec or waf) on the resource; it becomes a label beside service_name. Every
+              # other attribute (address, scenario, request) stays structured metadata, so the index stays small.
+              otlp_config:
+                resource_attributes:
+                  attributes_config:
+                    - action: index_label
+                      attributes: [crowdsec.kind]
             analytics:
               reporting_enabled: false
             """;
@@ -847,6 +880,10 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
         var hardware = HardwareDashboard.Json().Replace("$", "$$");
         var inference = InferenceDashboard.Json().Replace("$", "$$");
         var containers = ContainersDashboard.Json().Replace("$", "$$");
+        // Its link to Lucia's Gateway protection page follows LUCIA_CROWDSEC_CONSOLE, which Lucia sets while CrowdSec is installed.
+        var crowdsec = CrowdSecDashboard.Json().Replace("$", "$$").Replace(CrowdSecDashboard.ConsolePlaceholder, "${" + StackStore.CrowdSecPrefix + "CONSOLE:-}");
+        var community = CrowdSecDashboard.Community.Select(file => (Name: "crowdsec-" + Path.GetFileNameWithoutExtension(file), File: "crowdsec-" + file,
+            Content: CrowdSecDashboard.CommunityJson(file).Replace("$", "$$"))).ToArray();
         // Grafana links to itself at its web address once the domain is active, and at the server's port until then.
         var rootUrl = "${" + StackStore.RouteVariable(grafanaHost) + $":-http://{node.Hostname}:{grafanaPort}}}";
         var tiers = MetricTiers.Tiers.Select(tier => tier.Name).ToArray();
@@ -923,7 +960,7 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
                 # Lucia sets LUCIA_LAB_* to scrape your UniFi devices over SNMP once you give it SNMP credentials; the
                 # second config adds those receivers and is empty until then. While a CrowdSec app runs, Lucia sets
                 # LUCIA_CROWDSEC_*: the third config forwards the gateway's access log to it, and is empty otherwise.
-                command: ["--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR"]
+                command: ["--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR", "--config=env:LUCIA_CROWDSEC_INTAKE"]
                 environment:
                   OTLP_USERNAME: ${OTLP_USERNAME}
                   OTLP_PASSWORD: ${OTLP_PASSWORD}
@@ -933,6 +970,9 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
                   LUCIA_LAB_SNMP_PRIV: ${LUCIA_LAB_SNMP_PRIV:-}
                   LUCIA_CROWDSEC_COLLECTOR: ${LUCIA_CROWDSEC_COLLECTOR:-}
                   LUCIA_CROWDSEC_TOKEN: ${LUCIA_CROWDSEC_TOKEN:-}
+                  # The fourth config: the TLS receiver for CrowdSec's alerts, with its certificate and key from Lucia's CA. Empty
+                  # until CrowdSec is installed and the certificate is issued.
+                  LUCIA_CROWDSEC_INTAKE: ${LUCIA_CROWDSEC_INTAKE:-}
                 labels:
                   lucia.configs: "{{Hash(collector)}}"
                 configs:
@@ -943,12 +983,14 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
                 ports:
                   - "{{grpcPort}}:4317"
                   - "{{httpPort}}:4318"
+                  # CrowdSec's alerts, over TLS; nothing listens here until Lucia adds the receiver with its certificate.
+                  - "{{alertsPort}}:{{AlertsContainerPort}}"
                   - "2055:2055/udp"
                 depends_on:
                   init:
                     condition: service_completed_successfully
                 healthcheck:
-                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR"]
+                  test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml", "--config=env:LUCIA_LAB_COLLECTOR", "--config=env:LUCIA_CROWDSEC_COLLECTOR", "--config=env:LUCIA_CROWDSEC_INTAKE"]
                   interval: 30s
                   timeout: 10s
                   retries: 3
@@ -1029,7 +1071,7 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
                   GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'lucia-owners') && 'Admin' || 'Viewer'"
                   GF_AUTH_SIGNOUT_REDIRECT_URL: ${LUCIA_SSO_SIGNOUT:-}
                 labels:
-                  lucia.configs: "{{Hash(datasources, dashboards, hardware, inference, containers)}}"
+                  lucia.configs: "{{Hash([datasources, dashboards, hardware, inference, containers, crowdsec, .. community.Select(item => item.Content)])}}"
                 configs:
                   - source: datasources
                     target: /etc/grafana/provisioning/datasources/lucia.yaml
@@ -1041,6 +1083,9 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
                     target: /etc/grafana/dashboards/lucia/inference.json
                   - source: containers
                     target: /etc/grafana/dashboards/lucia/containers.json
+                  - source: crowdsec
+                    target: /etc/grafana/dashboards/lucia/crowdsec.json
+            {{string.Concat(community.Select(item => $"      - source: {item.Name}\n        target: /etc/grafana/dashboards/lucia/{item.File}\n"))}}
                 volumes:
                   - grafana:/var/lib/grafana
                 ports:
@@ -1113,6 +1158,10 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
               containers:
                 content: |
             {{Content(containers)}}
+              crowdsec:
+                content: |
+            {{Content(crowdsec)}}
+            {{string.Concat(community.Select(item => $"  {item.Name}:\n    content: |\n{Content(item.Content)}\n"))}}
             {{string.Concat(tiers.Select((tier, index) => $"  rules-{tier}:\n    content: |\n{Content(MetricTiers.Rules(index))}\n"))}}
             volumes:
               collector:
@@ -1129,7 +1178,7 @@ internal sealed class ObservabilityApp() : CatalogApp(ObservabilityApp.AppId, 12
             + $"{StackStore.SsoSecret}={StackCatalog.Secret(env, StackStore.SsoSecret)}\n";
         return new(compose.ReplaceLineEndings("\n"), envText, [],
             [new(grafanaHost, int.Parse(grafanaPort, CultureInfo.InvariantCulture)),
-             new(otlpHost, int.Parse(httpPort, CultureInfo.InvariantCulture), int.Parse(grpcPort, CultureInfo.InvariantCulture))]);
+             new(otlpHost, int.Parse(httpPort, CultureInfo.InvariantCulture), int.Parse(grpcPort, CultureInfo.InvariantCulture))], [alertsHost]);
     }
 }
 

@@ -16,12 +16,13 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 A skill is a folder of instructions, with optional files and scripts, that the assistant reads when a task fits it. Think of it as a runbook. You write the steps once, and the assistant follows them the same way each time.
 
-Lucia ships five built-in skills. You can read them, but not change them. You can duplicate one to make your own version.
+Lucia ships six built-in skills. You can read them, but not change them. You can duplicate one to make your own version.
 
 | Built-in skill | What it covers |
 |---|---|
 | App troubleshooting | Working out why an app is down or restarting |
 | Container image updates | Checking whether a newer image exists and what changing it involves |
+| CrowdSec response | Looking into an attack on your gateway and picking the smallest fix: usually nothing, sometimes a ban for a while, rarely a [custom rule](./gateway-protection.mdx#ask-the-assistant-to-respond) |
 | Custom app authoring | Writing a custom app for the catalog |
 | OS security patching | Checking for and planning OS security updates |
 | Skill authoring | Turning commands you declined or that timed out into narrow skills for you to review |

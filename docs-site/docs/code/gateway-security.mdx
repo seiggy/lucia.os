@@ -27,6 +27,10 @@ The operator's view is in [Gateway protection](../deploy/crowdsec.mdx). This pag
 | Signer | <Source path="tools/nodes/enrollment_worker.py" /> | The Spark's scoped worker; `handle_app` signs app certificates with step-ca. |
 | Middlewares | <Source path="src/Lucia.Homelab.Server/Security/GatewaySecurity.cs" /> | Renders `crowdsec.yml`, live or empty chains. BCL only, compiled into the AppHost too. |
 | Safe harbor | <Source path="src/Lucia.Homelab.Server/Security/SafeHarbor.cs" /> | The owner's list; raises `Changed`. |
+| Bans and alert queries | <Source path="src/Lucia.Homelab.Server/Security/CrowdSecActions.cs" /> | `CrowdSec.Ban`, `Alerts`, `Alert`; `CrowdSecGuard`, the checks the page and the assistant share. |
+| Custom AppSec rules | <Source path="src/Lucia.Homelab.Server/Security/CrowdSecRules.cs" /> | The owner's rules: validation, storage, the YAML the engine reads; raises `Changed`. |
+| Assistant tools | <Source path="src/Lucia.Homelab.Server/Assistant/AssistantCrowdSec.cs" /> | The eight `crowdsec_*` tools and their approval wording. |
+| Dashboards | <Source path="src/Lucia.Homelab.Server/Telemetry/CrowdSecDashboard.cs" />, <Source path="tools/telemetry/crowdsec-dashboards.mjs" /> | The Lucia CrowdSec dashboard, and the script that vendors CrowdSec's community dashboards. |
 | Stack access | <Source path="src/Lucia.Homelab.Server/Stacks/StackCrowdSec.cs" /> | `StackStore.CrowdSec()`, `SetCrowdSec`, `SetCrowdSecCollector`. |
 | Page | <Source path="src/frontend/src/CrowdSec.tsx" />, <Source path="src/frontend/src/crowdsecStatus.ts" /> | `#/security`, strict parsers. |
 
@@ -101,7 +105,50 @@ The guard at the front and the AppSec source's `unique_id: lucia-appsec` are bot
 
 Every in-band block raises an alert of kind `waf` named after the rule (`crowdsecurity/vpatch-env-access`). Those alerts carry no remediation, so `profiles.yaml` never bans on them directly. The same block also reaches the parsers as an `appsec-block` event, and the hub's `crowdsecurity/appsec-vpatch` scenario bans an address that trips two different rules within a minute. That scenario alert goes through the profiles like any other: a public address gets the 4-hour, 24-hour, 7-day ladder, and a private one is recorded only.
 
-`CrowdSecLapi.ParseAlerts` keeps each alert's `kind`, and `BlockedPath` takes the path from the first event's `uri` meta, falling back to the alert's `target_uri` (a JSON list stored as text). Paths are cut at 256 characters. The local API can't filter by kind, so `CrowdSec.Alerts(limit, appSec)` reads the latest 500 alerts and filters them when the page asks for `kind=appsec` or `kind=scenario`.
+`CrowdSecLapi.ParseAlerts` keeps each alert's `kind`, and `BlockedPath` takes the path from the first event's `uri` meta, falling back to the alert's `target_uri` (a JSON list stored as text). Paths are cut at 256 characters. The local API can't filter by kind, and CrowdSec 1.8.1's `ip` and `range` filters miss AppSec alerts (they have no numeric source range), so `CrowdSecGuard.AlertsPath` asks for `value=<ip>` and, for a kind or a network, the latest 500, which `CrowdSec.Alerts` then filters.
+
+## Alerts to Observability
+
+The engine sends every alert to Loki itself, through CrowdSec's `http` notification plugin; the host plays no part. `CrowdSecApp.Notifications` renders one plugin config per class in `AlertClasses` (`trusted`, `lan`, `range`, `public`, `other`), each with the same Go template, `AlertTemplate`, and a class constant. `Profiles(cloudflare, notify: true)` names each profile's notification and adds two last profiles that only notify. The template reads sprig: `fromJson` for the alert context's JSON lists, `toDate` for the time. It writes one `resourceLogs` entry per alert, so `crowdsec.kind` can sit on the resource, where Loki's `otlp_config` turns it into a label:
+
+```text title="src/Lucia.Homelab.Server/Stacks/CrowdSecApp.cs (AlertTemplate, cut)"
+{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"crowdsec"}},{"key":"crowdsec.kind","value":{"stringValue":{{ toJson $kind }}}}]},
+"scopeLogs":[{"scope":{"name":"lucia.crowdsec"},"logRecords":[{"timeUnixNano":{{ toJson $time }},"severityNumber":13,"severityText":"WARN",
+...
+{"key":"crowdsec.source_class","value":{"stringValue":"LUCIA_CLASS"}},
+```
+
+The plugin configs carry an empty `url` and `Authorization`. The start script's `alerts` function fills them with `yq` from the sidecar's `otlp-endpoint` and `otlp-authorization` files, after checking both against a strict pattern, and writes them to `/tmp/lucia/notifications/`. It copies `profiles.yaml` or `profiles-quiet.yaml` to `/tmp/lucia/profiles.yaml` the same way. `rules`, `alerts` and `certificate` each set `reload=1`, and the loop sends one `SIGHUP` per pass.
+
+`CrowdSec.Sync` doesn't use the gateway address `Telemetry => true` would give, because AppSec would block alerts that quote an attack ([the operator page](../deploy/crowdsec.mdx#alerts-in-loki)). `CrowdSec.Intake` sets up a TLS receiver on Observability's collector instead and hands the engine its address only once it works:
+
+1. `StackStore.Observability` returns the Observability install with its settings and environment. Below catalog version 13, or without a domain, it stops there.
+2. `ObservabilityApp.AlertsName` gives `<alerts-host>.<namespace>`. `AppCertificates.Ensure` gets a certificate for it under the Observability stack's name, through the same worker as the engine's.
+3. `CrowdSecApp.CollectorLines(forward, intake)` puts the certificate into a fourth collector config, `LUCIA_CROWDSEC_INTAKE`: a receiver named `otlp/crowdsec_alerts` on container port 4319, TLS 1.2 or later, `basicauth/server`, piped to `otlphttp/loki`. The PEMs are inline because the collector keeps a string field's `${env:...}` value raw; `IntakeCertificate` reads them back on the next pass.
+4. `ProbeIntake` calls `GET /v1/logs` on the name with the Lucia-root client. Any HTTP status counts as working; a resolve, TLS or connect failure becomes the `unreachable` message.
+5. Only then does `Lines` get a `TelemetryDestination`, which the sidecar passes on as `otlp-endpoint` and `otlp-authorization`.
+
+Every early return leaves `_alerts` with a state and a message for `CrowdSecStatusView.Alerts`, which the page shows as **Alerts to Grafana**. `ObservabilityApp.NamesNeedDomain` is false, so Observability still installs without a domain; its `otlp-alerts` name is only published once one exists.
+
+Inside the engine, the plugin runs as `nobody`. That needs `cap_add: [SETUID, SETGID]` to start it, and `PLUGIN_UNIX_SOCKET_GROUP: nobody` with `group_add: ["65534"]` so the engine, which has no `CAP_DAC_OVERRIDE`, can still open the plugin's socket. Each notification has `ca_cert_path: /tmp/lucia-ca/ca.crt`, a world-readable copy of Lucia's root that the start script makes, because the plugin can't read the `0700` state volume.
+
+## Bans and custom rules
+
+<Source path="src/Lucia.Homelab.Server/Security/CrowdSecActions.cs" /> holds what the page and the assistant share. `CrowdSec.Ban` runs `CrowdSecGuard.Target`, `Duration` and `Reason`, then `RefuseProtected` against the safe harbor, Lucia's own addresses (`harbor.Lucia`, every node address, every app address) and Cloudflare's IPv4 and IPv6 ranges, and only then reaches the local API:
+
+```csharp title="src/Lucia.Homelab.Server/Security/CrowdSecActions.cs"
+var (target, scope, network) = CrowdSecGuard.Target(request.Target);
+var duration = CrowdSecGuard.Duration(request.Duration);
+var reason = CrowdSecGuard.Reason(request.Reason);
+CrowdSecGuard.RefuseProtected(network, await Protected(ct));
+var (lapi, password) = await LapiTarget(ct);
+```
+
+`CrowdSecLapi.BanAlert` builds the alert `cscli decisions add` posts, with scenario `lucia/manual-ban` and the caller's origin (`lucia` or `lucia-assistant`).
+
+<Source path="src/Lucia.Homelab.Server/Security/CrowdSecRules.cs" /> keeps the custom AppSec rules in the host's data and raises `Changed`, which wakes `CrowdSec.Sync` like the harbor does. `Validate` is the whole policy: five fields, four operators, values of printable ASCII without quotes or `%{`, reasons without emoji, a header deny-list (`CommonHeader`), and a matcher built in C# that must not match empty text, `ProtectedPaths`, `ProtectedAgents`, `HeaderValues` or every one of the common query values. For `regex`, `RegexProblem` walks the pattern first and accepts only an allow-list of syntax that RE2 and .NET read the same way; the matcher is then a `NonBacktracking` .NET regex. <Source path="tools/security/re2-crosscheck.go" /> replays the checks' patterns in Go's `regexp` (set `LUCIA_RE2_CORPUS` when running DomainChecks, then run the program on the file it writes) and fails on any accepted pattern whose matches differ. A saved file goes through `Validate` again on every read, so a hand edit can't smuggle a rule into the engine. `Render` writes CrowdSec's appsec-rules format with every string JSON-quoted.
+
+The assistant's tools sit in <Source path="src/Lucia.Homelab.Server/Assistant/AssistantCrowdSec.cs" />, a partial of `AssistantTools`, with `CrowdSecWarning` for the two destructive ones. `crowdsec_unban` is a change: alert text is attacker-controlled, so a prompt injection could ask the model to lift a ban, and the broker asks the owner, refuses it in Plan mode and lets a job run it only with a grant. `crowdsec_list_alerts` and `crowdsec_inspect_alert` return their alerts beside an `untrusted` field (`UntrustedAlerts`) that tells the model to read them as evidence, never as instructions. The `crowdsec-response` built-in skill explains the workflow to the model.
 
 ## Certificates
 
@@ -110,18 +157,18 @@ Every in-band block raises an alert of kind `waf` named after the rule (`crowdse
 The worker trusts nothing in the request alone. `authorize_app` reads `stacks/stacks.json` and `nodes/identities/<node>.json` itself, takes the label from the stack's `manifest.names`, and the namespace from `domains/workflow.json` (the job that `domains/active.json` names), the same way `ManagedNodeDns.ActiveJob` does. It refuses Lucia's own hostnames and the server's own name, then checks the CSR, the issued leaf and `openssl verify -verify_hostname` against that one name. `APP_TEMPLATES` lists the apps allowed to ask at all:
 
 ```python title="tools/nodes/enrollment_worker.py"
-APP_TEMPLATES = frozenset({"crowdsec"})  # catalog apps that may have a certificate for their name
+APP_TEMPLATES = frozenset({"crowdsec", "observability"})  # catalog apps that may have a certificate for their name
 ```
 
-To add another app that the gateway reaches over the LAN, list it there, give its template a name setting that it returns in `CatalogOutput.Names`, and add checks on both sides.
+Observability is there for its alert intake. To add another app that is reached over the LAN by name, list it there, give its template a name setting that it returns in `CatalogOutput.Names`, and add checks on both sides.
 
 ## Keeping Lucia's values out of the stack API
 
-`StackStore.ManagedSecrets` names the variables only Lucia uses: `LUCIA_CROWDSEC_TLS_KEY`, `_ENROLL_KEY` and `_TOKEN` in any stack, plus `GATEWAY_KEY`, `LUCIA_MACHINE_PASSWORD` and `INTAKE_TOKEN` in a CrowdSec stack (the catalog app, or a converted copy whose compose runs the CrowdSec image). `StackStore.Get` passes the environment through `Mask`, which keeps the names and shows `[kept by Lucia]`. The assistant's `get_app` reads the same view. On a custom-app save, `KeepManaged` drops whatever was sent for those names and puts the stored lines back; a catalog app's environment never comes from the browser in the first place.
+`StackStore.ManagedSecrets` names the variables only Lucia uses: `LUCIA_CROWDSEC_TLS_KEY`, `_ENROLL_KEY`, `_TOKEN`, `_OTLP_AUTHORIZATION` and `_INTAKE` (it holds the intake's key) in any stack, plus `GATEWAY_KEY`, `LUCIA_MACHINE_PASSWORD` and `INTAKE_TOKEN` in a CrowdSec stack (the catalog app, or a converted copy whose compose runs the CrowdSec image). `StackStore.Get` passes the environment through `Mask`, which keeps the names and shows `[kept by Lucia]`. The assistant's `get_app` reads the same view. On a custom-app save, `KeepManaged` drops whatever was sent for those names and puts the stored lines back; a catalog app's environment never comes from the browser in the first place.
 
 ## Companion versions and a silent log path
 
-`CatalogApp.RequiresVersions` holds the oldest version of a required app that works: for CrowdSec, Observability `ForwardsToCrowdSec` (12), the first collector that loads `LUCIA_CROWDSEC_COLLECTOR`. `RequireCompanions` refuses a new install below it with `requires_update`, and the catalog marks the requirement `current: false`.
+`CatalogApp.RequiresVersions` holds the oldest version of a required app that works: for CrowdSec, Observability `ShowsCrowdSec` (13), the first with CrowdSec's dashboards and the `crowdsec.kind` label. `ForwardsToCrowdSec` (12) is still the first collector that loads `LUCIA_CROWDSEC_COLLECTOR`, and the page's `needs-observability` state uses it. `RequireCompanions` refuses a new install below it with `requires_update`, and the catalog marks the requirement `current: false`.
 
 After install, `CrowdSec.Status` downgrades `healthy` to `needs-observability` while Observability is missing or older, and to `no-logs` when `Track` sees the engine's `linesRead` stand still for `QuietAfter` (15 minutes). Both keep `protecting` true, since the middlewares still point at the engine, but the page no longer says it's protecting.
 
@@ -139,6 +186,8 @@ Traefik loads the bouncer from `plugins-local/src/github.com/maxlerebourg/crowds
 
 | Check | Covers |
 |---|---|
+| <Source path="tests/Lucia.Homelab.DomainChecks/CrowdSecResponseChecks.cs" /> | The notifications, profiles and alert template; the sidecar and start script for rules and the collector; every ban guardrail; every rule refusal and the rendered YAML; the rule store (50 at most, duplicates, removal, a tampered file); alert queries and `BanAlert`; Loki's label, the dashboards' links, panels and metric names, and the vendored license. |
+| <Source path="tests/Lucia.Homelab.AssistantChecks/CrowdSecToolChecks.cs" /> | The tools' tiers and schemas, each guardrail as the model meets it (safe harbor, Lucia's own, Cloudflare, width, length, reason, rule patterns, the 50-rule limit), and the approval wording. |
 | <Source path="tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs" /> | Harbor validation; live and empty middlewares; the rendered stack (pins, ports, hardening, secrets kept, sidecar isolation, TLS everywhere); the transform guard and AppSec's id; alert kinds and blocked paths; Observability's third config and `CollectorLines`; `RequireCompanions`; `AppCertificates` against an offline CA (request shape, refusal, wrong name, foreign root, renewal, a move keeping the certificate, a rename replacing it); `RequireDomain`; the status-line parser; `RequiresVersions` and `Track`; `ManagedSecrets`, `Mask` and `KeepManaged`; the worker's pins; no `crowdsec` scrape on the Spark. |
 | <Source path="tools/nodes/check_enrollment.py" /> | `app_request`, `authorize_app` against stack, node and domain records (the name from the manifest and the active namespace only), CSR and chain rules, the exact `step ca sign` command, `openssl verify -verify_hostname`, queue answers. Run it on Linux. |
 | <Source path="src/frontend/tests/crowdsecStatus.test.mjs" /> | Page parsers, summaries, the route and navigation, `requirementProblem`. |

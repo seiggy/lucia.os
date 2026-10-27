@@ -23,6 +23,7 @@ internal static class MetricTiers
         ("node_uname_info", ""), ("nvidia_smi_gpu_info", ""), ("nvidia_smi_utilization_gpu_ratio", ""), ("nvidia_smi_temperature_gpu", ""),
         ("nvidia_smi_power_draw_watts", ""), ("nvidia_smi_memory_used_bytes", ""), ("container_cpu_utilization_ratio", ""),
         ("container_memory_percent_ratio", ""), ("container_memory_usage_total_bytes", ""), ("container_memory_usage_limit_bytes", ""),
+        .. CrowdSecDashboard.Gauges.Select(metric => (metric, "")),
     ];
 
     internal static readonly (string Metric, string Selector)[] Counters =
@@ -32,6 +33,7 @@ internal static class MetricTiers
         ("container_network_io_usage_rx_bytes_total", ""), ("container_network_io_usage_tx_bytes_total", ""), ("container_blockio_io_service_bytes_recursive_total", ""),
         ("lucia_snmp_interface_io_bytes_total", ""),
         .. InferenceDashboard.Counters.Select(metric => (metric, "")),
+        .. CrowdSecDashboard.Counters.Select(metric => (metric, "")),
     ];
 
     /// <summary>NetFlow's bytes arrive as deltas, under either name.</summary>

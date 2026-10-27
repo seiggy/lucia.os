@@ -590,7 +590,7 @@ def app_checks(folder, root_pem):
         (base / name).mkdir(mode=0o700, exist_ok=True)
     address = "192.168.1.20"
     openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", base / "app.key")
-    assert w.APP_TEMPLATES == frozenset({"crowdsec"})
+    assert w.APP_TEMPLATES == frozenset({"crowdsec", "observability"})
     name = "crowdsec.lab.example.com"
     openssl("req", "-new", "-key", base / "app.key", "-subj", "/CN=lucia-app-crowdsec",
             "-addext", "subjectAltName=DNS:" + name, "-out", base / "app.csr")
@@ -643,9 +643,12 @@ def app_checks(folder, root_pem):
     assert w.authorize_app(p, value) == name
     records(named("guard"))
     assert w.authorize_app(p, value) == "guard.lab.example.com"
+    # Observability's alert intake for CrowdSec, under its own name from the stack's settings.
+    records([{**stack, "manifest": {**stack["manifest"], "template": {"id": "observability", "version": 13}, "names": ["otlp-alerts"]}}])
+    assert w.authorize_app(p, value) == "otlp-alerts.lab.example.com"
     naming = job["plan"]["naming"]
     for stacks, node, active, workflow in (
-            ([], None, None, None), ([{**stack, "manifest": {**stack["manifest"], "template": {"id": "observability"}}}], None, None, None),
+            ([], None, None, None), ([{**stack, "manifest": {**stack["manifest"], "template": {"id": "plex"}}}], None, None, None),
             ([{**stack, "move": {"from": "node-one", "to": "node-two"}}], None, None, None), ([{**stack, "restore": {"id": ENTRY}}], None, None, None),
             ([{**stack, "node": "node-two"}], None, None, None), ([stack, stack], None, None, None), (None, {**identity, "address": "192.168.1.21"}, None, None),
             (None, {**identity, "hostname": "node-two"}, None, None), (None, {**identity, "nodeId": TASK}, None, None),

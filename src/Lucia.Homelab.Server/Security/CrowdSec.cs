@@ -16,7 +16,8 @@ using Lucia.Homelab.Server.Stacks;
 namespace Lucia.Homelab.Server.Security;
 
 public sealed record CrowdSecEnrollRequest(string? Key);
-public sealed record CrowdSecUnbanRequest(string? Ip);
+/// <param name="Id">One ban's decision id, from the list of bans, instead of an address.</param>
+public sealed record CrowdSecUnbanRequest(string? Ip, long? Id = null);
 
 public sealed record CrowdSecConsoleView(string State, string? Message, DateTimeOffset? At, string? Plan, string Url);
 public sealed record CrowdSecCapiView(bool? Registered, bool? Authenticated, bool? Sharing, bool? Blocklist);
@@ -34,7 +35,14 @@ public sealed record CrowdSecBouncerView(string Name, DateTimeOffset? LastPull, 
 /// <param name="ReportedAt">When the engine last logged its status for this page.</param>
 public sealed record CrowdSecStatusView(string State, string? Message, bool Protecting, bool ObservabilityInstalled, string? Stack, string? Node,
     string? Address, string? Name, string? Version, string? Image, DateTimeOffset? CertificateExpiresAt, CrowdSecCapiView? Capi, CrowdSecConsoleView Console,
-    CrowdSecBouncerView? Bouncer, CrowdSecMetricsView? Metrics, int? HarborEntries, DateTimeOffset? ReportedAt);
+    CrowdSecBouncerView? Bouncer, CrowdSecMetricsView? Metrics, int? HarborEntries, DateTimeOffset? ReportedAt, int? CustomRules = null, CrowdSecAlertsView? Alerts = null, string? CustomRulesProblem = null);
+/// <param name="State">
+/// Where the engine's alerts go: <c>on</c> (Observability's TLS alert intake takes them), <c>off</c> (no Observability),
+/// <c>update-observability</c>, <c>waiting-domain</c>, <c>waiting-certificate</c>, <c>stopped</c> or <c>unreachable</c>. Anything but
+/// <c>on</c> keeps them in CrowdSec only; the engine and the gateway carry on.
+/// </param>
+/// <param name="Intake">The intake's name under the domain, which its certificate carries.</param>
+public sealed record CrowdSecAlertsView(string State, string? Message, string? Intake);
 /// <param name="Kind">waf for a request AppSec blocked (Scenario is then the rule), crowdsec for a scenario, or another kind CrowdSec reports.</param>
 /// <param name="Path">The blocked request's path, for AppSec blocks.</param>
 public sealed record CrowdSecAlertView(long Id, string Scenario, string? Scope, string? Value, string? Country, string? AsName, DateTimeOffset? At,
@@ -43,7 +51,7 @@ public sealed record CrowdSecDecisionView(long Id, string Value, string Scope, s
 
 /// <summary>The engine's own report, a <c>lucia-status</c> line its start script logs every minute.</summary>
 internal sealed record CrowdSecReport(DateTimeOffset At, string? Version, CrowdSecBouncerView? Bouncer, CrowdSecMetricsView? Metrics,
-    CrowdSecCapiView? Capi, bool? Enrolled, string? Plan, string EnrollState, string? EnrollMessage, DateTimeOffset? EnrollAt, int? Harbor);
+    CrowdSecCapiView? Capi, bool? Enrolled, string? Plan, string EnrollState, string? EnrollMessage, DateTimeOffset? EnrollAt, int? Harbor, int? Rules = null, string? RulesProblem = null);
 
 /// <summary>
 /// Keeps the gateway in step with the CrowdSec app, and serves the CrowdSec page. Every 15 seconds it gets (or renews) the
@@ -54,8 +62,9 @@ internal sealed record CrowdSecReport(DateTimeOffset At, string? Version, CrowdS
 /// reads alerts and decisions and lifts bans through the local API, signed in as the app's <c>lucia-host</c> machine; the
 /// engine's own status comes from its <c>lucia-status</c> log line, through the server's agent.
 /// </summary>
-public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore domains, SafeHarbor harbor, GatewaySecurityOptions options, HostAuthenticationOptions authentication,
-    AppCertificates certificates, ManagedNodeEnrollment nodes, NodeRequests requests, TimeProvider time, ILogger<CrowdSec> logger) : BackgroundService
+public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore domains, SafeHarbor harbor, CrowdSecRules rules, GatewaySecurityOptions options,
+    HostAuthenticationOptions authentication, AppCertificates certificates, ManagedNodeEnrollment nodes, NodeRequests requests, TimeProvider time,
+    ILogger<CrowdSec> logger) : BackgroundService
 {
     internal const string ConsoleUrl = "https://app.crowdsec.net";
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(15), ReportLifetime = TimeSpan.FromSeconds(30);
@@ -71,6 +80,9 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
     private CrowdSecLapi? _lapi;
     private (DateTimeOffset At, string Container, CrowdSecReport? Report, string? Problem) _report;
     private (long Lines, DateTimeOffset Since)? _logs;
+    private string? _intakeStack;
+    private TelemetryDestination? _intakeDestination;
+    private (string State, string? Message, string? Intake) _alerts;
     /// <summary>How long the engine may read no access-log line before the page says the log path is broken.</summary>
     internal static readonly TimeSpan QuietAfter = TimeSpan.FromMinutes(15);
 
@@ -81,6 +93,7 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         harbor.Changed += Wake;
+        rules.Changed += Wake;
         try
         {
             while (!stop.IsCancellationRequested)
@@ -95,7 +108,7 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
                 catch (OperationCanceledException) { return; }
             }
         }
-        finally { harbor.Changed -= Wake; }
+        finally { harbor.Changed -= Wake; rules.Changed -= Wake; }
     }
 
     internal void Wake()
@@ -117,7 +130,10 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
                 _certificateProblem = _probeProblem = null;
                 _failures = 0;
                 if (_stack is { } gone) await certificates.Forget(gone, ct);
-                _stack = _name = null;
+                if (_intakeStack is { } intakeGone) await certificates.Forget(intakeGone, ct);
+                _stack = _name = _intakeStack = null;
+                _intakeDestination = null;
+                _alerts = default;
                 await stacks.SetCrowdSecCollector("", ct);
             }
             else
@@ -131,12 +147,16 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
                 _certificateProblem = null;
                 if (install is { Settled: true, Address: { } address, NodeId: { } nodeId } && name is not null)
                     (certificate, _certificateProblem) = await certificates.Ensure(install.Name, nodeId, address, name, current, root, nodes.WorkerReady, ct);
+                var (intake, intakeCertificate) = await Intake(naming, root, ct);
+                _intakeDestination = intake;
                 await stacks.SetCrowdSec(install.Name, Lines(certificate, root.ExportCertificatePem(), entries,
-                    install.Env.GetValueOrDefault(StackStore.CrowdSecPrefix + "ENROLL_KEY"), install.Env.GetValueOrDefault(StackStore.CrowdSecPrefix + "ENROLL_ID"), name), ct);
+                    install.Env.GetValueOrDefault(StackStore.CrowdSecPrefix + "ENROLL_KEY"), install.Env.GetValueOrDefault(StackStore.CrowdSecPrefix + "ENROLL_ID"), name,
+                    await rules.Rendered(ct), intake), ct);
                 var running = install is { Settled: true, Desired: "Running", Address: not null } && certificate is not null && name is not null;
                 var ports = CrowdSecApp.Ports(install.Settings);
-                await stacks.SetCrowdSecCollector(running && install.Env.GetValueOrDefault(CrowdSecApp.IntakeToken) is { Length: >= 32 } token
-                    ? CrowdSecApp.CollectorLines($"https://{name}:{ports.Logs}{CrowdSecApp.IntakePath}", root.ExportCertificatePem(), token) : "", ct);
+                await stacks.SetCrowdSecCollector(CrowdSecApp.CollectorLines(running && install.Env.GetValueOrDefault(CrowdSecApp.IntakeToken) is { Length: >= 32 } token
+                    ? ($"https://{name}:{ports.Logs}{CrowdSecApp.IntakePath}", root.ExportCertificatePem(), token) : null, intakeCertificate)
+                    + CrowdSecApp.ConsoleLine(naming is null ? null : DomainActivationConfiguration.Read(domains.Root)?.CanonicalLuciaOrigin), ct);
                 if (running && install.Env.GetValueOrDefault(CrowdSecApp.GatewayKey) is { Length: >= 32 } key)
                 {
                     var candidate = new CrowdSecLink(name!, ports.Lapi, ports.AppSec, key, root.ExportCertificatePem() + "\n");
@@ -161,10 +181,86 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
     }
 
     /// <summary>
-    /// The engine's Lucia variables: its name and certificate with Lucia's root (base64, so each fits one line), the harbor and
-    /// the Console enroll key. The name only comes with a certificate for it, so the engine never waits under a name it can't serve.
+    /// Observability's TLS alert intake for the engine's notifications: its certificate from Lucia's CA (asked for and renewed
+    /// like the engine's own), and its address once it answers over TLS that verifies against Lucia's root. Until then the
+    /// engine gets no collector, so its alerts stay in CrowdSec and nothing else changes; <see cref="_alerts"/> says why.
     /// </summary>
-    internal static string Lines(AppCertificate? certificate, string caPem, IEnumerable<string> entries, string? enrollKey, string? enrollId, string? name)
+    private async Task<(TelemetryDestination? Destination, AppCertificate? Certificate)> Intake(DomainNamingPlan? naming, X509Certificate2 root, CancellationToken ct)
+    {
+        var observability = await stacks.Observability(ct);
+        if (_intakeStack is { } old && old != observability?.Name) await certificates.Forget(old, ct);
+        _intakeStack = observability?.Name;
+        if (observability is null)
+        {
+            _alerts = ("off", "Observability isn't installed, so CrowdSec keeps its alerts to itself.", null);
+            return (null, null);
+        }
+        if (observability.Version < ObservabilityApp.ShowsCrowdSec)
+        {
+            _alerts = ("update-observability", $"Observability runs catalog version {observability.Version}, which has no TLS alert intake. Update it under Apps (version {ObservabilityApp.ShowsCrowdSec} or later) to see CrowdSec's alerts in Grafana.", null);
+            return (null, null);
+        }
+        if (naming is null)
+        {
+            _alerts = ("waiting-domain", "The alert intake needs your lab's domain for its name and certificate.", null);
+            return (null, null);
+        }
+        var name = ObservabilityApp.AlertsName(observability.Settings, naming.Namespace);
+        var current = CrowdSecApp.IntakeCertificate(observability.Env);
+        var certificate = current is not null && AppCertificates.Valid(current, name, root, time.GetUtcNow()) ? current : null;
+        string? problem = null;
+        if (observability is { Settled: true, Address: { } address, NodeId: { } nodeId })
+            (certificate, problem) = await certificates.Ensure(observability.Name, nodeId, address, name, current, root, nodes.WorkerReady, ct);
+        if (certificate is null)
+        {
+            _alerts = ("waiting-certificate", problem ?? "Lucia is getting the alert intake's certificate from its authority.", name);
+            return (null, null);
+        }
+        if (observability is not { Desired: "Running", Settled: true, Authorization: { } authorization })
+        {
+            _alerts = ("stopped", "Observability is stopped or moving, so CrowdSec keeps its alerts to itself until it's back.", name);
+            return (null, certificate);
+        }
+        var endpoint = new Uri($"https://{name}:{int.Parse(observability.Settings["alerts-port"], CultureInfo.InvariantCulture)}");
+        if (await ProbeIntake(endpoint, ct) is { } failure)
+        {
+            _alerts = ("unreachable", failure, name);
+            return (null, certificate);
+        }
+        _alerts = ("on", null, name);
+        return (new TelemetryDestination(endpoint, authorization), certificate);
+    }
+
+    /// <summary>Null when the intake answers over TLS that verifies against Lucia's root for its name (any HTTP status), else why not.</summary>
+    private async Task<string?> ProbeIntake(Uri endpoint, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            using var response = await Client().GetAsync(new Uri(endpoint, "/v1/logs"), timeout.Token);
+            return null;
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or IOException && !ct.IsCancellationRequested)
+        {
+            return error switch
+            {
+                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } =>
+                    $"{endpoint.Host} doesn't resolve here yet. Lucia publishes it in AdGuard once Observability runs under the domain.",
+                HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError } =>
+                    $"The alert intake at {endpoint.Host} didn't present a certificate from Lucia's authority for its name yet.",
+                _ => $"The alert intake at {endpoint.Authority} isn't answering yet. Observability's collector picks it up when Lucia redeploys it.",
+            };
+        }
+    }
+
+    /// <summary>
+    /// The engine's Lucia variables: its name and certificate with Lucia's root (base64, so each fits one line), the harbor,
+    /// the Console enroll key, the owner's custom AppSec rules (base64 YAML) and Observability's collector on the LAN, which
+    /// receives every alert. The name only comes with a certificate for it, so the engine never waits under a name it can't serve.
+    /// </summary>
+    internal static string Lines(AppCertificate? certificate, string caPem, IEnumerable<string> entries, string? enrollKey, string? enrollId, string? name,
+        string appSecRules = "", TelemetryDestination? collector = null)
     {
         var prefix = StackStore.CrowdSecPrefix;
         var text = new StringBuilder();
@@ -175,6 +271,9 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
         text.Append($"{prefix}HARBOR={string.Join(',', entries)}\n");
         if (enrollKey is { Length: > 0 } && ValidEnrollKey(enrollKey) && enrollId is { Length: > 0 } && Hex().IsMatch(enrollId))
             text.Append($"{prefix}ENROLL_KEY={enrollKey}\n{prefix}ENROLL_ID={enrollId}\n");
+        text.Append($"{prefix}APPSEC_RULES={Convert.ToBase64String(Encoding.UTF8.GetBytes(appSecRules.ReplaceLineEndings("\n")))}\n");
+        if (collector is not null && StackCatalog.Unquoted(collector.Authorization.Replace(' ', '_')))
+            text.Append($"{prefix}OTLP_ENDPOINT={collector.Endpoint.AbsoluteUri.TrimEnd('/')}\n{prefix}OTLP_AUTHORIZATION={collector.Authorization}\n");
         return text.ToString();
     }
 
@@ -265,7 +364,8 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
             _ => new CrowdSecConsoleView("sending", null, null, null, ConsoleUrl),
         };
         return new(state, message ?? report.Problem, state is "healthy" or "needs-observability" or "no-logs" && _link is not null, observability, install.Name, install.Node, install.Address, name,
-            view?.Version, install.Image, certificate?.NotAfter, view?.Capi, console, view?.Bouncer, view?.Metrics, view?.Harbor, view?.At);
+            view?.Version, install.Image, certificate?.NotAfter, view?.Capi, console, view?.Bouncer, view?.Metrics, view?.Harbor, view?.At, view?.Rules,
+            _alerts.State is { } alertState ? new CrowdSecAlertsView(alertState, _alerts.Message, _alerts.Intake) : null, view?.RulesProblem);
     }
 
     /// <summary>The engine's latest <c>lucia-status</c> line, read through the server's agent and kept for half a minute.</summary>
@@ -313,8 +413,10 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
                     capi.ValueKind == JsonValueKind.Object ? new(Bool(capi, "registered"), Bool(console, "authenticated"), Bool(capi, "sharing"), Bool(capi, "blocklist")) : null,
                     Bool(console, "enrolled"), Text(console, "plan") is { Length: > 0 and <= 64 } plan ? plan : null, state,
                     Text(enroll, "message") is { Length: > 0 } text ? new string([.. text.Where(ch => !char.IsControl(ch)).Take(240)]) : null,
-                    Time(enroll, "at"), root.TryGetProperty("harbor", out var h) && h.ValueKind == JsonValueKind.Number && h.TryGetInt32(out var count) ? count : null);
-            }
+                    Time(enroll, "at"), root.TryGetProperty("harbor", out var h) && h.ValueKind == JsonValueKind.Number && h.TryGetInt32(out var count) ? count : null,
+                    root.TryGetProperty("rules", out var r) && r.ValueKind == JsonValueKind.Number && r.TryGetInt32(out var ruleCount) && ruleCount >= 0 ? ruleCount : null,
+                                        Text(root, "rulesProblem") is { Length: > 0 } rulesProblem ? new string([.. rulesProblem.Where(ch => !char.IsControl(ch)).Take(400)]) : null);
+                                }
             catch (JsonException) { }
         }
         return null;
@@ -331,17 +433,6 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
                 ? at : null;
     }
 
-    /// <summary>Recent alerts, newest first. <paramref name="appSec"/> keeps only AppSec blocks (true) or only the rest (false); the local
-    /// API can't filter by kind, so a filtered list is picked from the latest 500.</summary>
-    public async Task<CrowdSecAlertView[]> Alerts(int limit, bool? appSec, CancellationToken ct)
-    {
-        var (origin, password) = await LapiTarget(ct);
-        var take = Math.Clamp(limit, 1, 200);
-        using var alerts = await Call(() => Lapi().Send(origin, password, HttpMethod.Get,
-            $"/v1/alerts?include_capi=false&limit={(appSec is null ? take : 500)}", ct), ct);
-        return [.. CrowdSecLapi.ParseAlerts(alerts.RootElement).Where(alert => appSec is null || CrowdSecLapi.IsAppSec(alert) == appSec).Take(take)];
-    }
-
     /// <summary>Bans in force, from alerts with an active decision. The community blocklist's own decisions stay out.</summary>
     public async Task<CrowdSecDecisionView[]> Decisions(CancellationToken ct)
     {
@@ -350,15 +441,26 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
         return CrowdSecLapi.ParseDecisions(alerts.RootElement, time.GetUtcNow());
     }
 
-    /// <summary>Lifts every ban on an address or network. The gateway drops it at its next pull, within 15 seconds.</summary>
-    public async Task<object> Unban(CrowdSecUnbanRequest request, CancellationToken ct)
+    /// <summary>
+    /// Lifts every ban on an address or network, or one ban by its decision id. The gateway drops it at its next pull, within
+    /// 15 seconds.
+    /// </summary>
+    public async Task<object> Unban(CrowdSecUnbanRequest request, CancellationToken ct, string actor = "The owner")
     {
-        var query = CrowdSecLapi.UnbanQuery(request.Ip)
-            ?? throw new HardwareOnboardingException(400, "invalid_address", "Name the address or network to unban, such as 203.0.113.7.");
+        string path;
+        if (request.Id is { } id)
+        {
+            if (id <= 0 || !string.IsNullOrWhiteSpace(request.Ip))
+                throw new HardwareOnboardingException(400, "invalid_decision", "Name either the address or the ban's id from the list of bans, not both.");
+            path = "/v1/decisions/" + id.ToString(CultureInfo.InvariantCulture);
+        }
+        else
+            path = "/v1/decisions?" + (CrowdSecLapi.UnbanQuery(request.Ip)
+                ?? throw new HardwareOnboardingException(400, "invalid_address", "Name the address or network to unban, such as 203.0.113.7."));
         var (origin, password) = await LapiTarget(ct);
-        using var result = await Call(() => Lapi().Send(origin, password, HttpMethod.Delete, "/v1/decisions?" + query, ct), ct);
+        using var result = await Call(() => Lapi().Send(origin, password, HttpMethod.Delete, path, ct), ct);
         var deleted = CrowdSecLapi.Deleted(result.RootElement);
-        logger.LogInformation("The owner lifted {Count} CrowdSec decisions.", deleted);
+        logger.LogInformation("{Actor} lifted {Count} CrowdSec decisions.", actor, deleted);
         return new { deleted };
     }
 
@@ -388,7 +490,7 @@ public sealed partial class CrowdSec(StackStore stacks, DomainOnboardingStore do
             if (!install.Settled)
                 throw new HardwareOnboardingException(409, "stack_moving", "CrowdSec is moving or being restored. Try again once it's back.");
             await stacks.SetCrowdSec(install.Name, Lines(Certificate(install.Env), Root().ExportCertificatePem(), await harbor.Entries(ct), key, id,
-                install.Env.GetValueOrDefault(CrowdSecApp.NameVariable)), ct);
+                install.Env.GetValueOrDefault(CrowdSecApp.NameVariable), await rules.Rendered(ct), _intakeDestination), ct);
             _report = default;
         }
         finally { _sync.Release(); }
@@ -454,7 +556,7 @@ internal sealed class CrowdSecLapi(HttpClient client, TimeProvider time)
     private const string UserAgent = "lucia-host/1";
     private (string Key, string Token, DateTimeOffset Expires)? _token;
 
-    public async Task<JsonDocument> Send(string origin, string password, HttpMethod method, string path, CancellationToken ct)
+    public async Task<JsonDocument> Send(string origin, string password, HttpMethod method, string path, CancellationToken ct, string? json = null)
     {
         var key = origin + "\n" + password;
         if (_token is not { } cached || cached.Key != key || cached.Expires <= time.GetUtcNow())
@@ -473,6 +575,7 @@ internal sealed class CrowdSecLapi(HttpClient client, TimeProvider time)
                 expires.AddMinutes(-2));
         }
         using var request = new HttpRequestMessage(method, origin + path);
+        if (json is not null) request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token.Value.Token);
         request.Headers.UserAgent.ParseAdd(UserAgent);
         using var response = await client.SendAsync(request, ct);
@@ -498,6 +601,74 @@ internal sealed class CrowdSecLapi(HttpClient client, TimeProvider time)
         })];
 
     internal static bool IsAppSec(CrowdSecAlertView alert) => alert.Kind == "waf";
+
+    /// <summary>
+    /// The alert cscli posts for <c>cscli decisions add</c>, with Lucia's scenario and origin: one ban decision, the reason as
+    /// the message, and who asked in its context. The profiles see it only to send it to Observability; they add no decision.
+    /// </summary>
+    internal static string BanAlert(string value, string scope, TimeSpan duration, string reason, string actor, string origin, DateTimeOffset now)
+    {
+        var at = now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        var message = $"{reason} (by {actor})";
+        return JsonSerializer.Serialize(new object[]
+        {
+            new Dictionary<string, object?>
+            {
+                ["scenario"] = CrowdSec.ManualScenario, ["scenario_hash"] = "", ["scenario_version"] = "", ["message"] = message,
+                ["capacity"] = 0, ["leakspeed"] = "0", ["events_count"] = 1, ["simulated"] = false, ["remediation"] = true,
+                ["start_at"] = at, ["stop_at"] = at, ["created_at"] = at, ["events"] = Array.Empty<object>(),
+                ["meta"] = new[]
+                {
+                    new { key = "lucia_reason", value = JsonSerializer.Serialize(new[] { reason }) },
+                    new { key = "lucia_actor", value = JsonSerializer.Serialize(new[] { actor }) },
+                },
+                ["source"] = new Dictionary<string, object?> { ["scope"] = scope, ["value"] = value, ["ip"] = value, ["range"] = "", ["cn"] = "", ["as_name"] = "", ["as_number"] = "" },
+                ["decisions"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "ban", ["scope"] = scope, ["value"] = value, ["duration"] = CrowdSecGuard.Format(duration),
+                        ["origin"] = origin, ["scenario"] = CrowdSec.ManualScenario, ["simulated"] = false,
+                    },
+                },
+            },
+        });
+    }
+
+    /// <summary>One alert from <c>GET /v1/alerts/{id}</c>, with its context lists and up to 20 events, values capped for the reader.</summary>
+    internal static CrowdSecAlertDetail? ParseAlert(JsonElement alert, DateTimeOffset now)
+    {
+        if (alert.ValueKind != JsonValueKind.Object) return null;
+        using var wrapped = JsonDocument.Parse("[" + alert.GetRawText() + "]");
+        if (ParseAlerts(wrapped.RootElement) is not [var view]) return null;
+        static string Cap(string? text, int limit = 512) => text is null ? "" : text.Length <= limit ? text : text[..limit] + "…";
+        var context = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        if (alert.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Array)
+            foreach (var item in meta.EnumerateArray().Take(32))
+            {
+                if (Text(item, "key") is not { Length: > 0 and <= 64 } key || Text(item, "value") is not { } value) continue;
+                string[] values;
+                try
+                {
+                    using var list = JsonDocument.Parse(value);
+                    values = list.RootElement.ValueKind == JsonValueKind.Array
+                        ? [.. list.RootElement.EnumerateArray().Take(20).Select(entry => Cap(entry.ValueKind == JsonValueKind.String ? entry.GetString() : entry.GetRawText()))]
+                        : [Cap(value)];
+                }
+                catch (JsonException) { values = [Cap(value)]; }
+                context[key] = values;
+            }
+        var events = alert.TryGetProperty("events", out var list2) && list2.ValueKind == JsonValueKind.Array
+            ? list2.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object).Take(20).Select(item => new CrowdSecEventView(Time(item, "timestamp"),
+                item.TryGetProperty("meta", out var eventMeta) && eventMeta.ValueKind == JsonValueKind.Array
+                    ? eventMeta.EnumerateArray().Where(entry => Text(entry, "key") is { Length: > 0 and <= 64 }).Take(40)
+                        .GroupBy(entry => Text(entry, "key")!).ToDictionary(group => group.Key, group => Cap(Text(group.First(), "value")))
+                    : new Dictionary<string, string>())).ToArray()
+            : [];
+        var source = alert.TryGetProperty("source", out var s) && s.ValueKind == JsonValueKind.Object ? s : default;
+        return new(view, Text(alert, "message") is { } message ? Cap(message) : null, Text(alert, "machine_id"), Text(source, "as_number") is { Length: > 0 } asn ? asn : null,
+            Text(source, "range") is { Length: > 0 } range ? range : null, context, events, ParseDecisions(wrapped.RootElement, now));
+    }
 
     /// <summary>The path an AppSec block names: its event's uri, else the alert's target_uri (a JSON list as text). Capped for the page.</summary>
     internal static string? BlockedPath(JsonElement alert)
@@ -566,6 +737,7 @@ public static class CrowdSecEndpoints
         var options = builder.Configuration.GetSection("GatewaySecurity").Get<GatewaySecurityOptions>() ?? new();
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton<SafeHarbor>();
+        builder.Services.AddSingleton<CrowdSecRules>();
         builder.Services.AddSingleton<AppCertificates>();
         builder.Services.AddSingleton<CrowdSec>();
         builder.Services.AddHostedService(services => services.GetRequiredService<CrowdSec>());
@@ -583,23 +755,28 @@ public static class CrowdSecEndpoints
             return await harbor.Save(request, actor, time.GetUtcNow(), ct);
         });
         security.MapGet("/crowdsec", (CrowdSec crowdsec, CancellationToken ct) => crowdsec.Status(ct));
-        security.MapGet("/crowdsec/alerts", async (int? limit, string? kind, CrowdSec crowdsec, CancellationToken ct) => new
-        {
-            alerts = await crowdsec.Alerts(limit ?? 50, kind switch
-            {
-                null or "" => null,
-                "appsec" => true,
-                "scenario" => false,
-                _ => throw new HardwareOnboardingException(400, "invalid_kind", "Ask for kind=appsec or kind=scenario, or leave kind out for every alert."),
-            }, ct),
-        });
+        security.MapGet("/crowdsec/alerts", async (int? limit, string? kind, string? ip, string? range, string? scenario, string? since, CrowdSec crowdsec,
+            CancellationToken ct) => new { alerts = await crowdsec.Alerts(new CrowdSecAlertQuery(ip, range, scenario, kind, since, limit), ct) });
+        security.MapGet("/crowdsec/alerts/{id:long}", (long id, CrowdSec crowdsec, CancellationToken ct) => crowdsec.Alert(id, ct));
         security.MapGet("/crowdsec/decisions", async (CrowdSec crowdsec, CancellationToken ct) => new { decisions = await crowdsec.Decisions(ct) });
+        security.MapPost("/crowdsec/ban", async (HttpContext context, CrowdSec crowdsec, CancellationToken ct) =>
+            await crowdsec.Ban(await Body<CrowdSecBanRequest>(context, 2048, "Send the ban as {\"target\": \"203.0.113.7\", \"duration\": \"4h\", \"reason\": \"...\"}.", ct),
+                Actor(context), CrowdSec.OwnerOrigin, ct));
         security.MapPost("/crowdsec/unban", async (HttpContext context, CrowdSec crowdsec, CancellationToken ct) =>
-            await crowdsec.Unban(await Body<CrowdSecUnbanRequest>(context, 1024, "Send the address as {\"ip\": \"203.0.113.7\"}.", ct), ct));
+            await crowdsec.Unban(await Body<CrowdSecUnbanRequest>(context, 1024, "Send the address as {\"ip\": \"203.0.113.7\"} or a ban as {\"id\": 42}.", ct), ct,
+                Actor(context)));
+        security.MapGet("/crowdsec/rules", (CrowdSecRules rules, CancellationToken ct) => rules.List(ct));
+        security.MapPost("/crowdsec/rules", async (HttpContext context, CrowdSecRules rules, TimeProvider time, CancellationToken ct) =>
+            await rules.Add(await Body<CrowdSecRuleRequest>(context, 2048,
+                "Send the rule as {\"field\": \"path\", \"operator\": \"prefix\", \"value\": \"/wp-admin\", \"reason\": \"...\"}.", ct), Actor(context), time.GetUtcNow(), ct));
+        security.MapDelete("/crowdsec/rules/{id}", (string id, HttpContext context, CrowdSecRules rules, CancellationToken ct) => rules.Remove(id, Actor(context), ct));
         security.MapPut("/crowdsec/enrollment", async (HttpContext context, CrowdSec crowdsec, CancellationToken ct) =>
             await crowdsec.Enroll(await Body<CrowdSecEnrollRequest>(context, 1024, "Send the enroll key as {\"key\": \"...\"}.", ct), ct));
         security.MapDelete("/crowdsec/enrollment", (CrowdSec crowdsec, CancellationToken ct) => crowdsec.ForgetEnrollKey(ct));
     }
+
+    private static string Actor(HttpContext context) =>
+        context.User.FindFirst("preferred_username")?.Value ?? context.User.FindFirst("sub")?.Value ?? "owner API key";
 
     private static async Task<T> Body<T>(HttpContext context, int limit, string help, CancellationToken ct)
     {

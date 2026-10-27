@@ -80,13 +80,14 @@ Versions are pinned by digest in the template. Changing one means a template ver
 | 3030 | TCP | Grafana | `grafana-port` |
 | 4317 | TCP | Collector, OTLP gRPC | `otlp-grpc-port` |
 | 4318 | TCP | Collector, OTLP HTTP | `otlp-http-port` |
+| 4319 | TCP | Collector, CrowdSec's alert intake (TLS only) | `alerts-port` |
 | 2055 | UDP | Collector, NetFlow v5/v9 and IPFIX | Fixed |
 | 3900 | TCP | Garage S3 API | `s3-port` |
 | 3909 | TCP | Garage console | `console-port` |
 
 Everything else stays on the stack's private Docker network: Prometheus (9090), Loki (3100), Tempo (3200 and OTLP 4317), Thanos query (10902, gRPC 10901) and Garage's RPC (3901) and admin API (3903). Garage's admin token and the collector's credentials are generated into the app's `.env` and never leave the Spark and the node.
 
-With a domain active, the gateway also serves two names for Observability (`grafana` and `otlp`, by default) and two for Object storage (`s3` and `storage`). The `otlp` name routes gRPC (by content type) to the gRPC port and everything else to the HTTP port. Point a NetFlow exporter, such as a UniFi gateway, at `<observability server>:2055`.
+With a domain active, the gateway also serves two names for Observability (`grafana` and `otlp`, by default) and two for Object storage (`s3` and `storage`). The `otlp` name routes gRPC (by content type) to the gRPC port and everything else to the HTTP port. A third name, `otlp-alerts` (setting `alerts-host`), doesn't go through the gateway: AdGuard points it straight at the Observability server, for CrowdSec's alert intake. Observability installs without a domain; that name only appears once one is active. Point a NetFlow exporter, such as a UniFi gateway, at `<observability server>:2055`.
 
 ### On each managed server
 
@@ -109,14 +110,28 @@ The installer runs a relay container with `node-exporter` beside the controller.
 
 ### Forwarding the gateway's log to CrowdSec
 
-The collector loads a third config from its environment, `--config=env:LUCIA_CROWDSEC_COLLECTOR`, next to the lab map's SNMP one. Both are empty until Lucia fills them, and the health check validates all three. While a CrowdSec app is installed, settled, running and holding its certificate, Lucia sets two variables on every Observability app:
+The collector loads a third config from its environment, `--config=env:LUCIA_CROWDSEC_COLLECTOR`, next to the lab map's SNMP one, and a fourth, `--config=env:LUCIA_CROWDSEC_INTAKE`, for CrowdSec's alerts. All are empty until Lucia fills them, and the health check validates all four. While a CrowdSec app is installed, settled, running and holding its certificate, Lucia sets two variables on every Observability app:
 
 | Variable | Holds |
 |---|---|
 | `LUCIA_CROWDSEC_COLLECTOR` | One line of YAML, single-quoted so compose leaves it alone. It adds a `logs/crowdsec` pipeline that keeps only records whose `service.name` is `lucia-gateway`, stamps a `time` attribute, and sends them as OTLP/JSON to CrowdSec's log intake over TLS that trusts Lucia's root alone. |
 | `LUCIA_CROWDSEC_TOKEN` | The intake's shared secret. The collector expands it into the `X-Lucia-Intake` header itself, so it never sits in the config line. |
+| `LUCIA_CROWDSEC_INTAKE` | One line of YAML with the alert intake: an OTLP/HTTP receiver on 4319 with TLS 1.2 or later and the collector's own Basic credentials, whose only pipeline goes to Loki. It holds the intake's certificate and key from Lucia's CA inline, so the Apps page shows it as `[kept by Lucia]`. Set once the certificate is issued, while a CrowdSec app is installed, whether its engine runs or not. | Lucia's web address, such as `https://lucia.lab.example.com`, set whenever a CrowdSec app is installed and a domain is active. Compose writes it into the Lucia CrowdSec dashboard's links. |
 
 A send that fails is dropped instead of retried (`retry_on_failure: {enabled: false}`, 5 second timeout). An engine that's down therefore loses its share of the log and nothing else; the Loki pipeline never waits on it. Changing either variable bumps the stack's revision, so the collector container restarts once.
+
+### CrowdSec in Grafana
+
+From catalog version 13, Loki indexes one resource attribute beyond the defaults, `crowdsec.kind`, so CrowdSec's alert records get the labels `service_name="crowdsec"` and `crowdsec_kind` (`crowdsec` or `waf`). Everything else in them is structured metadata ([the fields](./crowdsec.mdx#alerts-in-loki)). The engine sends them straight to the alert intake over TLS, checking the certificate against Lucia's root.
+
+| Dashboard | Source | Shows |
+|---|---|---|
+| **Lucia CrowdSec** (`lucia-crowdsec`) | Loki, plus `cs_active_decisions` and the AppSec counters from Prometheus | Alerts, bans and AppSec blocks in the time range; alerts by scenario and by source class; an offenders table (address, scenario, path, user agent, country, count, last seen, decision, and a line to paste to the assistant); top offenders; active bans by origin; recent blocks and bans |
+| **CrowdSec overview**, **details per server**, **insight**, **local API** (`crowdsec-*`) | Prometheus, job `crowdsec` | CrowdSec's community dashboards, adapted for Lucia |
+
+The community dashboards come from `crowdsecurity/grafana-dashboards` (`dashboards_v5`, commit `0d34f68`, MIT; the license ships beside them). `tools/telemetry/crowdsec-dashboards.mjs` fetches that commit and adapts them: the provisioned `prometheus` datasource, `job="crowdsec"` on process metrics, `cs_bucket_instantiation_total` for the renamed bucket counter, the access log and AppSec in place of the file, journald, syslog and CloudWatch sources Lucia doesn't have, and a heartbeat panel that charts heartbeats. They read raw samples, so they show the last hour. `cs_appsec_reqs_total`, `cs_appsec_block_total`, `cs_httpsource_hits_total` and `cs_active_decisions` join the metric tiers for the Lucia dashboard.
+
+The offender row's address and the dashboard's header link to `#/security` at `LUCIA_CROWDSEC_CONSOLE`. In a table cell, the inspect icon opens the value with a copy button.
 
 ## Storage and the metric tiers
 

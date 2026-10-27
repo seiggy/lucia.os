@@ -15,6 +15,14 @@ namespace Lucia.Homelab.Server.Stacks;
 /// <param name="Authorization">The whole <c>Authorization</c> header value.</param>
 public sealed record TelemetryDestination(Uri Endpoint, string Authorization);
 
+/// <summary>The installed Observability app as CrowdSec's alert path sees it.</summary>
+/// <param name="Authorization">The collector's whole <c>Authorization</c> header, or null when it has no password yet.</param>
+internal sealed record ObservabilityInstall(string Name, Guid? NodeId, string? Address, string Desired, bool Settled, int Version,
+    IReadOnlyDictionary<string, string> Settings, IReadOnlyDictionary<string, string> Env, string? Authorization)
+{
+    public override string ToString() => $"ObservabilityInstall({Name}, version {Version})";
+}
+
 public sealed partial class StackStore
 {
     /// <summary>
@@ -46,6 +54,25 @@ public sealed partial class StackStore
                 await SetLucia(stack.Name, OtlpPrefix, lines, ct);
     }
 
+    /// <summary>
+    /// The Observability app CrowdSec sends its alerts to: the running one if any, else the first. Its alert intake takes them
+    /// over TLS at its own name under the domain, with a certificate from Lucia's CA and the collector's own password, never
+    /// through the gateway: an alert about an attack carries the attack's path and user agent, which AppSec would block.
+    /// </summary>
+    internal async Task<ObservabilityInstall?> Observability(CancellationToken ct)
+    {
+        var all = (await Read(ct)).Where(item => item.Manifest.Template?.Id == ObservabilityApp.AppId).ToArray();
+        if ((all.FirstOrDefault(item => item is { Desired: "Running", Move: null, Restore: null }) ?? all.FirstOrDefault()) is not { Manifest.Template: { } template } stack)
+            return null;
+        var facts = (await nodes.Facts(ct)).FirstOrDefault(item => item.Hostname == stack.Assigned);
+        var address = stack.Manifest.Address ?? (await nodes.Addresses(ct)).FirstOrDefault(item => item.Hostname == stack.Assigned)?.Address;
+        var env = StackCatalog.ReadEnv(_protector.Unprotect(stack.ProtectedEnv));
+        var user = env.GetValueOrDefault("OTLP_USERNAME") ?? ObservabilityApp.User;
+        var authorization = env.GetValueOrDefault("OTLP_PASSWORD") is { Length: > 0 } password
+            ? "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{password}")) : null;
+        return new(stack.Name, facts?.NodeId, address, stack.Desired, stack is { Move: null, Restore: null }, template.Version,
+            StackCatalog.Settings(StackCatalog.Find(ObservabilityApp.AppId), template.Settings), env, authorization);
+    }
     /// <summary>Its web address once the domain is active, since that one follows the app between servers; the server's port until then.</summary>
     private TelemetryDestination? Destination(IEnumerable<StoredStack> stacks, string? ns, IEnumerable<ManagedNodeAddress> addresses)
     {

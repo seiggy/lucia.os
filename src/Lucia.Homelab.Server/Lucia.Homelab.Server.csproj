@@ -33,5 +33,7 @@
 
   <ItemGroup>
     <Content Include="Assistant\Skills\BuiltIn\**\*.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- CrowdSec's community Grafana dashboards (MIT, see Telemetry\CrowdSec\LICENSE), vendored by tools/telemetry/crowdsec-dashboards.mjs. -->
+    <EmbeddedResource Include="Telemetry\CrowdSec\*.json" LogicalName="Lucia.Homelab.Server.Telemetry.CrowdSec.%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

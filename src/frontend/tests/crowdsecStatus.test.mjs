@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { consoleSummary, isAppSec, parseAlerts, parseCrowdSecStatus, parseDecisions, remaining, scenarioName, summarize, validEnrollKey } from '../.checks/crowdsecStatus.js'
+import { alertsSummary, banOrigin, consoleSummary, describeRule, isAppSec, parseAlerts, parseCrowdSecStatus, parseDecisions, parseRules, remaining, scenarioName, summarize, validEnrollKey } from '../.checks/crowdsecStatus.js'
 import { parseCatalog, requirementProblem } from '../.checks/stackManagement.js'
 import { parseRoute } from '../.checks/dashboard.js'
 import { findDestinations, visibleDestinations } from '../.checks/navigation.js'
@@ -92,4 +92,42 @@ assert.deepEqual(parseRoute('#/security'), { page: 'security' })
 assert.ok(!visibleDestinations(false).some(item => item.page === 'security'))
 assert.equal(findDestinations('crowdsec unban', true)[0]?.href, '#/security')
 assert.equal(findDestinations('trusted addresses', true)[0]?.href, '#/security')
+// The engine's report of its loaded custom rules is optional; an older engine sends none.
+assert.equal(status.customRules, null)
+assert.equal(parseCrowdSecStatus({ ...healthy, customRules: 3 }).customRules, 3)
+assert.throws(() => parseCrowdSecStatus({ ...healthy, customRules: -1 }))
+assert.equal(status.customRulesProblem, null)
+assert.equal(parseCrowdSecStatus({ ...healthy, customRulesProblem: "CrowdSec couldn't read lucia/custom-0011aabb, so it runs without them." }).customRulesProblem,
+  "CrowdSec couldn't read lucia/custom-0011aabb, so it runs without them.")
+
+// Custom AppSec rules: strict shapes, named after their id, described in words.
+const rule = { id: '3f2a9c01', name: 'lucia/custom-3f2a9c01', field: 'path', header: null, operator: 'prefix', value: '/wp-admin', reason: 'No WordPress here',
+  createdAt: '2026-10-27T16:00:00Z', createdBy: 'zack via assistant' }
+const ruleList = parseRules({ rules: [rule, { ...rule, id: '00c0ffee', name: 'lucia/custom-00c0ffee', field: 'header', header: 'X-Api-Version', operator: 'contains', value: 'beta' }], max: 50 })
+assert.equal(ruleList.max, 50)
+assert.equal(describeRule(ruleList.rules[0]), 'Path starts with /wp-admin')
+assert.equal(describeRule(ruleList.rules[1]), 'The X-Api-Version header contains beta')
+assert.equal(describeRule({ ...rule, field: 'user-agent', operator: 'regex', value: '^sqlmap/' }), 'User agent matches ^sqlmap/')
+assert.equal(describeRule({ ...rule, field: 'method', operator: 'equals', value: 'PROPFIND' }), 'Method is PROPFIND')
+for (const bad of [{ ...rule, field: 'body' }, { ...rule, operator: 'like' }, { ...rule, name: 'crowdsecurity/vpatch-env-access' }, { ...rule, id: 'XYZ' },
+  { ...rule, value: 'x'.repeat(201) }, { ...rule, reason: 7 }])
+  assert.throws(() => parseRules({ rules: [bad], max: 50 }))
+assert.throws(() => parseRules({ rules: Array.from({ length: 51 }, () => rule), max: 50 }))
+assert.throws(() => parseRules({ rules: [] }))
+
+// Who placed a ban, and Lucia's own scenario names, in words.
+assert.equal(banOrigin('lucia-assistant'), 'Lucia’s assistant')
+assert.equal(banOrigin('lucia'), 'You, from Lucia')
+assert.equal(banOrigin('crowdsec'), 'CrowdSec')
+assert.equal(banOrigin('something-else'), 'something-else')
+assert.equal(scenarioName('lucia/manual-ban'), 'banned by hand')
+assert.equal(scenarioName('lucia/custom-3f2a9c01'), 'custom rule 3f2a9c01')
+assert.equal(parseDecisions({ decisions: [{ ...decisions[0], origin: 'lucia-assistant', scenario: 'lucia/manual-ban' }] })[0].origin, 'lucia-assistant')
+// Where alerts go: Observability's TLS intake, or why not; an older host sends nothing.
+assert.equal(status.alerts, null)
+assert.equal(alertsSummary(status), 'Not reported yet')
+const sending = parseCrowdSecStatus({ ...healthy, alerts: { state: 'on', message: null, intake: 'otlp-alerts.lab.example.com' } })
+assert.equal(alertsSummary(sending), 'To Observability over TLS at otlp-alerts.lab.example.com, for Grafana')
+assert.equal(alertsSummary(parseCrowdSecStatus({ ...healthy, alerts: { state: 'waiting-certificate', message: 'Lucia is getting the alert intake’s certificate.', intake: null } })), 'Lucia is getting the alert intake’s certificate.')
+assert.throws(() => parseCrowdSecStatus({ ...healthy, alerts: { state: 'plaintext', message: null, intake: null } }))
 console.log('CrowdSec page checks passed.')

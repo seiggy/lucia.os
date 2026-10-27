@@ -40,6 +40,10 @@ public sealed partial class StackStore
     /// <summary>Whether any stack runs this catalog app, in any state.</summary>
     internal async Task<bool> Installed(string app, CancellationToken ct) => (await Read(ct)).Any(stack => stack.Manifest.Template?.Id == app);
 
+    /// <summary>The LAN addresses apps have of their own, which CrowdSec must never ban.</summary>
+    internal async Task<string[]> AppAddresses(CancellationToken ct) =>
+        [.. (await Read(ct)).Select(stack => stack.Manifest.Address).OfType<string>().Distinct(StringComparer.Ordinal)];
+
     /// <summary>Replaces the CrowdSec app's own Lucia variables: its certificate, the safe harbor and the Console enroll key.</summary>
     internal Task SetCrowdSec(string name, string lines, CancellationToken ct) => SetLucia(name, CrowdSecPrefix, lines, ct);
 

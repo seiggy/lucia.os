@@ -28,7 +28,7 @@
     },
     {
       "name": "Gateway protection (CrowdSec)",
-      "paths": ["src/Lucia.Homelab.Server/Security/**", "src/Lucia.Homelab.Server/Stacks/CrowdSecApp.cs", "src/Lucia.Homelab.Server/Stacks/StackCrowdSec.cs", "src/frontend/src/CrowdSec.tsx", "src/frontend/src/crowdsecStatus.ts", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs", "tools/nodes/enrollment_worker.py"],
+      "paths": ["src/Lucia.Homelab.Server/Security/**", "src/Lucia.Homelab.Server/Stacks/CrowdSecApp.cs", "src/Lucia.Homelab.Server/Stacks/StackCrowdSec.cs", "src/frontend/src/CrowdSec.tsx", "src/frontend/src/crowdsecStatus.ts", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs", "tests/Lucia.Homelab.DomainChecks/CrowdSecResponseChecks.cs", "tests/Lucia.Homelab.AssistantChecks/CrowdSecToolChecks.cs", "tools/nodes/enrollment_worker.py", "src/Lucia.Homelab.Server/Assistant/AssistantCrowdSec.cs", "src/Lucia.Homelab.Server/Assistant/Skills/BuiltIn/crowdsec-response/**", "src/Lucia.Homelab.Server/Telemetry/CrowdSec*", "src/Lucia.Homelab.Server/Telemetry/CrowdSec/**", "tools/telemetry/**", "tools/security/**"],
       "docs": ["guide/gateway-protection", "code/gateway-security", "deploy/crowdsec"]
     },
     {

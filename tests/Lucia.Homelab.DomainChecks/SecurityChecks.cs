@@ -138,6 +138,9 @@ internal static class SecurityChecks
 
         CatalogChecks(check, cloudflare);
         ReportChecks(check);
+        CrowdSecResponseChecks.Run(check, cloudflare);
+        await CrowdSecResponseChecks.RulesStore(check);
+        CrowdSecResponseChecks.Alerts(check, cloudflare);
 
         var root = Root();
         var provision = File.ReadAllText(Path.Combine(root, "tools", "identity", "provision.py"));
@@ -149,7 +152,7 @@ internal static class SecurityChecks
             && !Directory.Exists(Path.Combine(root, "deployment", "identity", "crowdsec")),
             "The Spark no longer runs a CrowdSec engine: provisioning makes no engine key, files or container.");
         var worker = File.ReadAllText(Path.Combine(root, "tools", "nodes", "enrollment_worker.py"));
-        check(worker.Contains($"APP_TEMPLATES = frozenset({{\"{CrowdSecApp.AppId}\"}})", StringComparison.Ordinal) && !worker.Contains(".invalid", StringComparison.Ordinal)
+        check(worker.Contains($"APP_TEMPLATES = frozenset({{\"{CrowdSecApp.AppId}\", \"{ObservabilityApp.AppId}\"}})", StringComparison.Ordinal) && !worker.Contains(".invalid", StringComparison.Ordinal)
             && worker.Contains("names = manifest.get(\"names\")", StringComparison.Ordinal) && worker.Contains("\"-verify_hostname\", name", StringComparison.Ordinal)
             && worker.Contains($"\"{AppCertificates.Requests}\"", StringComparison.Ordinal) && worker.Contains($"\"{AppCertificates.Responses}\"", StringComparison.Ordinal)
             && worker.Contains("\"lucia-app-\" + value[\"stack\"]", StringComparison.Ordinal) && AppCertificates.CommonName("crowdsec") == "lucia-app-crowdsec",
@@ -268,7 +271,7 @@ internal static class SecurityChecks
             && CrowdSecApp.Start.Contains("output=${output//\"$key\"/<key>}", StringComparison.Ordinal)
             && CrowdSecApp.Start.Contains("unset LUCIA_GATEWAY_KEY", StringComparison.Ordinal),
             "The engine reloads for a renewed certificate, reports its status, never logs the enroll key and keeps the bouncer key out of its children.");
-        var profiles = CrowdSecApp.Profiles(cloudflare);
+        var profiles = CrowdSecApp.Profiles(cloudflare, notify: true);
         check(cloudflare.All(range => profiles.Contains($"'{range}'", StringComparison.Ordinal))
             && profiles.IndexOf("lucia_cloudflare_never_banned", StringComparison.Ordinal) < profiles.IndexOf("lucia_private_alert_only", StringComparison.Ordinal)
             && profiles.IndexOf("lucia_private_alert_only", StringComparison.Ordinal) < profiles.IndexOf("lucia_public_escalating_ban", StringComparison.Ordinal)
@@ -296,11 +299,12 @@ internal static class SecurityChecks
             && Refusal(Stored("observability", ObservabilityApp.AppId), Stored("guard", CrowdSecApp.AppId)) == "already_installed: Lucia runs one CrowdSec, and it's already installed as guard."
             && StackCatalog.Apps.Where(item => item.Id != CrowdSecApp.AppId).All(item => item.RequiresApps.Length == 0 && !item.Single),
             "Installing CrowdSec needs Observability first, and Lucia runs only one CrowdSec.");
-        check(Refusal(Stored("observability", ObservabilityApp.AppId, 11)) is { } old && old.StartsWith("requires_update: Update Observability first", StringComparison.Ordinal)
-            && old.Contains("version 12 or later", StringComparison.Ordinal) && old.Contains("runs version 11", StringComparison.Ordinal)
-            && Refusal(Stored("observability", ObservabilityApp.AppId, 11), Stored("metrics", ObservabilityApp.AppId, 12)) is null
-            && app.RequiresVersions[ObservabilityApp.AppId] == ObservabilityApp.ForwardsToCrowdSec && ObservabilityApp.ForwardsToCrowdSec <= StackCatalog.Find(ObservabilityApp.AppId).Version,
-            "An Observability too old to forward the gateway's access log must be updated before CrowdSec installs.");
+        check(Refusal(Stored("observability", ObservabilityApp.AppId, 12)) is { } old && old.StartsWith("requires_update: Update Observability first", StringComparison.Ordinal)
+            && old.Contains("version 13 or later", StringComparison.Ordinal) && old.Contains("runs version 12", StringComparison.Ordinal)
+            && Refusal(Stored("observability", ObservabilityApp.AppId, 12), Stored("metrics", ObservabilityApp.AppId, 13)) is null
+            && app.RequiresVersions[ObservabilityApp.AppId] == ObservabilityApp.ShowsCrowdSec && ObservabilityApp.ShowsCrowdSec == StackCatalog.Find(ObservabilityApp.AppId).Version
+            && ObservabilityApp.ForwardsToCrowdSec < ObservabilityApp.ShowsCrowdSec,
+            "A new CrowdSec needs an Observability with its dashboards and alert labels (version 13), so an older one must be updated first.");
         var secretEnv = "GATEWAY_KEY=gk-0123456789abcdef0123456789abcdef\nLUCIA_MACHINE_PASSWORD=mp-0123456789abcdef0123456789abcdef\n"
             + "INTAKE_TOKEN=it-0123456789abcdef0123456789abcdef\nLUCIA_CROWDSEC_TLS_KEY=a2V5\nLUCIA_CROWDSEC_TLS_CERT=Y2VydA==\n"
             + "LUCIA_CROWDSEC_ENROLL_KEY=cmh5r7ygd0001jw08wdqjt4sq\nLUCIA_CROWDSEC_HARBOR=127.0.0.0/8\nMY_SETTING=mine\n";
@@ -335,7 +339,7 @@ internal static class SecurityChecks
 
         var observability = StackCatalog.Find(ObservabilityApp.AppId);
         var collector = observability.Render(StackCatalog.Settings(observability, null), node, new Dictionary<string, string>()).Compose;
-        check(observability.Version == 12 && collector.Contains("\"--config=env:LUCIA_CROWDSEC_COLLECTOR\"]", StringComparison.Ordinal)
+        check(observability.Version == 13 && collector.Contains("\"--config=env:LUCIA_CROWDSEC_COLLECTOR\", \"--config=env:LUCIA_CROWDSEC_INTAKE\"]", StringComparison.Ordinal)
             && collector.Contains("      LUCIA_CROWDSEC_COLLECTOR: ${LUCIA_CROWDSEC_COLLECTOR:-}\n", StringComparison.Ordinal)
             && collector.Contains("      LUCIA_CROWDSEC_TOKEN: ${LUCIA_CROWDSEC_TOKEN:-}\n", StringComparison.Ordinal)
             && collector.Split("--config=env:LUCIA_CROWDSEC_COLLECTOR").Length == 3,

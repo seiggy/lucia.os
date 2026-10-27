@@ -77,7 +77,8 @@ public sealed class AssistantTool(AIFunction inner, string tier, Func<string, Ca
 public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackStore stacks, NodeRequests requests,
     UniFiConnectionService unifi, AdGuardConnectionService adguard, DomainOnboardingStore domains, AssistantBroker broker,
     ILogger<AssistantTools> logger, AssistantPush? push = null, PackageUpdatesService? sparkPackages = null,
-    SparkTelemetryBuffer? sparkTelemetry = null, SparkTelemetryOptions? sparkTelemetryOptions = null, SkillAuthoring? authoring = null)
+    SparkTelemetryBuffer? sparkTelemetry = null, SparkTelemetryOptions? sparkTelemetryOptions = null, SkillAuthoring? authoring = null,
+    Security.CrowdSec? crowdsec = null, Security.CrowdSecRules? crowdsecRules = null)
 {
     private const string NodeHelp = "The server: its hostname, DNS name, address or id.";
     private const string AppHelp = "The app's name, from list_apps.";
@@ -546,7 +547,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
                     [Description("Stop it after this many seconds, 1 to 1800.")] int timeoutSeconds = 120, CancellationToken ct = default) =>
                     await RunCommand(node, command, interpreter, timeoutSeconds, ct)),
         ];
-        return [.. core, .. (authoring?.Specs().Select(spec => Tool(spec.Tier, spec.Name, spec.Description, spec.Body)) ?? [])];
+        return [.. core, .. CrowdSecTools(actor), .. (authoring?.Specs().Select(spec => Tool(spec.Tier, spec.Name, spec.Description, spec.Body)) ?? [])];
     }
 
     private const int RegistryShown = 5, RegistryMatches = 50;
@@ -630,6 +631,7 @@ public sealed partial class AssistantTools(ManagedNodeEnrollment nodes, StackSto
         string Name(string field, string fallback) => Text(field) is { Length: > 0 and <= 100 } text
             && text.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_') ? text : fallback;
         string app = Name("app", "this app"), node = Name("node", "this server");
+        if (CrowdSecWarning(tool, input) is { } crowdsec) return crowdsec;
         return (tool, tool == "node_action" ? Text("action") : null) switch
         {
             ("delete_app", _) => $"Lucia stops {app} and removes it from its server. Its data directory stays there.",

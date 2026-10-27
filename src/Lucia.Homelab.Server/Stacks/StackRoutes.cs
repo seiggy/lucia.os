@@ -118,7 +118,7 @@ public sealed partial class StackStore
     private async Task<string[]?> ValidNames(string[]? names, string name, IEnumerable<StoredStack> stacks, CatalogApp app, bool required, CancellationToken ct)
     {
         if (names is null || names.Length == 0) return null;
-        RequireDomain(app, await ManagedNodeDns.ActiveNaming(domains, ct), required);
+        if (app.NamesNeedDomain) RequireDomain(app, await ManagedNodeDns.ActiveNaming(domains, ct), required);
         var others = stacks.Where(stack => stack.Name != name).ToArray();
         var routes = others.SelectMany(stack => (stack.Manifest.Routes ?? []).Select(route => (stack.Name, route)))
             .Concat(ReadExternalUnlocked().Select(route => ("an outside service", new StackRoute(route.Host, route.Port, null, route.Public))));

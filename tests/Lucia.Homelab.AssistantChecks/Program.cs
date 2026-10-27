@@ -848,6 +848,7 @@ try
         labProtection, null!, null!, null!, null!, TimeProvider.System, null!);
     var labTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance)
         .Create("tester via assistant", "tester");
+    await CrowdSecToolChecks.Run(Check, Reject, storage, labStacks, broker, toolSet);
     // The Spark isn't a managed node, so its health and updates have tools of their own.
     var sparkBuffer = new Lucia.Homelab.Server.Telemetry.SparkTelemetryBuffer(TimeProvider.System);
     sparkBuffer.Add(new(DateTimeOffset.UtcNow, 42.26, 20, 3.456, 128L << 30, 100L << 30, 4000L << 30, 3000L << 30, "enP7s7", 1_250_000, 125_000,
@@ -1230,7 +1231,7 @@ try
     var builtRouter = new SkillScriptRouter(builtStore, new NodeSkillRunner(new NodeExec(null!, null!), builtStore), new SparkSkillRunner(builtOptions, builtStore),
         new SandboxSkillRunner(new NodeExec(null!, null!), builtStore, new SkillSandboxRuntime()));
     using var builtProvider = new AssistantSkills(builtStore, builtRouter, NullLoggerFactory.Instance);
-    string[] builtNames = ["app-troubleshooting", "container-image-updates", "custom-app-authoring", "os-security-patching", "skill-authoring"];
+    string[] builtNames = ["app-troubleshooting", "container-image-updates", "crowdsec-response", "custom-app-authoring", "os-security-patching", "skill-authoring"];
     var builtList = await builtStore.ListAsync(default);
     Check(builtList.Select(skill => skill.Name).SequenceEqual(builtNames) && builtList.All(skill => skill is { BuiltIn: true, Enabled: true, Execution: "node", Tier: "read", Source: "built-in", Problem: null, Scripts: 0 }
         && skill.Hash.Length == 64 && skill.Description.Length > 0), "Built-in skills are listed, enabled and read-only, with their source and tier.");
@@ -1282,7 +1283,7 @@ try
     await builtStore.UpdateAsync("my-patching", new("Mine.", "node", "read", [], "# Mine\n"), default);
     await builtStore.SetEnabledAsync("my-patching", true, default);
     var copyOfCopy = await builtStore.DuplicateAsync("my-patching", "my-patching-two", default);
-    Check(copyOfCopy is { Enabled: false, BuiltIn: false, Body: "# Mine\n" } && (await builtStore.ListAsync(default)).Select(skill => skill.Name).Take(5).SequenceEqual(builtNames),
+    Check(copyOfCopy is { Enabled: false, BuiltIn: false, Body: "# Mine\n" } && (await builtStore.ListAsync(default)).Select(skill => skill.Name).Take(builtNames.Length).SequenceEqual(builtNames),
         "The owner's copy is editable and can be duplicated too, and the list keeps built-ins first.");
     await Reject(() => builtStore.DuplicateAsync("os-security-patching", "app-troubleshooting", default), 409, "skill_reserved", "A copy can't take a built-in name.");
     await Reject(() => builtStore.DuplicateAsync("os-security-patching", "my-patching", default), 409, "skill_exists", "A copy can't replace a skill.");
