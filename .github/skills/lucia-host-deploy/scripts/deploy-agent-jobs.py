@@ -8,6 +8,7 @@ import pathlib
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -103,7 +104,18 @@ with contextlib.ExitStack() as stack:
                 assert error.code == status
             else:
                 raise RuntimeError("Owner authorization or browser-only SSH key access was not enforced.")
-        assert application.application_status(p, origin)["ready"]
+        # An image change restarts Authentik, which takes ~30 s before its API answers.
+        for service in ("lucia-identity-server", "lucia-identity-worker"):
+            p.wait_container(service, timeout=300)
+        for attempt in range(36):
+            try:
+                ready = application.application_status(p, origin)["ready"]
+                break
+            except RuntimeError:
+                if attempt == 35:
+                    raise
+                time.sleep(5)
+        assert ready
         changed = [name for name in fingerprints if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() != fingerprints[name]]
         assert not changed, changed
         hardware_after = json.loads((data / "onboarding/state.json").read_text())
