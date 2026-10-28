@@ -2,7 +2,7 @@
 
 Runs as a root systemd service. The unprivileged Lucia host exchanges bounded JSON files in
 <data>/packages; the worker accepts only fixed actions (check, install named updates, changelog,
-restart services, restart the Spark, repair) and never runs caller-supplied commands.
+restart services, restart the Spark, repair, refresh the NVIDIA device list) and never runs caller-supplied commands.
 """
 
 import argparse
@@ -24,7 +24,7 @@ UTC = datetime.timezone.utc
 SCHEMA = 1
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 PACKAGE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,127}$")
-ACTIONS = {"check", "install", "changelog", "restart-services", "restart-spark", "repair"}
+ACTIONS = {"check", "install", "changelog", "restart-services", "restart-spark", "repair", "refresh-gpu-devices"}
 RESTART = {"none", "services", "spark"}
 UNIT = "lucia-package-updates.service"
 INSTALLED = pathlib.Path("/usr/local/lib/lucia/package_worker.py")
@@ -42,6 +42,13 @@ SPARK_RESTART = re.compile(r"^(linux-(image|modules|headers|firmware|nvidia|gene
 LUCIA_RESTART = re.compile(r"^(docker|containerd|runc$|nvidia-container|libnvidia-container)")
 # Platform = kernel/boot, NVIDIA driver/CUDA/DGX stack, and the container runtime Lucia runs on.
 PLATFORM_NAME = re.compile(r"^(linux-|nvidia|libnvidia|cuda|libcu(?!rl)|libnccl|libcudnn|tensorrt|dgx|grub|shim|.*firmware|.*-microcode$)")
+# The NVIDIA container runtime's device list (CDI), generated at boot. It names driver files by version, so after an NVIDIA
+# package changes them every GPU container fails to start until it is generated again. Keep gpu_devices in step with
+# tools/runners/platform_images.py, which the Spark's other workers use.
+NVIDIA_PACKAGE = re.compile(r"^(nvidia|libnvidia|cuda)")
+CDI = pathlib.Path("/var/run/cdi/nvidia.yaml")
+CDI_UNIT = "nvidia-cdi-refresh.service"
+HOST_PATH = re.compile(r"""\A\s*(?:-\s*)?["']?hostPath["']?\s*:\s*["']?([^"'\s,]+)["']?\s*,?\s*\Z""")
 NEEDRESTART_CONF = ("# Managed by Lucia package updates: never restart the worker or Lucia's container runtime here.\n"
                     "$nrconf{override_rc}{qr(^lucia-package-updates)} = 0;\n"
                     "$nrconf{override_rc}{qr(^docker)} = 0;\n"
@@ -311,6 +318,51 @@ def release_value(path, key):
     return None
 
 
+def gpu_devices(path=CDI, maximum=8 * 1024 * 1024):
+    """Whether every hostPath in the NVIDIA device list exists."""
+    result = {"present": False, "current": False, "missing": [], "missingCount": 0, "paths": 0, "message": None, "checkedAt": now()}
+    try:
+        with open(path, "rb") as stream:
+            data = stream.read(maximum + 1)
+    except FileNotFoundError:
+        result["message"] = "The NVIDIA device list doesn't exist."
+        return result
+    except OSError:
+        result["message"] = "The NVIDIA device list couldn't be read."
+        return result
+    if len(data) > maximum:
+        result["message"] = "The NVIDIA device list is unexpectedly large."
+        return result
+    paths = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        match = HOST_PATH.match(line)
+        if match and match.group(1).startswith("/"):
+            paths.append(match.group(1))
+    missing = sorted({item for item in paths if not os.path.lexists(item)})
+    result.update(present=True, current=not missing, missing=missing[:50], missingCount=len(missing), paths=len(paths))
+    if missing:
+        result["message"] = "The NVIDIA device list names {} file{} that no longer exist{}.".format(
+            len(missing), "" if len(missing) == 1 else "s", "s" if len(missing) == 1 else "")
+    return result
+
+
+def refresh_gpu_devices():
+    """Generates the NVIDIA device list again: its boot unit, or nvidia-ctk when the unit is missing or left it stale."""
+    output, code = "", 1
+    if run(["systemctl", "cat", CDI_UNIT], 30)[0] == 0:
+        code, output = run(["systemctl", "start", CDI_UNIT], 300)
+    if (code or not gpu_devices()["current"]) and shutil.which("nvidia-ctk"):
+        code, more = run(["nvidia-ctk", "cdi", "generate", "--output=" + str(CDI)], 300)
+        output += more
+    devices = gpu_devices()
+    if code == 0 and devices["current"]:
+        return True, "Refreshed the NVIDIA device list; GPU containers can start again.", output
+    if code and not output:
+        return False, "Neither nvidia-cdi-refresh nor nvidia-ctk is installed, so the NVIDIA device list couldn't be refreshed.", output
+    return False, "The NVIDIA device list is still out of date ({}). Restart the Spark to regenerate it.".format(
+        devices["message"] or "refreshing it failed"), output
+
+
 def automatic_updates():
     installed = shutil.which("unattended-upgrade") is not None
     code, output = run(["apt-config", "shell", "V", "APT::Periodic::Unattended-Upgrade"], 30)
@@ -362,6 +414,7 @@ def scan():
                     "services": restart["services"][:200]},
         "automaticUpdates": automatic_updates(),
         "packageDatabase": {"healthy": healthy, "message": None if healthy else "The package database has unfinished installs."},
+        "gpuDevices": gpu_devices(),
         "scannedAt": now(),
     }
 
@@ -419,7 +472,7 @@ class Worker:
     def watched():
         values = []
         for path in ("/var/lib/dpkg/status", "/var/lib/apt/lists", "/var/run/reboot-required",
-                     "/var/lib/apt/periodic/update-success-stamp"):
+                     "/var/lib/apt/periodic/update-success-stamp", str(CDI)):
             try:
                 values.append(os.stat(path).st_mtime_ns)
             except OSError:
@@ -509,11 +562,17 @@ class Worker:
                     ", ".join(pulled[:8])), output)
             code, output = self.apt(operation, ["apt-get", *APT_OPTIONS, "install", "--only-upgrade", *wanted], 90 * 60,
                                     "downloading", len(installs))
+            failure = plain_failure(output, code) if code else None
+            refreshed, more = self.after_nvidia(operation, [*wanted, *installs])
+            output += more
             if code:
                 self.rescan()
-                return self.finish(operation, False, plain_failure(output, code), output)
+                return self.finish(operation, False, failure + refreshed, output)
+        else:
+            refreshed = ""
         count = len(wanted)
         message = "Installed {} update{}.".format(count, "" if count == 1 else "s") if count else "No updates needed installing."
+        message += refreshed
         if request["restart"] in ("services", "spark") and shutil.which("needrestart"):
             code, more = self.apt(operation, ["needrestart", "-r", "a", "-q"], 15 * 60, "restarting")
             output += more
@@ -523,6 +582,15 @@ class Worker:
             self.finish(operation, True, message + " Restarting the Spark to finish.", output)
             return self.reboot()
         self.finish(operation, True, message, output)
+
+    def after_nvidia(self, operation, names):
+        """After NVIDIA packages change, the device list is generated again before the task is reported done."""
+        if not any(NVIDIA_PACKAGE.match(name) for name in names):
+            return "", ""
+        operation["progress"] = {"step": "refreshing-gpu-devices", "done": 0, "total": 0, "package": None}
+        self.publish()
+        success, message, output = refresh_gpu_devices()
+        return " " + message, output
 
     def reboot(self):
         with self.lock:
@@ -565,12 +633,21 @@ class Worker:
             if code == 0:
                 code, more = self.apt(operation, ["apt-get", *APT_OPTIONS, "-f", "install"], 60 * 60, "repairing")
                 output += more
+            if not gpu_devices()["current"] and gpu_devices()["present"]:
+                _, _, more = refresh_gpu_devices()
+                output += more
             self.rescan()
             return self.finish(operation, code == 0, "The package database is consistent again." if code == 0
                                else plain_failure(output, code), output)
         if action == "restart-spark":
             self.finish(operation, True, "Restarting the Spark.")
             return self.reboot()
+        if action == "refresh-gpu-devices":
+            operation["progress"] = {"step": "refreshing-gpu-devices", "done": 0, "total": 0, "package": None}
+            self.publish()
+            success, message, output = refresh_gpu_devices()
+            self.rescan()
+            return self.finish(operation, success, message, output)
 
     def poll_requests(self):
         try:

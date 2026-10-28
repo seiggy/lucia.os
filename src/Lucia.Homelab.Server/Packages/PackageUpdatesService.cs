@@ -86,6 +86,8 @@ public sealed partial class PackageUpdatesService(IOptions<PackageUpdatesOptions
     public Task<object> RepairAsync(CancellationToken ct) => SubmitAsync("repair", ct);
     public Task<object> RestartServicesAsync(CancellationToken ct) => SubmitAsync("restart-services", ct);
     public Task<object> RestartSparkAsync(CancellationToken ct) => SubmitAsync("restart-spark", ct);
+    /// <summary>Generates the NVIDIA device list again, so GPU containers start after NVIDIA packages changed outside Lucia.</summary>
+    public Task<object> RefreshGpuDevicesAsync(CancellationToken ct) => SubmitAsync("refresh-gpu-devices", ct);
 
     public async Task<object> InstallAsync(PackageInstallRequest request, CancellationToken ct)
     {

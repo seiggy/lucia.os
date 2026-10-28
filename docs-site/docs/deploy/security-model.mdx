@@ -94,7 +94,8 @@ Anything that must touch the Spark runs as a separate service outside the host c
 | `lucia-spark-model` | The setup user | Start or stop the pinned model. The recipe and settings belong to the worker. |
 | `lucia-spark-runner` | The setup user | Repositories, labels, idle time and the token. It can't choose what the runner runs. |
 | `lucia-skill-runner` | The setup user | A skill name, its content hash, a script path, arguments, a time limit and none or bridge network. The worker verifies the hash against the skill store and fixes the image, flags and limits; no path, flag or command comes from the request. |
-| `lucia-package-updates` | **root** | One of six fixed actions: `check`, `install`, `changelog`, `restart-services`, `restart-spark`, `repair`. It validates package names, never runs a command it was given and refuses removals. |
+| `lucia-platform-update` | The setup user | A known platform service with a tag and digest. The worker reads the digest from the registry itself, checks the image's policy and only then redeploys the identity stack. |
+| `lucia-package-updates` | **root** | One of seven fixed actions: `check`, `install`, `changelog`, `restart-services`, `restart-spark`, `repair`, `refresh-gpu-devices`. It validates package names, never runs a command it was given and refuses removals. |
 
 A compromised portal could queue an apt upgrade or a Spark restart. It couldn't run arbitrary commands as root on the Spark through these paths, and it couldn't touch the CA.
 

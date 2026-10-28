@@ -29,6 +29,7 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "domains"))
 from activation_worker import open_directory, parse_json, private_directory, regular, write_file
+from platform_images import STALE_GPU, gpu_devices
 
 UTC = datetime.timezone.utc
 RECIPE = "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold.git"
@@ -190,6 +191,9 @@ class Worker:
             # start.sh leaves a running model alone, and a rebuild keeps the image's tag, so a model on an older build is stopped first.
             if running()[0] == "true" and run("docker", "inspect", "-f", "{{.Image}}", CONTAINER) != image_id:
                 self.script("stop.sh", {**SETTINGS, "STOP_TIMEOUT": "60"}, timeout=300)
+            # A container created with a stale NVIDIA device list fails half-way; refuse before creating one.
+            if running()[0] != "true" and not gpu_devices()["current"]:
+                raise RuntimeError(STALE_GPU)
             self.script("start.sh", env, timeout=12 * 3600)
             self.report(state="running", since=now().isoformat(), message=None, url=f"http://{host}:{PORT}/")
         else:

@@ -31,7 +31,7 @@ flowchart LR
   worker --> reboot[systemctl reboot]
 ```
 
-The worker is <Source path="tools/packages/package_worker.py" />. It accepts six fixed actions: `check`, `install`, `changelog`, `restart-services`, `restart-spark` and `repair`. It never runs a command a caller supplies. Package names are matched against `^[a-z0-9][a-z0-9+.-]{0,127}$`, and `install` only touches packages that the last scan listed as upgradable.
+The worker is <Source path="tools/packages/package_worker.py" />. It accepts seven fixed actions: `check`, `install`, `changelog`, `restart-services`, `restart-spark`, `repair` and `refresh-gpu-devices`. It never runs a command a caller supplies. Package names are matched against `^[a-z0-9][a-z0-9+.-]{0,127}$`, and `install` only touches packages that the last scan listed as upgradable.
 
 | Piece | Location |
 |---|---|
@@ -113,6 +113,7 @@ The host reads `status.json` on every page load. It treats the worker as `ready`
 | `restart` | `sparkRequired`, `sparkReasons` (up to 100), `kernelPending`, `services` (up to 200) |
 | `automaticUpdates` | `installed` and `enabled` for `unattended-upgrades` |
 | `packageDatabase` | `healthy` is false when `dpkg --audit` prints anything |
+| `gpuDevices` | Whether every `hostPath` in the NVIDIA device list `/var/run/cdi/nvidia.yaml` exists: `present`, `current`, `missing` (up to 50), `missingCount`, `message` |
 | `scanning`, `scannedAt` | True until the first scan finishes |
 | `operation` | The running task: id, action, state, progress, packages, a 20-line live log tail |
 | `history` | The last 15 finished tasks (30 are kept in `state.json`) |
@@ -120,7 +121,7 @@ The host reads `status.json` on every page load. It treats the worker as `ready`
 
 Each entry in `updates` carries `name`, `summary`, `currentVersion`, `candidateVersion`, `source`, `security`, `platform`, `restart` (`services`, `spark` or `lucia`), `downloadBytes`, `keptBack` and `phased`.
 
-The worker rescans when `/var/lib/dpkg/status`, `/var/lib/apt/lists`, `/var/run/reboot-required` or the apt update stamp change, and at least every 10 minutes. It does not run `apt-get update` by itself. Lucia has no update timer. **Check for updates** is the only thing that refreshes the package lists.
+The worker rescans when `/var/lib/dpkg/status`, `/var/lib/apt/lists`, `/var/run/reboot-required`, the apt update stamp or the NVIDIA device list change, and at least every 10 minutes. It does not run `apt-get update` by itself. Lucia has no update timer. **Check for updates** is the only thing that refreshes the package lists.
 
 ## Classification
 
@@ -154,7 +155,8 @@ sequenceDiagram
 2. The worker simulates the install first. A removal anywhere in the plan stops it with "Lucia doesn't remove packages during updates." A platform dependency pulled in by an everyday install also stops it, naming the package.
 3. The real install runs with `--only-upgrade`, `DEBIAN_FRONTEND=noninteractive`, `--force-confdef` and `--force-confold`, so existing config files stay. It waits up to 300 seconds for the dpkg lock and is killed after 90 minutes.
 4. With `restart` set to `services` or `spark`, the worker runs `needrestart -r a -q` (15-minute limit).
-5. It rescans. With `restart: spark` and a restart still required, it records `rebootingAt`, waits 3 seconds and runs `systemctl reboot`.
+5. If the install touched a package whose name starts with `nvidia`, `libnvidia` or `cuda`, it regenerates the NVIDIA device list (`systemctl start nvidia-cdi-refresh.service`, or `nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml` when the unit is missing or left the list stale) and adds the result to the task's message and log. This runs even when apt failed part-way.
+6. It rescans. With `restart: spark` and a restart still required, it records `rebootingAt`, waits 3 seconds and runs `systemctl reboot`.
 
 Other timeouts: 20 minutes for `apt-get update` during a check, 60 minutes for each repair step.
 
@@ -210,7 +212,7 @@ All routes sit under `/api/host/packages`, need the `HostOwner` policy, answer w
 | Method and path | What it does |
 |---|---|
 | `GET /api/host/packages` | Worker status plus `worker.state` (`missing`, `stale`, `ready`), `schedule`, `lastSchedule`, `pendingRequest`, `modelsPaused` |
-| `POST /check`, `/repair`, `/restart-services` | Queue that action |
+| `POST /check`, `/repair`, `/restart-services`, `/refresh-gpu-devices` | Queue that action |
 | `POST /restart-spark` | Body `{"confirm": true}` required |
 | `POST /install` | `packages`, `includePlatform`, `restart` |
 | `POST /changelog` | `{"package": "..."}`, waits up to 120 s for the worker |
@@ -235,6 +237,7 @@ Errors look like `{"error":{"code":"worker_missing","message":"..."}}`.
 | "Another package tool … was busy for more than five minutes" | A manual apt, or `unattended-upgrades`, holds the dpkg lock. Wait and retry. |
 | "An earlier package install was interrupted" | Run repair: `dpkg --configure -a`, then `apt-get -f install`. |
 | History shows `interrupted` | The worker restarted while a task ran. Run repair, then check again. |
+| `gpuDevices.current` is false | A manual apt or `unattended-upgrades` changed NVIDIA packages. Queue `refresh-gpu-devices` (the page's **Refresh NVIDIA device list**). If it stays stale, reboot. GPU containers, platform image updates and the Qwen recipe wait until then; see [Platform images](./platform-images.mdx). |
 | Local AI stays paused | Look at `modelsPaused` and `operation`. A stuck pause file clears itself after 3 hours. Deleting `packages/models-paused.json` ends it earlier. |
 
 Failed tasks keep the last 60 lines of apt's output in `history[].log`, with control characters stripped, and the full log in `/var/log/lucia/packages`.

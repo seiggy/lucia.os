@@ -9,11 +9,12 @@ Covers `src/frontend`, `src/Lucia.Homelab.Server`, stack/observability/Garage/Ad
 
 1. **Clean copy** into `%TEMP%\lucia-clean`: robocopy `src` (exclude `node_modules bin obj dist _fixtures universe.html`) and `tools\host`. Delete stale folders first after renames. Also copy gitignored `src\frontend\public\universe\meshes\jumpgate` (licensed; rebuild with `node tools/assets/build-jumpgate.mjs <pack dir>`).
 2. **Build:** `scripts\build-clean.ps1 -Controller <name>` -> `spark-updates\host-linux-arm64.tar.gz` + `manifest.json`, prints the artifact sha. (`build.ps1` builds from the working tree and also writes `managed-node-agent.tar.gz`.)
-3. **Upload** tarball, `manifest.json` and `deploy-agent-jobs.py` to `zackw@192.168.0.222:.cache/lucia-assistant-deploy/`.
+3. **Upload** tarball, `manifest.json`, `deploy-agent-jobs.py` and a `payload/` folder holding every path in its `SOURCES` (same relative paths, e.g. `payload/tools/runners/platform_update_worker.py`) to `zackw@192.168.0.222:.cache/lucia-assistant-deploy/`.
 4. **Run:** `ssh zackw@192.168.0.222 "cd .cache/lucia-assistant-deploy && python3 deploy-agent-jobs.py"`. ~5-10 min, rollback-safe, requires the PXE discovery window closed, and asserts strings in the served JS bundle (update the asserts if UI text changes).
 5. **Verify** with `curl -sk https://lucia.homelab.seiggy.com/...` and the UI.
+6. **Root package worker:** if `tools/packages/package_worker.py` changed, run the `next_step` from `result.json` on the Spark (`sudo python3 ~/.local/share/lucia/bootstrap/app/tools/packages/package_worker.py install`). The script can't sudo.
 
-`deploy-agent-jobs.py` is the template for other payloads: add files to `SOURCES` (they are copied into `~/.local/share/lucia/bootstrap/app/`; required for `tools/host/package.py`, `provision_host.py`, `AppHost.cs`).
+`deploy-agent-jobs.py` is the template for other payloads: add files to `SOURCES` (they are copied into `~/.local/share/lucia/bootstrap/app/`; required for `tools/host/package.py`, `provision_host.py`, `AppHost.cs`). It also reinstalls the setup-user workers (`skill_worker.py`, `platform_update_worker.py`, `spark_model_worker.py`) and waits for `/api/host/platform-images` to report the platform worker `ready`.
 
 ## Gotchas
 - `package.py` drops path segments `models bin obj src config logs`; 3D assets live in `public/universe/meshes`.

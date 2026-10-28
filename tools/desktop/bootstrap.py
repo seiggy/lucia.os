@@ -56,6 +56,7 @@ FILES = frozenset((
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
     "tools/packages/package_worker.py", "tools/runners/spark_runner_worker.py", "tools/runners/spark_model_worker.py",
+        "tools/runners/platform_images.py", "tools/runners/platform_update_worker.py",
         "tools/runners/tensorfold/0017-engine-systemone.patch",
         "tools/skills/skill_worker.py", "deployment/skill-runner/Dockerfile",
     "deployment/boot/Dockerfile", "deployment/boot/serve.py", "deployment/boot/discover-and-wait",
@@ -64,7 +65,8 @@ FILES = frozenset((
     "deployment/host/Dockerfile",
     "deployment/identity/start-ca.sh", "deployment/identity/renew-certificate.sh",
     "deployment/identity/install-node-trust.sh", "deployment/identity/init_org_tree.ldif",
-    "deployment/identity/init_org_entries.ldif", "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs", APPHOST,
+    "deployment/identity/init_org_entries.ldif", "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs",
+    "src/Lucia.Homelab.Server/Platform/PlatformImages.cs", APPHOST,
     "src/Lucia.Homelab.Identity.AppHost/AppHost.cs",
     "src/Lucia.Homelab.Identity.AppHost/aspire.config.json",
 ))
@@ -1297,6 +1299,10 @@ def provision_locked(root, state, directory, request, password, verify_only, eve
                     if model_worker.is_file():
                         event("model-worker", "Installing the Spark's Qwen3.8-Flash-Next service; it stays stopped until you start it on the AI page.")
                         p.run([sys.executable, str(model_worker), "install"])
+                    platform_worker = source / "tools/runners/platform_update_worker.py"
+                    if platform_worker.is_file():
+                        event("platform-worker", "Installing the Spark's platform image update service; it changes nothing until you press Update.")
+                        p.run([sys.executable, str(platform_worker), "install"])
                     skill_worker = source / "tools/skills/skill_worker.py"
                     if skill_worker.is_file():
                         event("skill-worker", "Installing the Spark's Assistant Skills runner service; it runs skill scripts only in throwaway containers.")

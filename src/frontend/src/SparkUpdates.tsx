@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { ownerRequest } from './managementApi'
 import { Icon } from './Icon'
-import { actionLabel, defaultWindow, formatBytes, fromLocalInput, groupUpdates, parseSparkUpdates, progressLabel, progressPercent, restartNeeded, resultLabel, runningLabel, summarize, toLocalInput } from './packageUpdates'
+import { PlatformImagesSection } from './PlatformImagesSection'
+import { actionLabel, defaultWindow, formatBytes, fromLocalInput, gpuStale, groupUpdates, parseSparkUpdates, progressLabel, progressPercent, restartNeeded, resultLabel, runningLabel, summarize, toLocalInput } from './packageUpdates'
 import type { PackageUpdate, RestartPolicy, SparkUpdates as State } from './packageUpdates'
 import './NetworkSettings.css'
 import './SparkUpdates.css'
@@ -232,7 +233,7 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
   }
 
   const attention = state.worker.state === 'ready' && !state.rebootingAt
-    && (state.restart.sparkRequired || services.length > 0 || !state.packageDatabase.healthy || state.modelsPaused)
+    && (state.restart.sparkRequired || services.length > 0 || !state.packageDatabase.healthy || state.modelsPaused || gpuStale(state))
   const scheduled = state.schedule
   return <div className="spark-updates">
     <div className="page-intro network-overview-header"><div><h1>Spark updates</h1>
@@ -308,6 +309,11 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
           <p>{services.slice(0, 6).join(', ')}{services.length > 6 && ` and ${services.length - 6} more`}. Restarting them takes a few seconds and doesn’t restart the Spark.</p>
           <div className="network-actions"><button className="button secondary" disabled={busy} onClick={() => void submit('/api/host/packages/restart-services', 'POST', undefined, '')}>Restart services</button></div>
         </div></li>}
+        {gpuStale(state) && <li><Icon name="attention" /><div><strong>The NVIDIA device list is out of date</strong>
+          <p>{state.gpuDevices?.message ?? 'The list of NVIDIA files containers use is missing.'} Until it’s refreshed, GPU containers such as Qwen and the GPU exporter can’t start, and platform image updates wait. Refreshing takes a few seconds and restarts nothing.
+            {state.gpuDevices && state.gpuDevices.missing.length > 0 && ` First missing: ${state.gpuDevices.missing[0]}.`}</p>
+          <div className="network-actions"><button className="button secondary" disabled={busy} onClick={() => void submit('/api/host/packages/refresh-gpu-devices', 'POST', undefined, '')}>Refresh NVIDIA device list</button></div>
+        </div></li>}
         {!state.packageDatabase.healthy && <li><Icon name="attention" /><div><strong>The package database has unfinished installs</strong>
           <p>An earlier install stopped part-way. Repair finishes configuring those packages; nothing new is installed.</p>
           <div className="network-actions"><button className="button secondary" disabled={busy} onClick={() => void submit('/api/host/packages/repair', 'POST', undefined, '')}>Repair package database</button></div>
@@ -335,6 +341,8 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
       {platform.length > 0 && group('platform', platform)}
     </> : !state.scanning && <section className="surface network-section updates-clear"><Icon name="check" /><div><h2>Up to date</h2>
       <p className="section-note">{state.scannedAt ? `Compared against the package lists ${ago(state.scannedAt)}.` : ''} Use Check for updates to download the latest lists first.</p></div></section>)}
+
+    <PlatformImagesSection session={session} refreshSession={refreshSession} gpuStale={gpuStale(state)} />
 
     {state.worker.state !== 'missing' && <section className="surface network-section">
       <h2>Automatic security updates</h2>

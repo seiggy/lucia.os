@@ -2,9 +2,11 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Aspire.Hosting.Docker.Resources.ComposeNodes;
 using Aspire.Hosting.Docker.Resources.ServiceNodes;
+using Lucia.Homelab.Server.Platform;
 using Lucia.Homelab.Server.Security;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -49,14 +51,43 @@ static Healthcheck Health(params string[] command) => new()
     Test = [.. command], Interval = "10s", Timeout = "5s", StartPeriod = "30s", Retries = 12
 };
 
+// The third-party images: the built-in pins, or the owner's newer ones from images.override.json, which the Spark's
+// lucia-platform-update worker writes. Entries a Lucia release has caught up with are dropped from the file.
+var overridePath = StatePath(PlatformImages.OverrideFile);
+CheckPath(overridePath);
+var pins = PlatformImages.Effective(File.Exists(overridePath) ? File.ReadAllText(CheckedFile(overridePath)) : null, out var keptOverrides);
+if (keptOverrides is not null)
+{
+    if (keptOverrides["images"] is JsonObject { Count: 0 }) File.Delete(overridePath);
+    else WritePrivate(overridePath, keptOverrides.ToJsonString() + "\n");
+}
+// What this deploy runs, for the worker (identity state, which the web host can't reach) and the web host's update checks.
+var platformManifest = PlatformImages.Manifest(pins, DateTimeOffset.UtcNow);
+WritePrivate(StatePath(PlatformImages.ManifestFile), platformManifest);
+if (hostSettings is not null)
+{
+    var exchange = Path.Combine(hostSettings.RootElement.GetProperty("data_directory").GetString()!, PlatformImages.Folder);
+    CheckPath(exchange);
+    if (OperatingSystem.IsWindows()) Directory.CreateDirectory(exchange);
+    else Directory.CreateDirectory(exchange, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    WritePrivate(Path.Combine(exchange, PlatformImages.ManifestFile), platformManifest);
+}
+PlatformPin Pin(string service) => PlatformImages.Pin(pins, service);
+IResourceBuilder<ContainerResource> Image(string name, string service)
+{
+    var pin = Pin(service);
+    var container = builder.AddContainer(name, pin.Repository, pin.Tag).WithImageSHA256(pin.Sha256);
+    return pin.Registry == "docker.io" ? container : container.WithImageRegistry(pin.Registry);
+}
+
 var databasePassword = Secret("identity-db-password");
 var authentikSecret = Secret("authentik-secret-key");
 var bootstrapPassword = Secret("authentik-admin-password");
 var bootstrapToken = Secret("authentik-bootstrap-token");
 
 var postgres = builder.AddPostgres("identity-db", password: databasePassword)
-    .WithImageTag("16.15-alpine")
-    .WithImageSHA256("0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab")
+    .WithImageTag(Pin("database").Tag)
+    .WithImageSHA256(Pin("database").Sha256)
     .WithVolume("lucia-identity-postgres", "/var/lib/postgresql/data")
     .WithEnvironment("POSTGRES_DB", "authentik")
     .PublishAsDockerComposeService((_, service) =>
@@ -66,8 +97,7 @@ var postgres = builder.AddPostgres("identity-db", password: databasePassword)
     });
 var database = postgres.AddDatabase("identity-store", "authentik");
 
-var ca = builder.AddContainer("identity-ca", "smallstep/step-ca", "0.30.2")
-    .WithImageSHA256("a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270")
+var ca = Image("identity-ca", "ca")
     .WithEntrypoint("/bin/sh")
     .WithArgs("/config/start-ca.sh")
     .WithEnvironment("LUCIA_PUBLIC_HOST", publicHost)
@@ -85,8 +115,7 @@ var ca = builder.AddContainer("identity-ca", "smallstep/step-ca", "0.30.2")
         service.Healthcheck = Health("CMD", "step", "ca", "health", "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt");
     });
 
-var ldap = builder.AddContainer("identity-ldap", "vegardit/openldap", "2.6.10")
-    .WithImageSHA256("a151f73be24a7c7ce086b1df15880fd9f5a21f9c0b09bc8fb0768f5a890e44f4")
+var ldap = Image("identity-ldap", "directory")
     .WithEnvironment("LDAP_INIT_ORG_DN", baseDn)
     .WithEnvironment("LDAP_INIT_ORG_NAME", "Lucia")
     .WithEnvironment("LDAP_INIT_ROOT_USER_DN", $"uid=admin,{baseDn}")
@@ -109,9 +138,7 @@ var ldap = builder.AddContainer("identity-ldap", "vegardit/openldap", "2.6.10")
         service.Healthcheck = Health("CMD", "ldapsearch", "-x", "-H", "ldap://127.0.0.1:389", "-b", "", "-s", "base", "namingContexts");
     });
 
-var server = builder.AddContainer("identity-server", "goauthentik/server", "2026.8.5")
-    .WithImageRegistry("ghcr.io")
-    .WithImageSHA256("602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5")
+var server = Image("identity-server", "authentik")
     .WithArgs("server")
     .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", postgres.Resource.Name)
     .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", "authentik")
@@ -131,9 +158,7 @@ var server = builder.AddContainer("identity-server", "goauthentik/server", "2026
         service.ShmSize = "512mb";
     });
 
-builder.AddContainer("identity-worker", "goauthentik/server", "2026.8.5")
-    .WithImageRegistry("ghcr.io")
-    .WithImageSHA256("602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5")
+Image("identity-worker", "authentik")
     .WithArgs("worker")
     .WithEnvironment("AUTHENTIK_POSTGRESQL__HOST", postgres.Resource.Name)
     .WithEnvironment("AUTHENTIK_POSTGRESQL__NAME", "authentik")
@@ -257,8 +282,7 @@ if (hostSettings is not null)
         service.Networks.Clear();
         service.NetworkMode = "host";
     }
-    builder.AddContainer("telemetry-relay", "otel/opentelemetry-collector-contrib", "0.164.0")
-        .WithImageSHA256("340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b")
+    Image("telemetry-relay", "telemetry-relay")
         .WithArgs("--config=/etc/lucia-relay/relay.yaml")
         .WithEnvironment("LUCIA_NODE", Environment.MachineName.ToLowerInvariant())
         .WithBindMount(relayDirectory, "/etc/lucia-relay", isReadOnly: true)
@@ -269,8 +293,7 @@ if (hostSettings is not null)
             service.User = $"{uid}:{gid}";
             service.DependsOn["lucia-host"] = new ServiceDependency { Condition = "service_healthy" };
         });
-    builder.AddContainer("telemetry-node-exporter", "prom/node-exporter", "v1.12.1")
-        .WithImageSHA256("1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0")
+    Image("telemetry-node-exporter", "node-exporter")
         .WithArgs("--path.rootfs=/host", "--web.listen-address=127.0.0.1:19100")
         .WithBindMount("/", "/host", isReadOnly: true)
         .PublishAsDockerComposeService((_, service) =>
@@ -278,8 +301,7 @@ if (hostSettings is not null)
             Relay(service, "telemetry-node-exporter");
             service.Pid = "host";
         });
-    builder.AddContainer("telemetry-gpu-exporter", "utkuozdemir/nvidia_gpu_exporter", "1.16.0")
-        .WithImageSHA256("cec17e3ddfce7baefbdf116d1a259e208bb1519e4e0b18b7b0879bde0fcad5a2")
+    Image("telemetry-gpu-exporter", "gpu-exporter")
         .WithArgs("--web.listen-address=127.0.0.1:19835")
         .PublishAsDockerComposeService((_, service) =>
         {
@@ -369,8 +391,7 @@ var accessLogs = hostSettings is null ? "" :
     "--accesslog.otlp.http.headers.X-Lucia-Relay=\"$LUCIA_RELAY_TOKEN\" ";
 // Every HTTP entrypoint ends with the bouncer's ban check, after the cheap header and source filters; crowdsec.yml defines it.
 var bouncer = GatewaySecurity.Middleware + "@file";
-var gateway = builder.AddContainer("identity-gateway", "traefik", "v3.7.16")
-    .WithImageSHA256("1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65")
+var gateway = Image("identity-gateway", "gateway")
     .WithEntrypoint("/bin/sh")
     .WithArgs("-c",
         "while ! (cd /certificates && sha256sum -c ready.sha256 >/dev/null 2>&1); do sleep 1; done; " +
@@ -422,8 +443,7 @@ if (hostSettings is not null)
         .WithEnvironment("LUCIA_RELAY_TOKEN", gatewayRelayToken!);
 }
 
-builder.AddContainer("identity-renewer", "smallstep/step-ca", "0.30.2")
-    .WithImageSHA256("a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270")
+Image("identity-renewer", "ca")
     .WithEntrypoint("/bin/sh")
     .WithArgs("/config/renew-certificate.sh")
     .WithEnvironment("STEPPATH", "/tmp/step")
@@ -643,6 +663,22 @@ static void CheckSecret(string path, int minimum)
     var value = File.ReadAllText(path).TrimEnd('\r', '\n');
     if (string.IsNullOrWhiteSpace(value) || value.Length < minimum || value.Any(char.IsControl))
         throw new InvalidOperationException("Persistent managed host secret is missing or invalid; restore it.");
+}
+
+static void WritePrivate(string path, string content)
+{
+    CheckPath(path);
+    var temporary = path + ".new";
+    CheckPath(temporary);
+    File.Delete(temporary);
+    var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+    if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    using (var stream = new FileStream(temporary, options))
+    {
+        stream.Write(Encoding.UTF8.GetBytes(content));
+        stream.Flush(flushToDisk: true);
+    }
+    File.Move(temporary, path, overwrite: true);
 }
 
 static string CheckedFile(string path)

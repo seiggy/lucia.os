@@ -14,5 +14,7 @@
   <ItemGroup>
     <!-- The gateway's CrowdSec middlewares; the server rewrites the same files when the owner edits the safe harbor. -->
     <Compile Include="..\Lucia.Homelab.Server\Security\GatewaySecurity.cs" Link="GatewaySecurity.cs" />
+    <!-- The platform images' pins, the owner's overrides and their policy; the server checks the same pins for updates. -->
+    <Compile Include="..\Lucia.Homelab.Server\Platform\PlatformImages.cs" Link="PlatformImages.cs" />
   </ItemGroup>
 </Project>

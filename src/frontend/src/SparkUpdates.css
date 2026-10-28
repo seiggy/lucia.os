@@ -48,3 +48,10 @@
   .updates-version { grid-column: 2; }
   .updates-summary { font-size: 16px; }
 }
+.platform-images .network-overview-header { margin-bottom: 8px; }
+.platform-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 18rem); gap: 14px; align-items: start; }
+.platform-offers { list-style: none; padding: 0; margin: 0; }
+.platform-offers .updates-meta, .platform-images .updates-list > li > .updates-meta { margin-left: 0; }
+.platform-offers .button { min-height: 36px; padding: 6px 14px; }
+.platform-current { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.platform-current svg { width: 16px; height: 16px; color: var(--green-ink); }

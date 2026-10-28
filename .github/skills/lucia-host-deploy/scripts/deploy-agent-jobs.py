@@ -22,7 +22,12 @@ sys.path[:0] = [str(app / "tools/identity"), str(app / "tools/host")]
 import application
 from provision import Provisioner, write_file
 
-SOURCES = ("deployment/host/Dockerfile", "tools/host/package.py", "tools/skills/skill_worker.py", "deployment/skill-runner/Dockerfile")
+SOURCES = ("deployment/host/Dockerfile", "tools/host/package.py", "tools/skills/skill_worker.py", "deployment/skill-runner/Dockerfile",
+           # Platform image updates: the identity AppHost and its shared pins, the Spark-side worker and its rules, the Qwen
+           # worker's NVIDIA pre-flight, and the root package worker (reinstalled with sudo afterwards; see result.json).
+           "src/Lucia.Homelab.Identity.AppHost/AppHost.cs", "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj",
+           "src/Lucia.Homelab.Server/Platform/PlatformImages.cs", "tools/runners/platform_images.py",
+           "tools/runners/platform_update_worker.py", "tools/runners/spark_model_worker.py", "tools/packages/package_worker.py")
 expected = json.loads((stage / "manifest.json").read_text())["sha256"]
 p = Provisioner(argparse.Namespace(state=str(state), host=None, certificate_mode="private-ca",
                                   auth_port=None, ldap_port=None, ca_port=None))
@@ -125,8 +130,20 @@ with contextlib.ExitStack() as stack:
         assert hardware_after["events"][:len(hardware_before["events"])] == hardware_before["events"]
         # The Assistant Skills runner is a setup-user service; installing it again is a no-op restart that picks up the new files.
         subprocess.run([sys.executable, str(app / "tools/skills/skill_worker.py"), "install"], check=True, capture_output=True, timeout=120)
+        # The platform image updater and the Qwen worker are setup-user services too; install restarts them on the new files.
+        for worker in ("tools/runners/platform_update_worker.py", "tools/runners/spark_model_worker.py"):
+            subprocess.run([sys.executable, str(app / worker), "install"], check=True, capture_output=True, timeout=120)
+        for attempt in range(12):
+            platform = get("/api/host/platform-images")["worker"]["state"]
+            if platform == "ready":
+                break
+            time.sleep(5)
+        assert platform == "ready", "The platform update service didn't report."
         result = {"agent_jobs": True, "artifact": expected, "worker_state": packages["worker"]["state"],
-                  "models_preserved": before_slots, "installation_enabled": True, "persistent_state_preserved": True}
+                  "platform_worker_state": platform, "models_preserved": before_slots, "installation_enabled": True,
+                  "persistent_state_preserved": True,
+                  # The root package worker runs from its own copy; reinstalling it needs sudo on the Spark.
+                  "next_step": "sudo python3 ~/.local/share/lucia/bootstrap/app/tools/packages/package_worker.py install"}
         write_file(stage / "result.json", json.dumps(result, indent=2) + "\n")
         print(json.dumps(result), flush=True)
     except Exception:

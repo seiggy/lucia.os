@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { defaultWindow, formatBytes, fromLocalInput, groupUpdates, parseSparkUpdates, progressLabel, progressPercent, restartNeeded, resultLabel, summarize, toLocalInput } from '../.checks/packageUpdates.js'
+import { actionLabel, defaultWindow, formatBytes, fromLocalInput, gpuStale, groupUpdates, parseSparkUpdates, progressLabel, progressPercent, restartNeeded, resultLabel, summarize, toLocalInput } from '../.checks/packageUpdates.js'
 import { parseRoute } from '../.checks/dashboard.js'
 import { findDestinations } from '../.checks/navigation.js'
 
@@ -70,6 +70,21 @@ assert.equal(defaultWindow(new Date(2026, 8, 25, 0, 30)), '2026-09-25T02:00')
 assert.equal(toLocalInput(evening), '2026-09-24T21:30')
 assert.equal(fromLocalInput('2026-09-25T02:00'), new Date(2026, 8, 25, 2, 0).toISOString())
 assert.equal(fromLocalInput('tomorrow'), null)
+
+// The NVIDIA device list: optional, strict when present, and stale when it names a missing file or is missing itself.
+assert.equal(state.gpuDevices, null)
+assert.equal(gpuStale(state), false)
+const devices = { present: true, current: false, missing: ['/usr/lib/aarch64-linux-gnu/libnvidia-egl-wayland.so.1.1.21'], missingCount: 1, paths: 40,
+  message: 'The NVIDIA device list names 1 file that no longer exists.', checkedAt: '2026-10-27T05:03:00Z' }
+const stale = parseSparkUpdates({ ...status, gpuDevices: devices })
+assert.equal(gpuStale(stale), true)
+assert.equal(stale.gpuDevices.missing[0], devices.missing[0])
+assert.equal(gpuStale(parseSparkUpdates({ ...status, gpuDevices: { ...devices, current: true, missing: [], missingCount: 0 } })), false)
+assert.equal(gpuStale(parseSparkUpdates({ ...status, gpuDevices: { ...devices, present: false, missing: [], missingCount: 0 } })), true)
+assert.throws(() => parseSparkUpdates({ ...status, gpuDevices: { ...devices, current: 'yes' } }))
+assert.equal(actionLabel('refresh-gpu-devices'), 'Refreshed the NVIDIA device list')
+assert.equal(resultLabel({ ...running, action: 'refresh-gpu-devices', state: 'failed' }), 'The NVIDIA device list wasn’t refreshed')
+assert.equal(progressLabel({ step: 'refreshing-gpu-devices', done: 0, total: 0, package: null }), 'Refreshing the NVIDIA device list')
 
 assert.deepEqual(parseRoute('#/updates'), { page: 'updates' })
 assert.equal(findDestinations('kernel reboot', true)[0]?.page, 'updates')

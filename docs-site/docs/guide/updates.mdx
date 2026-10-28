@@ -1,6 +1,6 @@
 ---
 title: Spark updates
-description: See which operating system and driver updates your Spark is waiting for, install them now or at night, and know what each restart will interrupt.
+description: See which operating system, driver and platform image updates your Spark is waiting for, install them now or at night, and know what each restart will interrupt.
 sidebar_position: 19
 ---
 
@@ -11,7 +11,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <WhoWhatWhy
   who="Lucia owners. The page is hidden from everyone else."
-  what="How to check for updates on the Spark, install the everyday ones, handle the risky ones carefully, schedule a window, and restart when it is needed."
+  what="How to check for updates on the Spark, install the everyday ones, handle the risky ones carefully, schedule a window, restart when it is needed, update the platform images Lucia runs, and refresh the NVIDIA device list."
   why="Your Spark runs Lucia, your models and your apps. An update that swaps its graphics driver under a running model is the kind of thing you want to choose the moment for."
 />
 
@@ -105,6 +105,55 @@ The page shows the result of the last window under **Scheduled window**.
 Restarting the Spark takes Lucia, Local AI and every app on it offline for a few minutes. Your managed servers keep running their apps, but nothing can manage them until the Spark is back. The page reconnects by itself.
 :::
 
+## Platform images
+
+Lucia itself runs on a handful of programs it didn't write: Authentik for sign-in, the Traefik gateway every web address goes through, a certificate authority, the OpenLDAP directory, the PostgreSQL database Authentik keeps its data in, and a telemetry relay with two exporters. Each one is a container image that Lucia pins to an exact version. App updates never touch them, so they get their own section, **Platform images**, near the bottom of this page.
+
+Each row shows the service, the version it runs and the rule Lucia follows for it. When the image's registry has something newer that the rule allows, the row lists it with a **Release notes** link right next to its **Update** button. You don't have to read the notes before you update. They're there so you can.
+
+| Rule | Services | What Lucia offers |
+|---|---|---|
+| Patches only | PostgreSQL, OpenLDAP | Versions where only the last number changes. Databases can need their data moved between bigger versions. |
+| Patches, then one release line at a time | Authentik (server and worker together) | Patches first. Then the next release line, say 2026.8 to 2026.10, with an **Upgrade notes** link. Authentik changes its database when it moves line, and it can't skip one. |
+| Same major version | Traefik, step-ca, the telemetry relay and exporters | Anything with the same first number. A new major version shows as **Breaking** with **Needs a new Lucia release**, and no button. |
+| Shown only | The gateway's CrowdSec plugin | Its newest release, with notes. Its download is pinned by a checksum in Lucia's code, so updating it waits for a Lucia release. |
+
+A version tagged **Rebuild with OS fixes** keeps its number. The project rebuilt the same version with operating system patches underneath, which happens a lot with PostgreSQL and OpenLDAP.
+
+### Update one service, or all the patches
+
+1. Press **Update** next to the version you want, or **Update all patches** at the top of the section for every patch and rebuild at once.
+2. Read what restarts. Updating Authentik, the gateway, PostgreSQL or OpenLDAP restarts every web route, so Lucia, sign-in and your apps' web addresses are unreachable for 10 to 15 seconds. The certificate authority and the telemetry services don't touch web traffic.
+3. Press **Update now**.
+
+The Spark then checks each image with its registry itself, pulls it, restarts the services that use it and waits up to five minutes for every one to come back. Authentik alone takes about 30 seconds. If anything stays down, the Spark puts the previous images back and says why. For an Authentik release line it also backs up Authentik's database first and restores it if the update fails.
+
+Do patches before minor updates, and move Authentik one release line at a time with a working sign-in in between. Lucia won't combine a release line with any other update.
+
+If Qwen3.8-Flash-Next is running, the confirmation says so. You can still go ahead, but Qwen holds most of the Spark's memory, so pulling images and restarting services takes longer and is more likely to go wrong. Stop it on the AI page first if you can. The Assistant gives the same warning and leaves the choice to you.
+
+### First time: switch on the platform update service
+
+Like package updates, this needs a helper on the Spark, because Lucia's web part has no access to Docker. A fresh install sets it up for you. If the section says the service isn't set up, open a terminal on the Spark, signed in as yourself, and run:
+
+```bash
+python3 ~/.local/share/lucia/bootstrap/app/tools/runners/platform_update_worker.py install
+```
+
+No `sudo` this time. It runs as you, the same account that set Lucia up.
+
+### The dashboard badge
+
+When a patch for Authentik, the gateway or the certificate authority has waited more than seven days, the **Your Spark** card on the dashboard shows **Security update waiting** with the version and how long. It links here. Lucia never applies these on its own.
+
+## The NVIDIA device list
+
+Containers that use the GPU, such as Qwen3.8-Flash-Next and Lucia's GPU exporter, start from a list of NVIDIA driver files the Spark writes when it boots. When an NVIDIA package update replaces one of those files, the list still names the old one and every GPU container fails to start. A restart fixes it. So does a refresh, which takes seconds.
+
+Lucia refreshes the list itself after it installs NVIDIA or CUDA packages. When something else changed them, say a manual `apt` or Ubuntu's automatic updates, **Needs attention** shows **The NVIDIA device list is out of date** and the first missing file. Press **Refresh NVIDIA device list**. Nothing restarts.
+
+Until the list is current, platform image updates wait and Qwen3.8-Flash-Next won't start; both tell you to refresh first.
+
 ## Automatic security updates
 
 Lucia does not switch on automatic updates for you. It reports what it finds: on, or installed but off, or not installed. When they are off, security fixes wait for you on this page.
@@ -121,6 +170,10 @@ Lucia does not switch on automatic updates for you. It reports what it finds: on
 | "could not download" | The Spark cannot reach the package servers. Check its internet connection. |
 | **Local AI is paused** stays for a long time | A platform update is probably still running. Check **Update history** at the bottom of the page. |
 | A task shows **Interrupted** | The update service restarted during it. Run **Repair package database**, then **Check for updates**. |
+| **The NVIDIA device list is out of date** | Press **Refresh NVIDIA device list**. If it still says so, restart the Spark. |
+| A platform update says "Another identity deploy or Lucia update is running" | Someone is deploying Lucia or installing packages. Try again in a few minutes. |
+| A platform update failed and "put the previous images back" | Everything is as it was. The message says which service didn't come back. Read its release notes before you try again. |
+| "The Spark's platform update service stopped responding" | It restarts on its own. If this lasts, run `systemctl --user status lucia-platform-update` on the Spark. |
 
 Failed tasks keep the last lines apt printed, under **Update history**. Copy those when you ask for help.
 
@@ -128,8 +181,11 @@ Failed tasks keep the last lines apt printed, under **Update history**. Copy tho
 
 The assistant can look at updates and ask the Spark to check, and it can install them when you say so. Installing always asks you first. It never restarts the Spark on its own. It tells you when a restart is needed and leaves the choice to you. See [Assistant](./assistant.mdx).
 
+It can also list platform image updates, apply them and refresh the NVIDIA device list. Its built-in **platform-image-updates** guide has it do patches first, Authentik one release line at a time, and mention it when Qwen3.8-Flash-Next is running. Applying asks you first and tells you what restarts.
+
 ## Next
 
 - [Spark health](./spark-health.mdx) shows how the Spark is doing right now.
 - [Local AI](./local-ai.mdx) explains what pauses during platform updates.
 - Running or debugging the update service: [Spark updates (deploy)](../deploy/spark-updates.mdx).
+- How platform images are updated and rolled back: [Platform images (deploy)](../deploy/platform-images.mdx).

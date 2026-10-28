@@ -133,6 +133,8 @@ The first start after a move to a new pin builds the engine and downloads about 
 
 The bootstrap installs the service but leaves it stopped. It needs `docker` and `git`, a non-root user and persistent user services (`loginctl` linger). It runs as `systemctl --user` unit `lucia-spark-model.service`.
 
+Before it creates the container, the worker checks the NVIDIA device list (`/var/run/cdi/nvidia.yaml`). When the list names a driver file that no longer exists, it fails with "The NVIDIA device list is out of date" instead of starting a container that can't reach the GPU. Refresh the list from the Spark updates page; see [Platform images](./platform-images.mdx#the-nvidia-device-list).
+
 ```mermaid
 sequenceDiagram
   participant O as Owner

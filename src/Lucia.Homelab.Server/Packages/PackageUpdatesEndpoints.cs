@@ -23,6 +23,7 @@ public static class PackageUpdatesEndpoints
         group.MapPost("/check", (PackageUpdatesService service, CancellationToken ct) => service.CheckAsync(ct));
         group.MapPost("/repair", (PackageUpdatesService service, CancellationToken ct) => service.RepairAsync(ct));
         group.MapPost("/restart-services", (PackageUpdatesService service, CancellationToken ct) => service.RestartServicesAsync(ct));
+        group.MapPost("/refresh-gpu-devices", (PackageUpdatesService service, CancellationToken ct) => service.RefreshGpuDevicesAsync(ct));
         group.MapPost("/restart-spark", async (HttpContext context, PackageUpdatesService service, CancellationToken ct) =>
         {
             var body = await Read<RestartConfirmation>(context, ct);
@@ -43,7 +44,7 @@ public static class PackageUpdatesEndpoints
         });
     }
 
-    private static async Task<T> Read<T>(HttpContext context, CancellationToken ct)
+    internal static async Task<T> Read<T>(HttpContext context, CancellationToken ct)
     {
         if (context.Request.ContentLength > 64 * 1024)
             throw new PackageUpdatesException(413, "request_too_large", "The request is too large.");

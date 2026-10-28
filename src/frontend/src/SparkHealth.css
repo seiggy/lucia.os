@@ -36,3 +36,5 @@
   .spark-history-grid { grid-template-columns: 1fr; gap: 24px; }
   .spark-history-axis { font-size: 12px; }
 }
+.spark-security-badge { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 10px; border-radius: 8px; font-size: 13px; font-weight: 550; background: var(--amber-bg); color: var(--amber-ink); text-decoration: none; }
+.spark-security-badge svg { width: 14px; height: 14px; }

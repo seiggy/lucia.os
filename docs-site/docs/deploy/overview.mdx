@@ -95,6 +95,7 @@ Work that needs more privilege than the host container runs outside it, as syste
 | `lucia-domain-activation.service` | user | Applies a reviewed domain profile and restarts the stack |
 | `lucia-node-enrollment.service` | user | Enrolls managed nodes against the directory and CA |
 | `lucia-spark-model.service`, `lucia-spark-runner.service` | user | Optional Spark model and on-demand GitHub runner |
+| `lucia-platform-update.service` | user | Updates the Spark's third-party platform images when the owner asks; see [Platform images](./platform-images.mdx) |
 | `lucia-skill-runner.service` | user | Runs Spark-mode assistant skill scripts in throwaway containers; builds its own image on first start |
 | `lucia-package-updates.service` | root | A fixed list of apt actions. Installed by hand with `sudo` |
 

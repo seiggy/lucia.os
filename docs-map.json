@@ -57,6 +57,11 @@
       "docs": ["guide/updates", "code/spark-updates", "deploy/spark-updates"]
     },
     {
+      "name": "Platform images",
+      "paths": ["src/Lucia.Homelab.Server/Platform/**", "tools/runners/platform_images.py", "tools/runners/platform_update_worker.py", "tools/runners/check_platform_images.py", "src/Lucia.Homelab.Server/Assistant/AssistantPlatform.cs", "src/Lucia.Homelab.Server/Assistant/Skills/BuiltIn/platform-image-updates/**", "src/frontend/src/PlatformImagesSection.tsx", "src/frontend/src/platformImages.ts", "tests/Lucia.Homelab.DomainChecks/PlatformImageChecks.cs"],
+      "docs": ["guide/updates", "code/platform-images", "deploy/platform-images"]
+    },
+    {
       "name": "Spark health and telemetry",
       "paths": ["src/Lucia.Homelab.Server/Telemetry/**", "src/frontend/src/SparkHealth.tsx", "src/frontend/src/sparkTelemetry.ts", "tests/Lucia.Homelab.TelemetryChecks/**"],
       "docs": ["guide/spark-health", "code/spark-telemetry", "deploy/observability"]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AuthenticationSession } from './authentication'
 import { Icon } from './Icon'
+import { parsePlatformImages, securityBadge } from './platformImages'
 import { bytes, historyPath, memoryPercent, parseSparkTelemetry, uptime } from './sparkTelemetry'
 import type { SparkSample, SparkTelemetry } from './sparkTelemetry'
 import './SparkHealth.css'
@@ -31,6 +32,7 @@ export function SparkHealth({ session, refreshSession }: {
 }) {
   const [data, setData] = useState<SparkTelemetry | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [security, setSecurity] = useState<string | null>(null)
   const request = useRef<AbortController | null>(null)
   const refresh = useCallback(async () => {
     if (request.current || !session.isOwner) return
@@ -74,6 +76,21 @@ export function SparkHealth({ session, refreshSession }: {
     }
   }, [refresh])
 
+  // A security patch to Authentik, the gateway or the CA that has waited more than a week; read rarely, it changes slowly.
+  useEffect(() => {
+    if (!session.isOwner) return
+    const controller = new AbortController()
+    const check = () => {
+      if (document.visibilityState === 'hidden') return
+      void fetch('/api/host/platform-images', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
+        .then(async response => { if (response.ok) setSecurity(securityBadge(parsePlatformImages(await response.json()))) })
+        .catch(() => { /* The badge is a hint; the Spark updates page reports errors. */ })
+    }
+    check()
+    const interval = setInterval(check, 10 * 60000)
+    return () => { clearInterval(interval); controller.abort() }
+  }, [session.isOwner])
+
   if (!session.isOwner) return null
   const latest = data?.latest
   const attention = !!error || ['Partial', 'Attention', 'Stale', 'Unavailable'].includes(data?.state ?? '')
@@ -87,6 +104,7 @@ export function SparkHealth({ session, refreshSession }: {
           <Icon name={attention ? 'attention' : healthy ? 'check' : 'clock'} />
           {error ? 'Connection needs attention' : data?.message ?? 'Reading your host'}
         </p>
+        {security && <a className="spark-security-badge" href="#/updates"><Icon name="shield" />Security update waiting: {security}</a>}
       </div>
       <span className="spark-updated">{latest ? <>
         {current ? 'Sampled' : 'Last known'} <time dateTime={latest.timestamp}>{new Date(latest.timestamp).toLocaleTimeString()}</time>

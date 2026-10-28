@@ -7,6 +7,7 @@ using Lucia.Homelab.Server.Domains;
 using Lucia.Homelab.Server.LabMap;
 using Lucia.Homelab.Server.Nodes;
 using Lucia.Homelab.Server.Packages;
+using Lucia.Homelab.Server.Platform;
 using Lucia.Homelab.Server.Security;
 using Lucia.Homelab.Server.Stacks;
 
@@ -61,6 +62,7 @@ builder.Services.AddHostedService(services => services.GetRequiredService<Manage
 builder.AddSparkTelemetry();
 builder.AddControllerRelay();
 builder.AddPackageUpdates();
+builder.AddPlatformImages();
 builder.AddAssistant();
 builder.AddLabMap();
 
@@ -92,6 +94,7 @@ app.MapStacks();
 app.MapSparkTelemetry();
 app.MapControllerRelay();
 app.MapPackageUpdates();
+app.MapPlatformImages();
 app.MapAssistant();
 app.MapLabMap();
 

@@ -94,4 +94,48 @@ apt_log += "Unpacking bison (2:3.8.2) over (2:3.8.1) ...\nUnpacking libcurl4t64:
 assert worker.apt_progress(apt_log, 3) == {"step": "unpacking", "done": 2, "total": 3, "package": "libcurl4t64"}
 apt_log += "Setting up bison (2:3.8.2) ...\nSetting up a (1) ...\nSetting up b (1) ...\nSetting up c (1) ...\n"
 assert worker.apt_progress(apt_log, 3) == {"step": "configuring", "done": 3, "total": 3, "package": "c"}
+# The NVIDIA device list: refreshing it is a fixed action with no fields, and NVIDIA package changes trigger it.
+refresh = {"schemaVersion": 1, "id": request_id, "action": "refresh-gpu-devices"}
+assert worker.validate_request(refresh, request_id) == {"id": request_id, "action": "refresh-gpu-devices"}
+for change in ({"output": "/etc/passwd"}, {"packages": ["nvidia-utils-580"]}, {"command": "nvidia-ctk cdi generate"}):
+    try:
+        worker.validate_request({**refresh, **change}, request_id)
+        raise AssertionError("A refresh request with extra fields was accepted: {}".format(change))
+    except ValueError:
+        pass
+assert all(worker.NVIDIA_PACKAGE.match(name) for name in ("libnvidia-egl-wayland1", "nvidia-container-toolkit", "cuda-compat-13", "nvidia-utils-580"))
+assert not any(worker.NVIDIA_PACKAGE.match(name) for name in ("openssl", "linux-image-nvidia", "libcudnn9", "xserver-xorg-video-nvidia"))
+
+
+def refreshed(unit, start_code, current_after_start, ctk):
+    """Runs refresh_gpu_devices against fakes; returns (success, commands run)."""
+    commands, real = [], (worker.run, worker.gpu_devices, worker.shutil.which)
+    state = {"current": False}
+
+    def run(command, timeout, log=None):
+        commands.append(command[:2])
+        if command[:2] == ["systemctl", "cat"]:
+            return (0 if unit else 1), ""
+        if command[:2] == ["systemctl", "start"]:
+            state["current"] = current_after_start
+            return start_code, "started"
+        if command[0] == "nvidia-ctk":
+            state["current"] = True
+            return 0, "generated"
+        raise AssertionError(command)
+    worker.run = run
+    worker.gpu_devices = lambda *_: {"present": True, "current": state["current"], "message": None if state["current"] else "stale"}
+    worker.shutil.which = lambda name: "/usr/bin/nvidia-ctk" if ctk and name == "nvidia-ctk" else None
+    try:
+        success, message, _ = worker.refresh_gpu_devices()
+    finally:
+        worker.run, worker.gpu_devices, worker.shutil.which = real
+    return success, commands
+
+
+assert refreshed(True, 0, True, True) == (True, [["systemctl", "cat"], ["systemctl", "start"]])
+assert refreshed(False, 0, False, True) == (True, [["systemctl", "cat"], ["nvidia-ctk", "cdi"]])
+assert refreshed(True, 0, False, True) == (True, [["systemctl", "cat"], ["systemctl", "start"], ["nvidia-ctk", "cdi"]])
+assert refreshed(False, 0, False, False)[0] is False
+assert refreshed(True, 1, False, False)[0] is False
 print("package worker checks passed")

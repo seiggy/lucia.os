@@ -849,6 +849,32 @@ try
     var labTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance)
         .Create("tester via assistant", "tester");
     await CrowdSecToolChecks.Run(Check, Reject, storage, labStacks, broker, toolSet);
+    // The Spark's platform images: read is a read, applying and refreshing the NVIDIA device list change the lab, and nothing
+    // reaches the Spark's worker unless it's installed and every name is a known service.
+    var platformUpdates = new Lucia.Homelab.Server.Platform.PlatformImageUpdates(Options.Create(new Lucia.Homelab.Server.Onboarding.HardwareOnboardingOptions
+        { StateDirectory = Path.Combine(storage, "platform", "onboarding") }), TimeProvider.System, NullLogger<Lucia.Homelab.Server.Platform.PlatformImageUpdates>.Instance);
+    var platformTools = new AssistantTools(null!, labStacks, null!, null!, null!, null!, broker, NullLogger<AssistantTools>.Instance, platformImages: platformUpdates)
+        .Create("tester via assistant", "tester").ToDictionary(tool => tool.Name);
+    Check(platformTools["list_platform_image_updates"].Tier == ToolTier.Read && platformTools["apply_platform_image_updates"].Tier == ToolTier.Change
+        && platformTools["refresh_nvidia_device_list"].Tier == ToolTier.Change && toolSet.All(tool => !tool.Name.Contains("platform_image") && tool.Name != "refresh_nvidia_device_list")
+        && platformTools["apply_platform_image_updates"].Description.Contains("10 to 15 seconds", StringComparison.Ordinal),
+        "The platform image tools have their tiers, state the disruption, and exist only where the platform service is wired in.");
+    async Task<string> PlatformCall(string tool, object values) =>
+        ((TextContent)(await platformTools[tool].InvokeAsync(new AIFunctionArguments(JsonSerializer.SerializeToElement(values).EnumerateObject()
+            .ToDictionary(property => property.Name, property => (object?)property.Value))))!).Text;
+    var platformList = JsonNode.Parse(await PlatformCall("list_platform_image_updates", new { }))!;
+    Check(platformList["images"]!.AsArray().Count == 8 && (bool)platformList["recorded"]! == false && (string)platformList["worker"]!["state"]! == "missing"
+        && platformList["images"]!.AsArray().All(row => row!["digest"] is null) && (bool)platformList["qwenRunning"]! == false,
+        "Before an identity deploy records them, the platform images list the built-in pins, and the worker shows as missing.");
+    var platformMissing = await Reject(() => PlatformCall("apply_platform_image_updates", new { services = new[] { "authentik" } }), 400, "tool_error",
+        "Applying platform updates needs the Spark's worker.");
+    Check(platformMissing.Message.Contains("isn't set up", StringComparison.Ordinal), $"The model is told the update service isn't set up (got '{platformMissing.Message}').");
+    var platformEmpty = await Reject(() => PlatformCall("apply_platform_image_updates", new { services = Array.Empty<string>() }), 400, "tool_error",
+        "Applying platform updates needs at least one service.");
+    Check(platformEmpty.Message.Contains("Name one or more services", StringComparison.Ordinal), "An empty service list is refused before anything is written.");
+    var devicesMissing = await Reject(() => PlatformCall("refresh_nvidia_device_list", new { }), 400, "tool_error", "Refreshing the NVIDIA device list needs Spark updates.");
+    Check(devicesMissing.Message == "Spark updates aren't available.", "Without the package worker, refreshing the NVIDIA device list says so.");
+    Check(!File.Exists(Path.Combine(storage, "platform", "lucia-platform-updates", "request.json")), "Refused platform updates write no request.");
     // The Spark isn't a managed node, so its health and updates have tools of their own.
     var sparkBuffer = new Lucia.Homelab.Server.Telemetry.SparkTelemetryBuffer(TimeProvider.System);
     sparkBuffer.Add(new(DateTimeOffset.UtcNow, 42.26, 20, 3.456, 128L << 30, 100L << 30, 4000L << 30, 3000L << 30, "enP7s7", 1_250_000, 125_000,
@@ -1231,7 +1257,7 @@ try
     var builtRouter = new SkillScriptRouter(builtStore, new NodeSkillRunner(new NodeExec(null!, null!), builtStore), new SparkSkillRunner(builtOptions, builtStore),
         new SandboxSkillRunner(new NodeExec(null!, null!), builtStore, new SkillSandboxRuntime()));
     using var builtProvider = new AssistantSkills(builtStore, builtRouter, NullLoggerFactory.Instance);
-    string[] builtNames = ["app-troubleshooting", "container-image-updates", "crowdsec-response", "custom-app-authoring", "os-security-patching", "skill-authoring"];
+    string[] builtNames = ["app-troubleshooting", "container-image-updates", "crowdsec-response", "custom-app-authoring", "os-security-patching", "platform-image-updates", "skill-authoring"];
     var builtList = await builtStore.ListAsync(default);
     Check(builtList.Select(skill => skill.Name).SequenceEqual(builtNames) && builtList.All(skill => skill is { BuiltIn: true, Enabled: true, Execution: "node", Tier: "read", Source: "built-in", Problem: null, Scripts: 0 }
         && skill.Hash.Length == 64 && skill.Description.Length > 0), "Built-in skills are listed, enabled and read-only, with their source and tier.");

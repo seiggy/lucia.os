@@ -29,6 +29,8 @@ internal static class BootstrapPayload
         "tools/packages/package_worker.py",
         "tools/runners/spark_runner_worker.py",
         "tools/runners/spark_model_worker.py",
+        "tools/runners/platform_images.py",
+        "tools/runners/platform_update_worker.py",
         "tools/runners/tensorfold/0017-engine-systemone.patch",
         "tools/skills/skill_worker.py",
         "deployment/skill-runner/Dockerfile",
@@ -47,6 +49,7 @@ internal static class BootstrapPayload
         "deployment/identity/init_org_tree.ldif",
         "deployment/identity/init_org_entries.ldif",
         "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs",
+        "src/Lucia.Homelab.Server/Platform/PlatformImages.cs",
         "src/Lucia.Homelab.Identity.AppHost/AppHost.cs",
         "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj",
         "src/Lucia.Homelab.Identity.AppHost/aspire.config.json"

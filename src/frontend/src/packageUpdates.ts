@@ -10,6 +10,8 @@ export interface PackageOperation {
   progress: PackageProgress | null
 }
 export interface PackageProgress { step: string; done: number; total: number; package: string | null }
+/** Whether every file the NVIDIA device list (CDI) names still exists; GPU containers fail to start when one doesn't. */
+export interface GpuDevices { present: boolean; current: boolean; missing: string[]; missingCount: number; message: string | null }
 export interface PackageSchedule { runAt: string; packages: string[] | null; includePlatform: boolean; restart: RestartPolicy; createdAt: string }
 export interface SparkUpdates {
   worker: { state: 'ready' | 'stale' | 'missing'; installCommand: string }
@@ -23,6 +25,7 @@ export interface SparkUpdates {
   schedule: PackageSchedule | null
   lastSchedule: { runAt: string; state: 'started' | 'missed' | 'failed'; message: string; at: string } | null
   pendingRequest: boolean; modelsPaused: boolean
+  gpuDevices: GpuDevices | null
 }
 
 const invalid = () => new Error('Lucia returned incomplete update data. The current state of the Spark could not be confirmed.')
@@ -77,6 +80,7 @@ export function parseSparkUpdates(value: unknown): SparkUpdates {
   const automatic = data.automaticUpdates === undefined ? null : object(data.automaticUpdates)
   const schedule = data.schedule === null || data.schedule === undefined ? null : object(data.schedule)
   const last = data.lastSchedule === null || data.lastSchedule === undefined ? null : object(data.lastSchedule)
+  const gpu = data.gpuDevices === null || data.gpuDevices === undefined ? null : object(data.gpuDevices)
   return {
     worker: { state: oneOf(worker.state, ['ready', 'stale', 'missing'] as const), installCommand: text(worker.installCommand) },
     system: system && { os: text(system.os), dgx: optionalText(system.dgx), kernel: text(system.kernel), architecture: text(system.architecture) },
@@ -96,6 +100,9 @@ export function parseSparkUpdates(value: unknown): SparkUpdates {
     lastSchedule: last && { runAt: text(last.runAt), state: oneOf(last.state, ['started', 'missed', 'failed'] as const),
       message: text(last.message), at: text(last.at) },
     pendingRequest: flag(data.pendingRequest), modelsPaused: flag(data.modelsPaused),
+    gpuDevices: gpu && { present: flag(gpu.present), current: flag(gpu.current), missing: texts(gpu.missing),
+      missingCount: typeof gpu.missingCount === 'number' && Number.isInteger(gpu.missingCount) && gpu.missingCount >= 0 ? gpu.missingCount : (() => { throw invalid() })(),
+      message: optionalText(gpu.message) },
   }
 }
 
@@ -122,6 +129,11 @@ export function summarize(state: SparkUpdates): string {
   }
   if (state.restart.sparkRequired) parts.push('A restart is needed to finish earlier updates.')
   return parts.join(' ')
+}
+
+/** The device list is missing or names files that are gone: GPU containers can't start until it is refreshed. */
+export function gpuStale(state: Pick<SparkUpdates, 'gpuDevices'>): boolean {
+  return !!state.gpuDevices && !state.gpuDevices.current
 }
 
 export function restartNeeded(selection: PackageUpdate[]): RestartClass | null {
@@ -157,11 +169,11 @@ export function fromLocalInput(value: string): string | null {
 
 export function actionLabel(action: string): string {
   return ({ check: 'Checked for updates', install: 'Installed updates', changelog: 'Read a changelog', 'restart-services': 'Restarted services',
-    'restart-spark': 'Restarted the Spark', repair: 'Repaired the package database' } as Record<string, string>)[action] ?? action
+    'restart-spark': 'Restarted the Spark', repair: 'Repaired the package database', 'refresh-gpu-devices': 'Refreshed the NVIDIA device list' } as Record<string, string>)[action] ?? action
 }
 export function runningLabel(action: string): string {
   return ({ check: 'Checking every package source', install: 'Installing updates', 'restart-services': 'Restarting services',
-    'restart-spark': 'Restarting the Spark', repair: 'Repairing the package database' } as Record<string, string>)[action] ?? 'Working'
+    'restart-spark': 'Restarting the Spark', repair: 'Repairing the package database', 'refresh-gpu-devices': 'Refreshing the NVIDIA device list' } as Record<string, string>)[action] ?? 'Working'
 }
 
 const stages: Record<string, [number, number, string]> = {
@@ -178,11 +190,12 @@ export function progressLabel(value: PackageProgress | null): string {
   const stage = stages[value.step]
   if (stage && value.total) return `${stage[2]} ${Math.min(value.done, value.total)} of ${value.total}`
   return ({ preparing: 'Checking what these updates need', refreshing: 'Downloading the latest package lists',
-    restarting: 'Restarting services that use updated files', repairing: 'Finishing interrupted installs' } as Record<string, string>)[value.step] ?? 'Working'
+    restarting: 'Restarting services that use updated files', repairing: 'Finishing interrupted installs',
+    'refreshing-gpu-devices': 'Refreshing the NVIDIA device list' } as Record<string, string>)[value.step] ?? 'Working'
 }
 export function resultLabel(item: PackageOperation): string {
   if (item.state === 'succeeded') return actionLabel(item.action)
   if (item.state === 'interrupted') return 'The task was interrupted'
   return ({ check: 'Couldn’t check for updates', install: 'Updates weren’t installed', 'restart-services': 'Services weren’t restarted',
-    'restart-spark': 'The Spark didn’t restart', repair: 'Repair didn’t finish' } as Record<string, string>)[item.action] ?? 'The task failed'
+    'restart-spark': 'The Spark didn’t restart', repair: 'Repair didn’t finish', 'refresh-gpu-devices': 'The NVIDIA device list wasn’t refreshed' } as Record<string, string>)[item.action] ?? 'The task failed'
 }

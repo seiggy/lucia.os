@@ -31,6 +31,7 @@ Three parties write to the exchange directory. The host writes requests and the 
 | `tools/packages/check_worker.py` | Pure checks for requests, classification and apt parsing. It never runs apt. |
 | `src/frontend/src/SparkUpdates.tsx`, `packageUpdates.ts` | The page and its parser and helpers |
 | `src/Lucia.Homelab.Server/Assistant/AssistantTools.cs` | `get_spark_updates`, `check_spark_updates`, `install_spark_updates` |
+| `src/Lucia.Homelab.Server/Assistant/AssistantPlatform.cs` | `refresh_nvidia_device_list`, beside the platform image tools ([Platform images](./platform-images.mdx)) |
 
 ## Request flow
 
@@ -161,7 +162,7 @@ Long commands go through `run`, which starts them in their own session (`start_n
 
 ### Why a worker, and why these choices
 
-- **Fixed actions beat a command whitelist.** Whitelisting `apt-get` with arguments still lets the argument vary. Six named actions have no free text except package names, which match a regex, and `--only-upgrade` ensures a name cannot install something new.
+- **Fixed actions beat a command whitelist.** Whitelisting `apt-get` with arguments still lets the argument vary. Seven named actions have no free text except package names, which match a regex, and `--only-upgrade` ensures a name cannot install something new.
 - **Files beat a socket.** A directory the owner can inspect, with atomic writes and no listener, adds no network surface and survives restarts of either side.
 - **The worker re-derives everything.** It does not trust `platform` from the host. It reads its own snapshot.
 - **No removals.** An update that would remove packages is refused after a simulation. An unattended removal on a controller is a bad surprise.
@@ -179,6 +180,8 @@ To add a worker action:
 2. Handle it in `Worker.handle`, using `begin`, `apt` and `finish` so progress and history work.
 3. Add a method to `PackageUpdatesService` that calls `SubmitAsync`, and a route.
 4. Add a case to `check_worker.py`.
+
+`refresh-gpu-devices` is the newest action and a good model. It takes no fields, `refresh_gpu_devices` runs only `systemctl` and `nvidia-ctk` with fixed arguments, and `after_nvidia` calls the same function after an install that touched a package matching `NVIDIA_PACKAGE`. `gpu_devices` is duplicated in `tools/runners/platform_images.py` for the non-root workers; keep the two in step.
 
 To change what counts as platform or what needs a restart, edit `PLATFORM_NAME`, `SPARK_RESTART` and `LUCIA_RESTART`, then the matching asserts in `check_worker.py`.
 
