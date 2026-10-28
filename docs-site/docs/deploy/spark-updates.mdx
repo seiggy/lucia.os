@@ -110,7 +110,7 @@ The host reads `status.json` on every page load. It treats the worker as `ready`
 | `system` | `os`, `dgx` release, `kernel`, `architecture` |
 | `lastUpdateCheckAt` | Newest mtime of the apt update stamp and `/var/lib/apt/lists` |
 | `updates` | Up to 2,000 upgradable packages, security ones first (see below) |
-| `restart` | `sparkRequired`, `sparkReasons` (up to 100), `kernelPending`, `services` (up to 200) |
+| `restart` | `sparkRequired`, `sparkReasons` (up to 100), `kernelPending`, `services` (up to 200), `heldServices`: listed services that were still listed after the last `needrestart -r a` run. needrestart won't restart some services while they run (dbus, systemd-logind, and Docker and containerd through Lucia's `50-lucia.conf`), so any held service sets `sparkRequired`. The list is kept in the worker's state and cleared on reboot. |
 | `automaticUpdates` | `installed` and `enabled` for `unattended-upgrades` |
 | `packageDatabase` | `healthy` is false when `dpkg --audit` prints anything |
 | `gpuDevices` | Whether every `hostPath` in the NVIDIA device list `/var/run/cdi/nvidia.yaml` exists: `present`, `current`, `missing` (up to 50), `missingCount`, `message` |

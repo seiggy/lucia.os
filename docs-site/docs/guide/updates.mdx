@@ -101,6 +101,10 @@ The page shows the result of the last window under **Scheduled window**.
 - **Schedule restart** does the same at a time you choose, and only if it is still needed.
 - **Restart services** appears when some programs still use old files. It takes a few seconds and does not restart the Spark.
 
+Some programs can't be restarted while the Spark is running. dbus, systemd-logind and Docker are the usual ones, since everything else leans on them. If they're still listed after **Restart services**, Lucia moves them under **Restart the Spark to finish updating** and asks for a restart.
+
+When nothing is waiting, a **Restart the Spark** section sits at the bottom of the page. Use it when you know a restart is needed and Lucia hasn't asked for one. It asks you to confirm first, like **Restart now**.
+
 :::warning
 Restarting the Spark takes Lucia, Local AI and every app on it offline for a few minutes. Your managed servers keep running their apps, but nothing can manage them until the Spark is back. The page reconnects by itself.
 :::

@@ -308,6 +308,19 @@ def run(command, timeout, log=None):
     return process.returncode, "".join(chunks)
 
 
+def hold(snapshot, stuck):
+    """Services a restart left on old files (dbus, systemd-logind, docker and the like, which needrestart won't restart while
+    they run) only pick up their updates when the Spark restarts, so they count as needing one."""
+    restart = (snapshot or {}).get("restart")
+    if not isinstance(restart, dict):
+        return snapshot
+    held = sorted(set(stuck) & set(restart.get("services", [])))
+    restart["heldServices"] = held
+    if held:
+        restart["sparkRequired"] = True
+    return snapshot
+
+
 def release_value(path, key):
     try:
         for line in pathlib.Path(path).read_text().splitlines():
@@ -463,7 +476,7 @@ class Worker:
 
     def rescan(self):
         try:
-            self.snapshot = scan()
+            self.snapshot = hold(scan(), self.state.get("stuck", []))
         except Exception as error:  # Keep the last snapshot; never publish raw exception text.
             print(json.dumps({"event": "package-scan-failed", "errorType": type(error).__name__}), flush=True)
         self.publish()
@@ -577,11 +590,23 @@ class Worker:
             code, more = self.apt(operation, ["needrestart", "-r", "a", "-q"], 15 * 60, "restarting")
             output += more
             message += " Services using updated files were restarted." if code == 0 else " Some services could not be restarted."
-        self.rescan()
+            self.restarted()
+        else:
+            self.rescan()
         if request["restart"] == "spark" and (self.snapshot or {}).get("restart", {}).get("sparkRequired"):
             self.finish(operation, True, message + " Restarting the Spark to finish.", output)
             return self.reboot()
         self.finish(operation, True, message, output)
+
+    def restarted(self):
+        """After needrestart has restarted what it will: whatever is still listed waits for the Spark to restart."""
+        self.rescan()
+        with self.lock:
+            self.state["stuck"] = list((self.snapshot or {}).get("restart", {}).get("services", []))[:200]
+            self.save_state()
+        self.snapshot = hold(self.snapshot, self.state["stuck"])
+        self.publish()
+        return self.state["stuck"]
 
     def after_nvidia(self, operation, names):
         """After NVIDIA packages change, the device list is generated again before the task is reported done."""
@@ -595,6 +620,7 @@ class Worker:
     def reboot(self):
         with self.lock:
             self.state["rebootingAt"] = now()
+            self.state["stuck"] = []
             self.save_state()
         self.publish()
         time.sleep(3)
@@ -622,10 +648,9 @@ class Worker:
                 count, " is" if count == 1 else "s are") if code == 0 else plain_failure(output, code), output)
         if action == "restart-services":
             code, output = self.apt(operation, ["needrestart", "-r", "a", "-q"], 15 * 60, "restarting")
-            self.rescan()
-            remaining = len((self.snapshot or {}).get("restart", {}).get("services", []))
+            remaining = len(self.restarted())
             message = "Restarted the services using updated files." if not remaining else \
-                "Restarted what could be restarted safely. {} will pick up updates when the Spark restarts.".format(
+                "Restarted what could be restarted safely. {} can't be restarted while the Spark runs. Restart the Spark to finish.".format(
                     "1 service" if remaining == 1 else "{} services".format(remaining))
             return self.finish(operation, code == 0, message if code == 0 else plain_failure(output, code), output)
         if action == "repair":

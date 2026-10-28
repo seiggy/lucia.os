@@ -138,4 +138,11 @@ assert refreshed(False, 0, False, True) == (True, [["systemctl", "cat"], ["nvidi
 assert refreshed(True, 0, False, True) == (True, [["systemctl", "cat"], ["systemctl", "start"], ["nvidia-ctk", "cdi"]])
 assert refreshed(False, 0, False, False)[0] is False
 assert refreshed(True, 1, False, False)[0] is False
+# Services a restart couldn't move (dbus, logind, docker) need the Spark restarted; a fresh list or a reboot clears them.
+held = worker.hold({"restart": {"sparkRequired": False, "services": ["bluetooth.service", "dbus.service", "docker.service"]}},
+                   ["dbus.service", "docker.service", "gone.service"])["restart"]
+assert held["heldServices"] == ["dbus.service", "docker.service"] and held["sparkRequired"] is True
+calm = worker.hold({"restart": {"sparkRequired": False, "services": ["bluetooth.service"]}}, [])["restart"]
+assert calm["heldServices"] == [] and calm["sparkRequired"] is False
+assert worker.hold(None, ["dbus.service"]) is None
 print("package worker checks passed")

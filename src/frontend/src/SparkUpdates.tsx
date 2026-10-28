@@ -136,7 +136,8 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
   const last = state.history[0]
   const recent = last && last.id !== dismissed && Date.now() - Date.parse(last.finishedAt ?? last.startedAt) < 30 * 60000 ? last : null
   const dismiss = (id: string) => { localStorage.setItem(dismissKey, id); setDismissed(id) }
-  const services = state.restart.services
+  const held = state.restart.heldServices
+  const services = state.restart.services.filter(service => !held.includes(service))
 
   function installBody(group: Group, policy: RestartPolicy) {
     return { packages: pick(group).map(item => item.name), includePlatform: group === 'platform', restart: policy }
@@ -149,6 +150,16 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
     // Everything in the everyday group means "whatever everyday updates exist then".
     const packages = group === 'everyday' && items.length === everyday.length ? null : items.map(item => item.name)
     return { runAt: iso, packages, includePlatform: group === 'platform', restart }
+  }
+
+  function restartPanel() {
+    return <div className="updates-panel">
+      <h3>Restart the Spark now?</h3>
+      <p>Lucia, Local AI and everything else on the Spark will be offline for a few minutes. Lucia reloads your models when it’s back.</p>
+      <div className="network-actions">
+        <button className="button primary" disabled={submitting} onClick={() => void submit('/api/host/packages/restart-spark', 'POST', { confirm: true }, 'Restarting the Spark…')}>{submitting ? 'Sending…' : 'Restart Spark'}</button>
+        <button className="text-link" onClick={() => setPanel(null)}>Cancel</button></div>
+    </div>
   }
 
   function panelFor(group: Target) {
@@ -293,14 +304,9 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
         {state.modelsPaused && <li><Icon name="clock" /><div><strong>Local AI is paused</strong><p>Lucia unloaded models for platform updates and reloads them when the updates finish.</p></div></li>}
         {state.restart.sparkRequired && <li><Icon name="attention" /><div><strong>Restart the Spark to finish updating</strong>
           <p>{state.restart.kernelPending ? 'A new kernel is installed but the Spark is still running the old one.' : 'Recent updates take effect after a restart.'}
-            {state.restart.sparkReasons.length > 0 && ` Waiting on ${state.restart.sparkReasons.slice(0, 4).join(', ')}${state.restart.sparkReasons.length > 4 ? ` and ${state.restart.sparkReasons.length - 4} more` : ''}.`}</p>
-          {panel?.kind === 'restart-spark' ? <div className="updates-panel">
-            <h3>Restart the Spark now?</h3>
-            <p>Lucia, Local AI and everything else on the Spark will be offline for a few minutes. Lucia reloads your models when it’s back.</p>
-            <div className="network-actions">
-              <button className="button primary" disabled={submitting} onClick={() => void submit('/api/host/packages/restart-spark', 'POST', { confirm: true }, 'Restarting the Spark…')}>{submitting ? 'Sending…' : 'Restart Spark'}</button>
-              <button className="text-link" onClick={() => setPanel(null)}>Cancel</button></div>
-          </div> : panelFor('restart') ?? <div className="network-actions">
+            {state.restart.sparkReasons.length > 0 && ` Waiting on ${state.restart.sparkReasons.slice(0, 4).join(', ')}${state.restart.sparkReasons.length > 4 ? ` and ${state.restart.sparkReasons.length - 4} more` : ''}.`}
+            {held.length > 0 && ` ${held.length === 1 ? '1 service' : `${held.length} services`} can’t be restarted while the Spark runs: ${held.slice(0, 6).join(', ')}${held.length > 6 ? ` and ${held.length - 6} more` : ''}.`}</p>
+          {panel?.kind === 'restart-spark' ? restartPanel() : panelFor('restart') ?? <div className="network-actions">
             <button className="button secondary" disabled={busy} onClick={() => open({ kind: 'restart-spark' })}>Restart now</button>
             <button className="text-link" disabled={busy || !!scheduled} onClick={() => open({ kind: 'schedule', group: 'restart' })}><Icon name="clock" />Schedule restart</button>
           </div>}
@@ -323,6 +329,14 @@ export function SparkUpdates({ session, refreshSession }: { session: Authenticat
 
     {state.rebootingAt && <section className="surface network-section"><h2>The Spark is restarting</h2>
       <p>Requested {ago(state.rebootingAt)}. This page reconnects on its own when Lucia is back.</p></section>}
+
+    {state.worker.state === 'ready' && !state.rebootingAt && !state.restart.sparkRequired && <section className="surface network-section" aria-labelledby="updates-restart">
+      <h2 id="updates-restart">Restart the Spark</h2>
+      <p className="section-note">Lucia asks for a restart when it can tell an update needs one. If services keep showing old files after you restart them, or you know a restart is needed, restart the Spark yourself.</p>
+      {panel?.kind === 'restart-spark' ? restartPanel() : <div className="network-actions">
+        <button className="button secondary" disabled={busy} onClick={() => open({ kind: 'restart-spark' })}>Restart the Spark</button>
+      </div>}
+    </section>}
 
     {(scheduled || state.lastSchedule) && <section className="surface network-section" aria-labelledby="updates-schedule">
       <h2 id="updates-schedule">Scheduled window</h2>

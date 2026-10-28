@@ -18,7 +18,8 @@ export interface SparkUpdates {
   system: { os: string; dgx: string | null; kernel: string; architecture: string } | null
   lastUpdateCheckAt: string | null; scannedAt: string | null; scanning: boolean
   updates: PackageUpdate[]
-  restart: { sparkRequired: boolean; sparkReasons: string[]; kernelPending: boolean; services: string[] }
+  /** heldServices: listed services a restart couldn't move, which wait for the Spark to restart. */
+  restart: { sparkRequired: boolean; sparkReasons: string[]; kernelPending: boolean; services: string[]; heldServices: string[] }
   automaticUpdates: { installed: boolean; enabled: boolean } | null
   packageDatabase: { healthy: boolean; message: string | null }
   operation: PackageOperation | null; history: PackageOperation[]; rebootingAt: string | null
@@ -88,8 +89,9 @@ export function parseSparkUpdates(value: unknown): SparkUpdates {
     scanning: data.scanning === undefined ? false : flag(data.scanning),
     updates: data.updates === undefined ? [] : Array.isArray(data.updates) ? data.updates.map(update) : (() => { throw invalid() })(),
     restart: restart ? { sparkRequired: flag(restart.sparkRequired), sparkReasons: texts(restart.sparkReasons),
-      kernelPending: flag(restart.kernelPending), services: texts(restart.services) }
-      : { sparkRequired: false, sparkReasons: [], kernelPending: false, services: [] },
+      kernelPending: flag(restart.kernelPending), services: texts(restart.services),
+      heldServices: restart.heldServices === undefined ? [] : texts(restart.heldServices) }
+      : { sparkRequired: false, sparkReasons: [], kernelPending: false, services: [], heldServices: [] },
     automaticUpdates: automatic && { installed: flag(automatic.installed), enabled: flag(automatic.enabled) },
     packageDatabase: database ? { healthy: flag(database.healthy), message: optionalText(database.message) } : { healthy: true, message: null },
     operation: data.operation === null || data.operation === undefined ? null : operation(data.operation),
