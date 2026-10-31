@@ -177,7 +177,7 @@ public static class StackCatalog
 /// worker owns the model library, optionally on an NFS share. Images follow the server's pinned CUDA line and get only the
 /// chosen GPUs.
 /// </summary>
-internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 14, "Local AI",
+internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 15, "Local AI",
     "Serve models on this server's NVIDIA GPUs, with an OpenAI-compatible API.",
     "An NVIDIA GPU (compute 7.0 or newer) and a CUDA line chosen in Devices.",
     ["gpu.vendor=nvidia", "gpu.compute>=7.0"],
@@ -189,7 +189,8 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 14, "Local A
                        new("llamacpp", "llama.cpp", "Serves every downloaded GGUF, loading the one each request names. Best for large quantized models."),
                    ]),
         new("gpus", "GPUs", "gpus", Help: "Local AI gets these GPUs to itself. Their memory sets how large a model it can load."),
-        new("port", "Port", "port", "8080", "Apps on your network reach local AI at http://<server>:<port>/v1."),
+        new("port", "Port", "port", "8080", "The inference port on this server. Lucia's HTTPS gateway forwards requests here; direct HTTP access stays available."),
+        new("web-host", "Web address", "text", "local-ai", "The name under your lab's domain, such as local-ai. Choose a different name for each server's Local AI app."),
         new("library-port", "Library port", "port", "8081", "Lucia manages the model library through this port.", When: "engine=vllm|llamacpp"),
         new("models-max", "Models loaded at once", "range", "1", "llama.cpp keeps up to this many models in GPU memory, such as an LLM "
             + "beside an embedding model, and unloads the least recently used one to make room. Raise it only if the GPUs fit them together.",
@@ -341,7 +342,10 @@ internal sealed partial class LocalAiApp() : CatalogApp("local-ai", 14, "Local A
             """;
         var envText = $"LUCIA_WORKER_KEY={StackCatalog.Secret(env, "LUCIA_WORKER_KEY")}\n"
             + $"LUCIA_INFERENCE_KEY={StackCatalog.Secret(env, "LUCIA_INFERENCE_KEY")}\n";
-        return new(compose.ReplaceLineEndings("\n").Replace("\n\n\n", "\n\n"), envText, [.. Require, $"cuda={line}"]);
+        StackRoute[] routes = !dedicated || server.Length > 0
+            ? [new(settings["web-host"].ToLowerInvariant(), int.Parse(settings["port"], CultureInfo.InvariantCulture))]
+            : [];
+        return new(compose.ReplaceLineEndings("\n").Replace("\n\n\n", "\n\n"), envText, [.. Require, $"cuda={line}"], routes);
     }
 
     /// <summary>vLLM serving the chosen library model read-only, under its repository name.</summary>

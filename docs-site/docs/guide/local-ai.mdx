@@ -87,6 +87,10 @@ Do not start it while you are mid-conversation in the Playground. Your own model
 
 If a managed server has its own NVIDIA graphics card, you can install the **Local AI** app on it from **Apps** and manage its models from the same Models page. See [Apps](./apps.mdx).
 
+With your lab's domain set up, the app's **Web address** gives it an HTTPS address. The default name is `local-ai`; choose a different name for each server's app. Add `/v1` to that address when connecting another app, and use the Local AI stack's inference key. HTTPS keeps the connection encrypted; the key still controls access.
+
+Existing installs need the Local AI template update before this address appears. Direct HTTP access on the server's configured port stays available. A vLLM app gets its HTTPS address after you choose a model to serve.
+
 Some models need a newer vLLM than the stable one. On **Models**, these show a **Needs vLLM nightly** label. Pressing **Serve** asks you to confirm, then switches the app's vLLM image to nightly. The nightly image only runs on servers with CUDA 13. The **Weight precision** choice in the app settings can use FP8 on newer graphics cards (compute 8.9 or newer). Leave it on **none** if you are unsure. **GPU memory** is how much of the card vLLM takes when it starts, 90% by default. If another app such as ComfyUI is using the same card, vLLM stops with a "Free memory on device" error. Lower this setting until it fits in what's free.
 
 With the llama.cpp engine, each LLM on **Models** has a **Batch size** button. Most models never need it. Decision models (the ones apps ask through `/v1/systemone`) do. They read a question together with all its answer options at once, and llama.cpp's default of 512 tokens is too small for a long list of options. Set it to 4,096 if their requests fail with "increase the batch size". That covers up to 255 options. A bigger batch takes graphics memory: 8,192 took 12 GB more for a small 4B model, too much to load next to other models. llama.cpp restarts that model with the new size.

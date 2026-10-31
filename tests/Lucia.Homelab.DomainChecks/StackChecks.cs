@@ -619,7 +619,8 @@ internal static class StackChecks
         var localAi = StackCatalog.Find("local-ai");
         var gpuNode = new ManagedNodeFacts(Guid.NewGuid(), "lucialab01", true, cudaHost, new(13));
         var settings = StackCatalog.Settings(localAi, new() { ["gpus"] = uuid });
-        check(settings["port"] == "8080", "Local AI's default port wasn't filled in.");
+        check(settings["port"] == "8080" && settings["web-host"] == "local-ai" && localAi.Version == 15,
+            "Local AI's default port, web address or route template version wasn't filled in.");
         Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["prot"] = "1" }), "An unknown catalog setting was accepted.");
         Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["port"] = "80a" }), "A malformed port was accepted.");
         Rejects(() => StackCatalog.Settings(localAi, new()), "Local AI without GPUs was accepted.");
@@ -635,6 +636,29 @@ internal static class StackChecks
             && env["LUCIA_WORKER_KEY"].Length >= 32 && env["LUCIA_WORKER_KEY"] != env["LUCIA_INFERENCE_KEY"],
             "Local AI rendered the wrong image, GPUs, memory budget, requirements or keys.");
         check(localAi.Render(settings, gpuNode, env).Env == rendered.Env, "Re-rendering Local AI replaced its keys.");
+        check(rendered.Routes is [{ Host: "local-ai", Port: 8080, GrpcPort: null, Public: null }],
+            "Lucia Inference must register its inference port as a private gateway route.");
+        var routedAi = localAi.Render(StackCatalog.Settings(localAi, new()
+            { ["gpus"] = uuid, ["port"] = "18090", ["web-host"] = "AI-Lab" }), gpuNode, env);
+        check(routedAi.Routes is [{ Host: "ai-lab", Port: 18090, GrpcPort: null, Public: null }]
+            && routedAi.Env == rendered.Env && routedAi.Compose.Contains("\"18090:8080\""),
+            "Local AI must normalize its chosen web name, route the host port and preserve inference credentials.");
+        var aiManifest = new StackManifest(1, new(), Routes: routedAi.Routes);
+        check(StackStore.RouteEnv(aiManifest, "homelab.example.com") == "LUCIA_URL_AI_LAB=https://ai-lab.homelab.example.com\n"
+            && StackStore.RouteEnv(aiManifest, null) == "",
+            "Local AI must advertise HTTPS only once a lab domain is active.");
+        ActiveRoute[] aiRoutes = [new("local-ai", routedAi.Routes![0], "192.168.1.9")];
+        var aiGateway = System.Text.Json.Nodes.JsonNode.Parse(AppGateway.Build(aiRoutes, "homelab.example.com")!)!;
+        check(aiGateway["http"]!["routers"]!["app-local-ai-ai-lab"]!["rule"]!.GetValue<string>() == "Host(`ai-lab.homelab.example.com`)"
+            && aiGateway["http"]!["routers"]!["app-local-ai-ai-lab"]!["tls"] is not null
+            && aiGateway["http"]!["routers"]!["app-local-ai-ai-lab"]!["entryPoints"]!.AsArray().Count == 1
+            && aiGateway["http"]!["routers"]!["app-local-ai-ai-lab"]!["entryPoints"]![0]!.GetValue<string>() == "host"
+            && aiGateway["http"]!["services"]!["app-local-ai-ai-lab"]!["loadBalancer"]!["servers"]![0]!["url"]!.GetValue<string>()
+                == "http://192.168.1.9:18090",
+            "Local AI must reuse the private TLS gateway without changing its upstream port or adding a public router.");
+        var aiDns = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(publicNaming, [], "192.168.0.222", aiRoutes);
+        check(aiDns.Any(record => record.Domain == "ai-lab.homelab.example.com" && record.Answer == "192.168.0.222"),
+            "Local AI's HTTPS name must resolve to the gateway, not its plain HTTP inference server.");
         check(settings["engine"] == "lucia" && !rendered.Compose.Contains("vllm") && rendered.Compose.Contains("- models:/models")
             && rendered.Compose.Contains("HostPlatform__ModelDirectory: /models\n"), "Local AI's default engine isn't Lucia Inference with a local library.");
         Rejects(() => StackCatalog.Settings(localAi, new() { ["gpus"] = uuid, ["engine"] = "ollama" }), "An unknown engine was accepted.");
@@ -644,7 +668,10 @@ internal static class StackChecks
             ["gpus"] = uuid, ["engine"] = "vllm", ["library"] = "192.168.0.172:/var/nfs/shared/Models",
             ["vllm-model"] = model.ToString(), ["vllm-name"] = "Qwen/Qwen3-0.6B",
         });
-        var library = localAi.Render(vllmSettings, gpuNode, env).Compose;
+        var vllmOutput = localAi.Render(vllmSettings, gpuNode, env);
+        var library = vllmOutput.Compose;
+        check(vllmOutput.Routes is [{ Host: "local-ai", Port: 8080 }],
+            "vLLM must register its published inference port, not the worker's library port.");
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-vllm-compose.yml"), library);
         check(library.Contains("vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34") && library.Contains("\"8080:8000\"") && library.Contains("\"8081:8080\"")
             && library.Contains($"command: [\"/models/lucialab01/{model:N}/files\", \"--served-model-name\", \"Qwen/Qwen3-0.6B\", \"--max-model-len\", \"auto\", \"--tensor-parallel-size\", \"1\", \"--gpu-memory-utilization\", \"0.90\"]")
@@ -681,7 +708,9 @@ internal static class StackChecks
             throw new InvalidOperationException("FP8 on a compute 8.6 GPU was accepted.");
         }
         catch (HardwareOnboardingException error) when (error.Code == "vllm_fp8_unsupported") { check(true, "fp8 on Ampere"); }
-        var idle = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-model"] = "" }, gpuNode, env).Compose;
+        var idleOutput = localAi.Render(new Dictionary<string, string>(vllmSettings) { ["vllm-model"] = "" }, gpuNode, env);
+        var idle = idleOutput.Compose;
+        check(idleOutput.Routes is [], "Idle vLLM must not route a missing server or expose its model-library worker.");
         check(!idle.Contains("vllm:") && !idle.Contains("vllm-cache") && idle.Contains("\"8081:8080\""), "vLLM without a model still rendered a vLLM service.");
         foreach (var (key, value, why) in new[] {
             ("library", "nas:relative", "a library that isn't host:/path"), ("library", "nas:/a b", "a library path with a space"),
@@ -700,7 +729,10 @@ internal static class StackChecks
         catch (HardwareOnboardingException error) when (error.Code == "vllm_driver_too_old") { check(true, "old driver"); }
         // llama.cpp serves the whole library through its router, so it runs without a chosen model.
         var llamaSettings = new Dictionary<string, string>(vllmSettings) { ["engine"] = "llamacpp", ["vllm-model"] = "", ["vllm-name"] = "" };
-        var llama = localAi.Render(llamaSettings, gpuNode, env).Compose;
+        var llamaOutput = localAi.Render(llamaSettings, gpuNode, env);
+        var llama = llamaOutput.Compose;
+        check(llamaOutput.Routes is [{ Host: "local-ai", Port: 8080 }],
+            "llama.cpp must register its inference router even before models are downloaded.");
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "lucia-llama-compose.yml"), llama);
         check(llama.Contains("llama.cpp:server-cuda13-b11783@sha256:") && llama.Contains("\"8080:8080\"") && llama.Contains("\"8081:8080\"")
             && llama.Contains("command: [\"--models-preset\", \"/cache/llama-models.ini\", \"--models-max\", \"1\", \"--host\", \"0.0.0.0\", \"--port\", \"8080\"]")

@@ -173,6 +173,14 @@ Downloads call the `hf` CLI (`HostPlatform__HuggingFaceExecutable`, `/opt/hf/bin
 
 ## Inference worker for GPU servers
 
+### HTTPS for managed inference
+
+Local AI template version 15 registers a private gateway route using `web-host` (default `local-ai`) and the configured inference `port`. With an active domain, the base URL is `https://<web-host>.<namespace>/v1`. Give each server's app a distinct web name. Lucia's existing route reconciliation writes the Traefik router and points managed DNS at the gateway; its domain certificate covers the name.
+
+Traefik forwards to the node's existing HTTP inference port and preserves the request path and bearer authentication. The route covers Lucia Inference, a configured vLLM server and llama.cpp's inference router. The separate model-library port is never routed. Idle vLLM has no inference server, so it has no gateway route until a model is selected.
+
+Deploy the updated controller, then update each installed Local AI app's template while keeping its saved settings and environment. The controller deployment alone does not change installed manifests. Choose a unique `web-host` when updating several installs. Direct HTTP access remains available, and the inference key is still required. These routes stay private unless an owner separately assigns a public name.
+
 `Lucia.Inference.Worker` is the same runtime without the portal. It serves `/health`, `/metrics` (scrape with the inference key), `/api/worker/*` for model management (owner key) and `/v1/*` (inference key). Lucia deploys it as the Local AI app and sets these:
 
 ```yaml
