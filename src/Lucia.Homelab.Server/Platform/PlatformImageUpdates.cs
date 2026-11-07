@@ -40,7 +40,7 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
 {
     public const string InstallCommand = "python3 ~/.local/share/lucia/bootstrap/app/tools/runners/platform_update_worker.py install";
     /// <summary>Patches to these wait for the owner at most a week before the dashboard flags them.</summary>
-    public static readonly string[] SecurityRelevant = ["authentik", "gateway", "ca"];
+    public static readonly string[] SecurityRelevant = ["authentik", "gateway", "ca", "openbao"];
     private static readonly string[] Traffic = ["authentik", "gateway", "database", "directory"];
     private static readonly TimeSpan Lifetime = TimeSpan.FromHours(6);
     private static readonly HttpClient GitHub = new() { Timeout = TimeSpan.FromSeconds(20), MaxResponseContentBufferSize = 1024 * 1024 };
@@ -54,12 +54,14 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
     /// <summary>What the Spark runs, from the AppHost's manifest; the built-in pins until an identity deploy has written one.</summary>
     internal (PlatformPin[] Pins, DateTimeOffset? WrittenAt, string? Problem) Running()
     {
+        var defaults = PlatformImages.BuiltIn.Where(pin => pin.Service != "openbao").ToArray();
         try
         {
             if (ReadJson(Path.Combine(Folder, PlatformImages.ManifestFile), 64 * 1024) is not JsonObject manifest)
-                return (PlatformImages.BuiltIn, null, "Lucia records what the Spark runs at its next identity deploy; until then it shows the built-in versions.");
+                return (defaults, null, "Lucia records what the Spark runs at its next identity deploy; until then it shows the built-in versions.");
             if ((int?)manifest["schemaVersion"] != 1 || manifest["images"] is not JsonArray list) throw new InvalidDataException();
-            var pins = PlatformImages.BuiltIn.ToArray();
+            var pins = PlatformImages.BuiltIn.Where(pin => pin.Service != "openbao"
+                || list.OfType<JsonObject>().Any(item => (string?)item["service"] == "openbao")).ToArray();
             foreach (var item in list.OfType<JsonObject>())
             {
                 var index = Array.FindIndex(pins, pin => pin.Service == (string?)item["service"]);
@@ -73,7 +75,7 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
         catch (Exception error) when (error is IOException or InvalidDataException or JsonException or InvalidOperationException or FormatException)
         {
             logger.LogWarning("The platform image manifest could not be read ({ErrorType}).", error.GetType().Name);
-            return (PlatformImages.BuiltIn, null, "Lucia couldn't read its record of the Spark's images; it shows the built-in versions.");
+            return (defaults, null, "Lucia couldn't read its record of the Spark's images; it shows the built-in versions.");
         }
     }
 
@@ -112,7 +114,7 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
             var offers = new List<PlatformOffer>();
             // Rebuilds: the same tag, rebuilt with OS patches. Lucia treats them as patches for every service.
             if (await ImageRegistry.Digest(registry, path, pin.Tag, token, ct) is { } current && current != pin.Digest)
-                offers.Add(Offer(pin, pin.Tag, current, "rebuild", true));
+                offers.Add(Offer(pin, pin.Tag, current, "rebuild", pin.Policy != PlatformImages.Manual));
             foreach (var (tag, kind, applicable) in PlatformImages.Candidates(pin.Policy, pin.Tag, tags))
                 if (await ImageRegistry.Digest(registry, path, tag, token, ct) is { } digest)
                     offers.Add(Offer(pin, tag, digest, kind, applicable));
@@ -140,6 +142,7 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
             "authentik" => $"https://github.com/goauthentik/authentik/releases/tag/version/{escaped}",
             "gateway" => $"https://github.com/traefik/traefik/releases/tag/{escaped}",
             "ca" => $"https://github.com/smallstep/certificates/releases/tag/v{escaped}",
+            "openbao" => $"https://github.com/openbao/openbao/releases/tag/v{escaped}",
             "database" => PlatformImages.Version(tag) is { Numbers: [var major, var minor, ..] } ? $"https://www.postgresql.org/docs/release/{major}.{minor}/" : null,
             "directory" => "https://www.openldap.org/software/release/changes.html",
             "telemetry-relay" => $"https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v{escaped}",
@@ -199,7 +202,8 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
             },
             Pending = request is not null && (long?)request["generation"] != (long?)status?["generation"],
             SecurityWaiting = images.Where(row => row.Security).SelectMany(row => row.Offers
-                    .Where(offer => offer.Kind is "patch" or "rebuild" && offer.Applicable && now - offer.FirstSeenAt > TimeSpan.FromDays(7))
+                    .Where(offer => offer.Kind is "patch" or "rebuild" && (offer.Applicable || row.Policy == PlatformImages.Manual)
+                        && now - offer.FirstSeenAt > TimeSpan.FromDays(7))
                     .Select(offer => new { row.Service, row.Name, offer.Tag, Days = (int)(now - offer.FirstSeenAt).TotalDays }))
                 .ToArray(),
         };
@@ -220,9 +224,13 @@ public sealed class PlatformImageUpdates(IOptions<HardwareOnboardingOptions> opt
     public static string Disruption(IEnumerable<string> services)
     {
         var chosen = services.ToArray();
+        var unseal = chosen.Contains("openbao")
+            ? " OpenBao restarts sealed and requires manual unseal. Fresh secret operations remain unavailable until then; image rollback does not restore Raft data."
+            : "";
         if (chosen.Any(Traffic.Contains))
-            return "Every web route through the gateway restarts: Lucia, sign-in and your apps' web addresses are unreachable for about 10 to 15 seconds.";
-        if (chosen.Contains("ca")) return "Certificates can't be issued or renewed for a few seconds. Web traffic isn't touched.";
+            return "Every web route through the gateway restarts: Lucia, sign-in and your apps' web addresses are unreachable for about 10 to 15 seconds." + unseal;
+        if (chosen.Contains("ca")) return "Certificates can't be issued or renewed for a few seconds. Web traffic isn't touched." + unseal;
+        if (chosen.Contains("openbao")) return unseal.TrimStart();
         return "Only telemetry restarts, so a few seconds of Spark metrics are missing. Web traffic isn't touched.";
     }
 

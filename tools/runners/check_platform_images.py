@@ -5,10 +5,12 @@ cases in tests/Lucia.Homelab.DomainChecks/PlatformImageChecks.cs, so the worker 
 """
 
 import importlib.util
+import ast
 import json
 import pathlib
 import shutil
 import sys
+from unittest.mock import patch
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -50,6 +52,7 @@ check(not images.allowed("authentik", "2026.8.5", "2026.12.0", tags), "Authentik
 check(images.allowed("authentik", "2026.12.3", "2027.2.0", ["2027.2.0", "2027.4.0"]) and not images.allowed("authentik", "2026.12.3", "2027.4.0", ["2027.2.0", "2027.4.0"]),
       "The next release line crosses the year.")
 check(not images.allowed("plugin", "v1.8.1", "v1.9.0") and not images.allowed("unknown", "1.0.0", "1.0.1"), "The plugin and unknown policies apply nothing.")
+check(not images.allowed("manual", "2.7.2", "2.7.3"), "OpenBao upgrades are operator-managed.")
 check(images.release_line("2026.8.5", "2026.10.1") and not images.release_line("2026.8.5", "2026.8.6"), "Release lines are year.minor.")
 
 # The web host's request: exact keys, known services, plain tags and sha256 digests.
@@ -77,6 +80,26 @@ manifest = {"schemaVersion": 1, "images": [
     for service, policy in images.SERVICES.items()]}
 read = images.validate_manifest(manifest)
 check(set(read) == set(images.SERVICES), "The AppHost's manifest lists every platform image.")
+legacy = {**manifest, "images": [item for item in manifest["images"] if item["service"] != "openbao"]}
+check("openbao" not in images.validate_manifest(legacy), "Existing installations without the OpenBao opt-in retain a valid manifest.")
+worker_source = ast.parse((HERE / "platform_update_worker.py").read_text(encoding="utf-8"))
+plan_function = next(node for node in worker_source.body if isinstance(node, ast.FunctionDef) and node.name == "plan")
+scope = {"images": images, "Refused": RuntimeError}
+exec(compile(ast.Module(body=[plan_function], type_ignores=[]), "platform_update_worker.py", "exec"), scope)
+with patch.object(images, "registry_digest", side_effect=AssertionError("Manual updates must stop before registry or deploy access.")):
+    for tag in ("1.0.0", "1.0.1"):
+        try:
+            scope["plan"]([{"service": "openbao", "tag": tag, "digest": "sha256:" + "b" * 64}], read)
+        except RuntimeError as error:
+            check("manual unseal" in str(error), "The actual worker plan refuses OpenBao versions and rebuilds before touching an image.")
+        else:
+            check(False, "OpenBao automatic update accepted.")
+    try:
+        scope["plan"]([{"service": "openbao", "tag": "1.0.0", "digest": digest}], images.validate_manifest(legacy))
+    except RuntimeError as error:
+        check("not deployed" in str(error), "A request cannot enable OpenBao when its opt-in is absent.")
+    else:
+        check(False, "An undeployed service accepted.")
 entry = images.override_entry(read["authentik"], "1.0.1", "sha256:" + "b" * 64)
 check(entry == {"repository": "ghcr.io/goauthentik/server", "tag": "1.0.1", "digest": "sha256:" + "b" * 64,
                 "replaces": {"tag": "1.0.0", "digest": digest}}, "An override names the built-in pin it replaces.")

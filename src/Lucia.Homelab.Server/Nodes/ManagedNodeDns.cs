@@ -57,7 +57,8 @@ public sealed class ManagedNodeDns : BackgroundService
     public async Task<AdGuardRewrite[]?> Wanted(CancellationToken ct) =>
         await ActiveJob(_domains, ct) is { Plan: var plan } job
             ? Wanted(plan.Naming, await _nodes.Addresses(ct), plan.IngressAddress, await _stacks.ActiveRoutes(ct), job.Public ? plan.Naming.Domain : null,
-                await _fleet.RecordsAsync(plan.Naming.Namespace, ct), (await _stacks.ActiveNames(ct)).Select(item => (item.Name, item.Address))) : null;
+                await _fleet.RecordsAsync(plan.Naming.Namespace, ct), (await _stacks.ActiveNames(ct)).Select(item => (item.Name, item.Address)),
+                OpenBaoDnsRegistration.Read(_domains.Root, job)) : null;
 
     internal static async Task<DomainSetupJob?> ActiveJob(DomainOnboardingStore domains, CancellationToken ct)
     {
@@ -82,7 +83,7 @@ public sealed class ManagedNodeDns : BackgroundService
     /// </summary>
     internal static AdGuardRewrite[] Wanted(DomainNamingPlan naming, IEnumerable<ManagedNodeAddress> nodes, string? ingress = null,
         IEnumerable<Stacks.ActiveRoute>? routes = null, string? zone = null, IEnumerable<AdGuardRewrite>? fleet = null,
-        IEnumerable<(string Name, string Address)>? direct = null) =>
+        IEnumerable<(string Name, string Address)>? direct = null, IEnumerable<AdGuardRewrite>? foundation = null) =>
         nodes.Where(node => IPAddress.TryParse(node.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
                 && AdGuardTransport.IsPrivate(ip))
             .Select(node => new AdGuardRewrite($"{node.Hostname}.{naming.Namespace}".ToLowerInvariant(), node.Address))
@@ -90,6 +91,7 @@ public sealed class ManagedNodeDns : BackgroundService
             .Concat(ingress is null || zone is null ? [] : (routes ?? []).Where(route => route.Route.Public is not null)
                 .Select(route => new AdGuardRewrite($"{route.Route.Public}.{zone}".ToLowerInvariant(), ingress)))
             .Concat(fleet ?? [])
+            .Concat(foundation ?? [])
             .Concat((direct ?? []).Where(item => IPAddress.TryParse(item.Address, out var ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
                     && AdGuardTransport.IsPrivate(ip))
                 .Select(item => new AdGuardRewrite($"{item.Name}.{naming.Namespace}".ToLowerInvariant(), item.Address)))

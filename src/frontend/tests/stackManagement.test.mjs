@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict'
-import { appAddressProblem, appAddressState, containerState, describeUnmet, mountLabel, nasDraftProblem, parseNasList, shareNameFrom, shareState, moveState, parseInventory, parseStackDetail, parseStackList, portRows, requirementForm, requirementList, stackState, unmetRequirement, validateStackDraft } from '../.checks/stackManagement.js'
+import { appAddressProblem, appAddressState, containerState, describeUnmet, mountLabel, nasDraftProblem, parseNasList, parseOpenBaoStack, shareNameFrom, shareState, moveState, parseInventory, parseStackDetail, parseStackList, portRows, requirementForm, requirementList, stackState, unmetRequirement, validateStackDraft } from '../.checks/stackManagement.js'
 import { parseRoute } from '../.checks/dashboard.js'
 
 const at = '2026-09-22T16:00:00Z'
+const vault = { configured: true, workerReady: true, state: 'sealed', message: 'Manual unseal required.',
+  initialized: true, sealed: true, checkedAt: at, image: 'openbao/openbao:2.7.2', url: 'https://openbao.lab.example.test',
+  backup: { state: 'failed', lastSuccessAt: at } }
+assert.equal(parseOpenBaoStack(vault).state, 'sealed')
+assert.equal(parseOpenBaoStack({ ...vault, state: 'unknown', workerReady: false }).workerReady, false)
+assert.equal(parseOpenBaoStack({ configured: false, workerReady: false }).configured, false)
+for (const invalid of [{ state: 'ready-ish' }, { sealed: 'false' }, { checkedAt: 'yesterday' },
+  { url: 'javascript:alert(1)' }, { url: 'https://user:password@example.test' }]) {
+  assert.throws(() => parseOpenBaoStack({ ...vault, ...invalid }))
+}
 const nodeId = '13c7e7c6-12af-4ba1-b862-5701f857a8d2'
 const container = { id: 'a'.repeat(64), name: 'lucia-media-sonarr-1', image: 'lscr.io/linuxserver/sonarr', state: 'running',
   status: 'Up 2 hours (healthy)', project: 'lucia-media', service: 'sonarr', ports: '0.0.0.0:8989->8989/tcp' }

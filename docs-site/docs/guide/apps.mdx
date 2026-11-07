@@ -53,6 +53,8 @@ A few of them come with extras:
 - **Leantime** asks for your email when you install it. That's its first account, and signing in through Lucia opens it, so use the email on your Lucia account. It runs locked down, because PHP apps are a common target: it can't change its own files, and its database can't reach the internet.
 - **The GitHub Actions runner** can also run on the Spark itself when a build needs an ARM64 machine. It starts when you ask and stops when idle.
 
+If your operator has set up **OpenBao**, its secrets vault appears on Apps as a separate Spark stack. Lucia shows its seal state and backup result, with start and stop controls. See [Secrets vault](./secrets.mdx).
+
 ### Your own app
 
 If the software you want isn't in the catalog, choose **Your own app** and paste its Docker Compose file. Most self-hosted projects publish one in their documentation. You can add an environment file too. Lucia keeps both and runs them on the server you choose.

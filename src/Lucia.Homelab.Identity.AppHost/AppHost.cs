@@ -23,6 +23,18 @@ var gid = config.GetProperty("gid").GetInt32();
 var ports = config.GetProperty("ports");
 using var hostSettings = ReadHostSettings(state, publicHost, ports.GetProperty("authentik").GetInt32(), uid, gid);
 using var bootSettings = ReadBootSettings(state, hostSettings);
+using var openbaoSettings = ReadOpenBaoSettings(state, config, bootSettings);
+var independentOpenBao = false;
+var openbaoStackPath = Path.Combine(state, "openbao", "stack.json");
+CheckPath(openbaoStackPath);
+if (File.Exists(openbaoStackPath))
+{
+    using var ownership = JsonDocument.Parse(File.ReadAllText(openbaoStackPath));
+    if (ownership.RootElement.GetProperty("schemaVersion").GetInt32() != 1
+        || ownership.RootElement.GetProperty("project").GetString() != "lucia-openbao")
+        throw new InvalidOperationException("OpenBao stack ownership is invalid; refusing to render the identity project.");
+    independentOpenBao = true;
+}
 if (hostSettings is not null && ports.EnumerateObject().Any(port => port.Value.GetInt32() == 443))
     throw new InvalidOperationException("Managed host HTTPS port 443 conflicts with an existing identity endpoint.");
 if (bootSettings is not null && ports.EnumerateObject().Any(port =>
@@ -62,7 +74,8 @@ if (keptOverrides is not null)
     else WritePrivate(overridePath, keptOverrides.ToJsonString() + "\n");
 }
 // What this deploy runs, for the worker (identity state, which the web host can't reach) and the web host's update checks.
-var platformManifest = PlatformImages.Manifest(pins, DateTimeOffset.UtcNow);
+var platformManifest = PlatformImages.Manifest(pins.Where(pin => pin.Service != "openbao" || openbaoSettings is not null).ToArray(),
+    DateTimeOffset.UtcNow);
 WritePrivate(StatePath(PlatformImages.ManifestFile), platformManifest);
 if (hostSettings is not null)
 {
@@ -114,6 +127,33 @@ var ca = Image("identity-ca", "ca")
         service.Ports.Add($"0.0.0.0:{ports.GetProperty("ca").GetInt32()}:9000");
         service.Healthcheck = Health("CMD", "step", "ca", "health", "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt");
     });
+
+if (openbaoSettings is not null && !independentOpenBao)
+{
+    var bao = openbaoSettings.RootElement;
+    var port = bao.GetProperty("port").GetInt32();
+    Image("identity-openbao", "openbao")
+        .WithEntrypoint("/bin/sh")
+        .WithArgs("/bao/config/start-openbao.sh")
+        .WithEnvironment("BAO_ADDR", "https://127.0.0.1:8200")
+        .WithEnvironment("BAO_CACERT", "/trust/lucia-root-ca.crt")
+        .WithEnvironment("BAO_TLS_SERVER_NAME", "identity-gateway")
+        .WithBindMount(StatePath("openbao", "data"), "/bao/data")
+        .WithBindMount(StatePath("openbao", "audit"), "/bao/audit")
+        .WithBindMount(StatePath("openbao", "config"), "/bao/config", isReadOnly: true)
+        .WithBindMount(StatePath("certificates"), "/certificates", isReadOnly: true)
+        .WithBindMount(StatePath("trust"), "/trust", isReadOnly: true)
+        .WithHttpsEndpoint(port: port, targetPort: 8200, name: "https")
+        .PublishAsDockerComposeService((_, service) =>
+        {
+            Persistent(service, "identity-openbao");
+            service.User = $"{uid}:{gid}";
+            service.ReadOnly = true;
+            service.CapDrop.Add("ALL");
+            service.Ports.Add($"{bao.GetProperty("bind_address").GetString()}:{port}:8200");
+            service.Healthcheck = Health("CMD", "/bin/sh", "/bao/config/openbao-health.sh");
+        });
+}
 
 var ldap = Image("identity-ldap", "directory")
     .WithEnvironment("LDAP_INIT_ORG_DN", baseDn)
@@ -465,6 +505,46 @@ Image("identity-renewer", "ca")
     });
 
 builder.Build().Run();
+
+static JsonDocument? ReadOpenBaoSettings(string state, JsonElement identity, JsonDocument? boot)
+{
+    var path = Path.Combine(state, "openbao-settings.json");
+    CheckPath(path);
+    if (!File.Exists(path)) return null;
+    if (new FileInfo(path).Length > 4096) throw new InvalidOperationException("OpenBao settings exceed 4 KB.");
+    var document = JsonDocument.Parse(File.ReadAllText(CheckedFile(path)));
+    try
+    {
+        var bao = document.RootElement;
+        if (bao.ValueKind != JsonValueKind.Object || bao.EnumerateObject().Count() != 3
+            || bao.GetProperty("schema_version").GetInt32() != 1
+            || !IPAddress.TryParse(bao.GetProperty("bind_address").GetString(), out var address)
+            || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork
+            || address.ToString() != bao.GetProperty("bind_address").GetString()
+            || !new[] { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8" }
+                .Select(IPNetwork.Parse).Any(network => network.Contains(address)))
+            throw new InvalidOperationException("OpenBao requires schema 1 and an explicit private IPv4 bind address.");
+        var port = bao.GetProperty("port").GetInt32();
+        if (port is < 1024 or > 65535 or 443 or 8445
+            || identity.GetProperty("ports").EnumerateObject().Any(item => item.Value.GetInt32() == port)
+            || boot is not null && boot.RootElement.GetProperty("http_port").GetInt32() == port
+            || identity.GetProperty("uid").GetInt32() <= 0 || identity.GetProperty("gid").GetInt32() <= 0)
+            throw new InvalidOperationException("OpenBao requires an unused foundation port and a non-root identity UID/GID.");
+        foreach (var directory in new[] { "data", "audit", "config" })
+        {
+            var folder = Path.Combine(state, "openbao", directory);
+            CheckPath(folder);
+            if (!Directory.Exists(folder)) throw new InvalidOperationException("Prepare OpenBao state before publishing.");
+        }
+        _ = CheckedFile(Path.Combine(state, "openbao", "config", "server.hcl"));
+        return document;
+    }
+    catch
+    {
+        document.Dispose();
+        throw;
+    }
+}
 
 static JsonDocument? ReadBootSettings(string state, JsonDocument? hostSettings)
 {

@@ -51,7 +51,8 @@ DOTNET_VERSION = "10.0.403"
 ASPIRE_VERSION = "13.5.4"
 APPHOST = "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj"
 FILES = frozenset((
-    "tools/desktop/bootstrap.py", "tools/identity/provision.py", "tools/identity/owner.py",
+    "tools/desktop/bootstrap.py", "tools/identity/provision.py", "tools/identity/openbao_backup.py", "tools/identity/openbao_stack.py",
+    "tools/identity/openbao_access.py", "tools/identity/owner.py",
     "tools/identity/application.py", "tools/identity/app_clients.py", "tools/identity/people.py", "tools/host/provision_host.py", "tools/host/package.py",
     "tools/boot/prepare.py", "tools/boot/provision_boot.py", "tools/boot/Dockerfile",
     "tools/domains/activation_worker.py", "tools/nodes/enrollment_worker.py", "tools/nodes/prepare_directory.py",
@@ -64,6 +65,8 @@ FILES = frozenset((
     "deployment/boot/screen.sh", "deployment/boot/grub-theme.txt",
     "deployment/host/Dockerfile",
     "deployment/identity/start-ca.sh", "deployment/identity/renew-certificate.sh",
+    "deployment/identity/start-openbao.sh", "deployment/identity/openbao-health.sh",
+    "deployment/identity/openbao-operator-policy.hcl", "deployment/identity/openbao-backup-policy.hcl",
     "deployment/identity/install-node-trust.sh", "deployment/identity/init_org_tree.ldif",
     "deployment/identity/init_org_entries.ldif", "src/Lucia.Homelab.Server/Security/GatewaySecurity.cs",
     "src/Lucia.Homelab.Server/Platform/PlatformImages.cs", APPHOST,

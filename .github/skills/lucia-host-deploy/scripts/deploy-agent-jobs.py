@@ -27,6 +27,9 @@ SOURCES = ("deployment/host/Dockerfile", "tools/host/package.py", "tools/skills/
            # worker's NVIDIA pre-flight, and the root package worker (reinstalled with sudo afterwards; see result.json).
            "src/Lucia.Homelab.Identity.AppHost/AppHost.cs", "src/Lucia.Homelab.Identity.AppHost/Lucia.Homelab.Identity.AppHost.csproj",
            "src/Lucia.Homelab.Server/Platform/PlatformImages.cs", "tools/runners/platform_images.py",
+           "tools/identity/provision.py", "deployment/identity/start-openbao.sh", "deployment/identity/openbao-health.sh",
+           "tools/identity/openbao_backup.py", "tools/identity/openbao_access.py", "tools/identity/openbao_stack.py",
+           "deployment/identity/openbao-operator-policy.hcl", "deployment/identity/openbao-backup-policy.hcl",
            "tools/runners/platform_update_worker.py", "tools/runners/spark_model_worker.py", "tools/packages/package_worker.py")
 expected = json.loads((stage / "manifest.json").read_text())["sha256"]
 p = Provisioner(argparse.Namespace(state=str(state), host=None, certificate_mode="private-ca",

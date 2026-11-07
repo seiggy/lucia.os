@@ -262,11 +262,97 @@ class Provisioner:
         write_file(settings_path, json.dumps(self.settings, indent=2) + "\n")
         for name in ("start-ca.sh", "renew-certificate.sh", "init_org_tree.ldif", "init_org_entries.ldif"):
             write_file(self.state / "config" / name, (ROOT / "deployment/identity" / name).read_text(encoding="utf-8"))
+        self.prepare_openbao()
         write_file(self.state / "trust" / "install-node-trust.sh",
                    (ROOT / "deployment/identity/install-node-trust.sh").read_text(encoding="utf-8"), 0o644)
         self.gateway_files()
         self.install_plugin()
         emit("prepare", "Identity inputs are ready. Existing trust and credentials were preserved.", state=str(self.state))
+
+    def openbao_settings(self):
+        path = self.state / "openbao-settings.json"
+        if path.is_symlink():
+            raise ValueError("OpenBao settings must not be a symbolic link.")
+        if not path.exists():
+            return None
+        if path.stat().st_size > 4096:
+            raise ValueError("OpenBao settings exceed 4 KB.")
+        return self.validate_openbao_settings(json.loads(path.read_text()))
+
+    def validate_openbao_settings(self, value):
+        if (type(value) is not dict or set(value) != {"schema_version", "bind_address", "port"}
+                or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or type(value["port"]) is not int or not 1024 <= value["port"] <= 65535):
+            raise ValueError("Invalid OpenBao foundation settings.")
+        address = ipaddress.ip_address(value["bind_address"])
+        private = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")
+        if (address.version != 4 or str(address) != value["bind_address"]
+                or not any(address in ipaddress.ip_network(network) for network in private)):
+            raise ValueError("OpenBao requires an explicit RFC1918 or loopback IPv4 bind address.")
+        occupied = set(self.settings["ports"].values()) | {443, 8445}
+        boot = self.state / "boot-settings.json"
+        if boot.exists():
+            occupied.add(json.loads(boot.read_text())["http_port"])
+        if value["port"] in occupied:
+            raise ValueError("OpenBao port conflicts with an existing foundation endpoint.")
+        return value
+
+    def prepare_openbao(self):
+        if self.independent_openbao():
+            return
+        path = self.state / "openbao-settings.json"
+        requested = getattr(self.args, "openbao_bind_address", None)
+        port = getattr(self.args, "openbao_port", None)
+        if port is not None and requested is None:
+            raise ValueError("--openbao-port requires --openbao-bind-address.")
+        previous = self.openbao_settings()
+        if requested is not None:
+            value = {"schema_version": 1, "bind_address": requested, "port": port if port is not None else 8200}
+            if previous is not None and previous != value:
+                raise ValueError("OpenBao endpoints cannot change on rerun; use a reviewed migration.")
+            if previous is None:
+                self.validate_openbao_settings(value)
+                data = self.state / "openbao/data"
+                if data.exists() and any(data.iterdir()):
+                    raise ValueError("Existing OpenBao data has no settings record. Restore its configuration; refusing to adopt or replace it.")
+                write_file(path, json.dumps(value, indent=2) + "\n")
+            previous = self.openbao_settings()
+        if previous is None:
+            return
+        for name in ("openbao", "openbao/data", "openbao/audit", "openbao/config"):
+            directory = self.state / name
+            if directory.is_symlink():
+                raise ValueError("OpenBao state must not contain symbolic links.")
+            directory.mkdir(mode=0o700, exist_ok=True)
+        for name in ("start-openbao.sh", "openbao-health.sh", "openbao-operator-policy.hcl", "openbao-backup-policy.hcl"):
+            write_file(self.state / "openbao/config" / name,
+                       (ROOT / "deployment/identity" / name).read_text(encoding="utf-8"))
+        api = "https://" + authority(self.settings["public_host"], previous["port"])
+        write_file(self.state / "openbao/config/server.hcl", f'''ui = true
+disable_mlock = true
+api_addr = "{api}"
+cluster_addr = "https://127.0.0.1:8201"
+audit "file" "lucia-file" {{
+  description = "Private foundation audit output"
+  options = {{
+    file_path = "/bao/audit/audit.json"
+    log_raw = "false"
+    hmac_accessor = "true"
+  }}
+}}
+storage "raft" {{
+  path = "/bao/data"
+  node_id = "controller"
+}}
+listener "tcp" {{
+  address = "0.0.0.0:8200"
+  cluster_address = "0.0.0.0:8201"
+  tls_cert_file = "/certificates/identity.crt"
+  tls_key_file = "/certificates/identity.key"
+  tls_min_version = "tls12"
+  tls_disable_client_certs = false
+}}
+''')
 
     def install_plugin(self):
         """Fetches the pinned CrowdSec bouncer plugin once and unpacks it for the gateway, replacing any tree that differs."""
@@ -337,7 +423,8 @@ class Provisioner:
                 raise RuntimeError(f"Secret {name} is unexpectedly short.")
 
     def collision_check(self):
-        for name in CONTAINERS:
+        names = (*CONTAINERS, "lucia-identity-openbao") if self.openbao_settings() and not self.independent_openbao() else CONTAINERS
+        for name in names:
             result = self.run(["docker", "inspect", name], check=False)
             if result.returncode == 0:
                 data = json.loads(result.stdout)[0]
@@ -346,6 +433,7 @@ class Provisioner:
                     raise RuntimeError(f"Container name {name} is already owned by another deployment.")
 
     def publish(self):
+        self.prepare_openbao()
         # ponytail: Aspire hashes the AppHost path into volume names; relocations need a migration.
         location = self.state / "apphost-path.txt"
         if location.exists() and location.read_text().strip() != str(APPHOST):
@@ -355,12 +443,14 @@ class Provisioner:
         result = self.run(["aspire", "publish", "--apphost", str(APPHOST), "--output-path",
                            str(self.state / "deployment"), "--environment", "Production", "--non-interactive"], cwd=self.state)
         write_file(self.state / "last-publish.log", self.redact(result.stdout + result.stderr))
+        self.require_openbao_in_deployment()
         emit("publish", "Aspire-generated Compose artifacts are ready for inspection.", output=str(self.state / "deployment"))
 
     def deploy(self):
         if sys.platform != "linux":
             raise RuntimeError("Apply identity provisioning on the Linux Spark over SSH; local prepare/publish do not deploy.")
         self.collision_check()
+        self.require_openbao_in_deployment()
         self.gateway_files()
         emit("deploy", "Applying the isolated persistent identity stack; existing Lucia development services are not stopped.")
         result = self.run(["aspire", "deploy", "--apphost", str(APPHOST), "--output-path",
@@ -369,6 +459,24 @@ class Provisioner:
         for path in (self.state / "deployment").glob(".env*"):
             os.chmod(path, 0o600)
         emit("deploy", "Identity containers were deployed by Aspire. Waiting for persistent services.")
+
+    def independent_openbao(self):
+        path = self.state / "openbao/stack.json"
+        if path.is_symlink():
+            raise ValueError("OpenBao stack ownership cannot be a symbolic link.")
+        if not path.exists():
+            return False
+        if path.stat().st_size > 4096 or json.loads(path.read_text()) != {"schemaVersion": 1, "project": "lucia-openbao"}:
+            raise ValueError("OpenBao stack ownership is invalid.")
+        return True
+
+    def require_openbao_in_deployment(self):
+        if self.independent_openbao() or not self.openbao_settings():
+            return
+        files = [*(self.state / "deployment").glob("*compose*.yaml"), *(self.state / "deployment").glob("*compose*.yml"),
+                 *(self.state / "deployment").glob("*compose*.json")]
+        if not any("lucia-identity-openbao" in path.read_text() for path in files):
+            raise RuntimeError("Identity deployment omits the configured vault. Refusing to remove OpenBao; deploy its current source or migrate to the independent stack.")
 
     def wait_container(self, name, timeout=300):
         deadline = time.monotonic() + timeout
@@ -559,9 +667,32 @@ class Provisioner:
             "owner_username": owner["username"],
             "owner_login_ready": True,
         }
+        bao = self.openbao_settings()
+        if bao is not None:
+            result["openbao"] = {
+                "url": "https://" + authority(host, bao["port"]),
+                "state": self.openbao_status(),
+                "manual_unseal_required_after_restart": True,
+            }
         if persist:
             write_file(self.state / "installation.json", json.dumps(result, indent=2) + "\n")
         emit("complete", "Identity services are provisioned. Install the exported public CA on clients before browser sign-in.", **result)
+
+    def openbao_status(self):
+        config = self.openbao_settings()
+        if config is None:
+            return "not-configured"
+        context = ssl.create_default_context(cafile=str(self.state / "trust/lucia-root-ca.crt"))
+        url = "https://" + authority(self.settings["public_host"], config["port"]) + "/v1/sys/health"
+        try:
+            with urllib.request.urlopen(url, context=context, timeout=5) as response:
+                status = response.status
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+        except (urllib.error.URLError, OSError):
+            return "unavailable"
+        return {200: "ready", 429: "standby", 501: "uninitialized", 503: "sealed"}.get(status, "unavailable")
 
     def verify(self):
         from owner import load_owner, owner_identity
@@ -725,6 +856,8 @@ def arguments():
     parser.add_argument("--auth-port", type=int)
     parser.add_argument("--ldap-port", type=int)
     parser.add_argument("--ca-port", type=int)
+    parser.add_argument("--openbao-bind-address", help="Opt in to OpenBao on an explicit private IPv4 interface. Does not initialize or unseal it.")
+    parser.add_argument("--openbao-port", type=int)
     parser.add_argument("--owner-username")
     parser.add_argument("--password-file", help="For verify-owner-login after changing the initial password; never pass a password as an argument.")
     parser.add_argument("--request-stdin", action="store_true",

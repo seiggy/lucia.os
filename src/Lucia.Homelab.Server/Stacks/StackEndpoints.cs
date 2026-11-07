@@ -24,10 +24,16 @@ public static partial class StackEndpoints
         builder.Services.AddSingleton<StackTransfers>();
         builder.Services.AddSingleton<NodeRequests>();
         builder.Services.AddSingleton<SparkRunner>();
+        builder.Services.AddSingleton<OpenBaoStack>();
     }
 
     public static void MapStacks(this WebApplication app)
     {
+        var vault = app.MapGroup("/api/host/openbao-stack").WithTags("Stacks")
+            .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
+        vault.MapGet("", (OpenBaoStack stack, CancellationToken ct) => stack.Get(ct));
+        vault.MapPost("/start", (OpenBaoStack stack, CancellationToken ct) => stack.Set("running", ct));
+        vault.MapPost("/stop", (OpenBaoStack stack, CancellationToken ct) => stack.Set("stopped", ct));
         var spark = app.MapGroup("/api/host/spark-runner").WithTags("Stacks")
             .RequireAuthorization("HostOwner").AddEndpointFilter<HardwareOnboardingErrorFilter>();
         spark.MapGet("", (SparkRunner runner, CancellationToken ct) => runner.Get(ct));

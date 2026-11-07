@@ -73,6 +73,8 @@ IResourceBuilder<ContainerResource> Image(string name, string service)
 
 Authentik's next line is the smallest `year.minor` above the running one among the registry's newer tags of the same shape. Release candidates have a different shape and never count.
 
+The optional [OpenBao foundation](./secrets.mdx) uses `manual`. Its version and rebuild offers have `applicable: false`, and the worker refuses automatic updates before touching the deployment. OpenBao is absent from old manifests and from unconfigured deployments; that does not make the other services' manifests invalid.
+
 ## The override
 
 `Effective(json, out kept)` returns the pins to deploy. An entry replaces a built-in pin while it is newer:

@@ -19,6 +19,8 @@ The identity stack is a Docker Compose project that Aspire generates from the Id
 
 The stack is separate from the Lucia host on purpose. Whoever compromises the portal still can't read the CA keys or the Authentik admin credentials, because the host container doesn't mount them. [Security model](./security-model.mdx) has the full boundary.
 
+An operator can also opt into the [OpenBao foundation service](./secrets.mdx). It has a direct private TLS listener and controller-local Raft storage. An optional private UI/API route supports native Authentik OIDC for `lucia-owners`; app JWT access needs separate path-scoped roles. OpenBao never blocks sign-in or the CA while waiting for manual unseal.
+
 ## What runs
 
 | Container | Image | Role |

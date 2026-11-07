@@ -121,6 +121,7 @@ Each row shows the service, the version it runs and the rule Lucia follows for i
 | Patches, then one release line at a time | Authentik (server and worker together) | Patches first. Then the next release line, say 2026.8 to 2026.10, with an **Upgrade notes** link. Authentik changes its database when it moves line, and it can't skip one. |
 | Same major version | Traefik, step-ca, the telemetry relay and exporters | Anything with the same first number. A new major version shows as **Breaking** with **Needs a new Lucia release**, and no button. |
 | Shown only | The gateway's CrowdSec plugin | Its newest release, with notes. Its download is pinned by a checksum in Lucia's code, so updating it waits for a Lucia release. |
+| Operator-managed; manual unseal after restart | OpenBao, when your operator has enabled it | Release notes without an update button. Its encrypted store needs an operator's recovery steps after a restart. **Update all patches** skips it. |
 
 A version tagged **Rebuild with OS fixes** keeps its number. The project rebuilt the same version with operating system patches underneath, which happens a lot with PostgreSQL and OpenLDAP.
 

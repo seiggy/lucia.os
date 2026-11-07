@@ -114,7 +114,11 @@ def plan(updates, manifest):
     chosen = []
     for update in updates:
         service, tag, digest = update["service"], update["tag"], update["digest"]
+        if service not in manifest:
+            raise Refused(f"{service} is not deployed in the foundation manifest.")
         image = manifest[service]
+        if image["policy"] == "manual":
+            raise Refused("OpenBao needs an operator-approved snapshot and upgrade procedure, followed by manual unseal. Automatic image rollback is unsafe for Raft data.")
         token = [None]
         served = images.registry_digest(image["registry"], image["repository"], tag, token)
         if served != digest:

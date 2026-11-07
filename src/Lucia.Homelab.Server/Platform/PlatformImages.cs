@@ -32,7 +32,7 @@ public static partial class PlatformImages
     public const string ManifestFile = "platform-images.json";
     /// <summary>The worker's exchange folder in the host's data directory: request, status and the manifest's copy.</summary>
     public const string Folder = "lucia-platform-updates";
-    public const string Patch = "patch", Authentik = "authentik", Minor = "minor", Plugin = "plugin";
+    public const string Patch = "patch", Authentik = "authentik", Minor = "minor", Plugin = "plugin", Manual = "manual";
     private const int MaxOverrideBytes = 16 * 1024;
 
     // Lucia's releases bump these; an override only bridges the gap until they catch up.
@@ -44,6 +44,8 @@ public static partial class PlatformImages
             "sha256:1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65", Minor, ["identity-gateway"]),
         new("ca", "step-ca certificate authority", "docker.io", "smallstep/step-ca", "0.30.2",
             "sha256:a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270", Minor, ["identity-ca", "identity-renewer"]),
+        new("openbao", "OpenBao", "docker.io", "openbao/openbao", "2.7.2",
+            "sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f", Manual, ["identity-openbao"]),
         new("database", "PostgreSQL", "docker.io", "postgres", "16.15-alpine",
             "sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab", Patch, ["identity-db"]),
         new("directory", "OpenLDAP", "docker.io", "vegardit/openldap", "2.6.10",
@@ -136,14 +138,14 @@ public static partial class PlatformImages
             .Order(Comparer<string>.Create((a, b) => Compare(b, a))).LastOrDefault();
         bool Same(long[] numbers, int length) => numbers.Take(length).SequenceEqual(now.Numbers.Take(length));
         var head = now.Numbers.Length - 1;
-        if (policy is Patch or Authentik or Minor && Best(numbers => Same(numbers, head)) is { } patch)
-            yield return (patch, "patch", true);
+        if (policy is Patch or Authentik or Minor or Manual && Best(numbers => Same(numbers, head)) is { } patch)
+            yield return (patch, "patch", policy != Manual);
         if (policy == Authentik && NextLine(now.Numbers, newer.Select(item => item.Numbers)) is { } line
             && Best(numbers => numbers.Take(2).SequenceEqual(line)) is { } release)
             yield return (release, "release-line", true);
-        if (policy == Minor)
+        if (policy is Minor or Manual)
         {
-            if (Best(numbers => Same(numbers, 1) && !Same(numbers, head)) is { } minor) yield return (minor, "minor", true);
+            if (Best(numbers => Same(numbers, 1) && !Same(numbers, head)) is { } minor) yield return (minor, "minor", policy != Manual);
             if (Best(numbers => numbers[0] != now.Numbers[0]) is { } major) yield return (major, "major", false);
         }
     }

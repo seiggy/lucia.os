@@ -17,7 +17,7 @@ UTC = datetime.timezone.utc
 # Keep in step with PlatformImages.BuiltIn: service -> policy class.
 SERVICES = {
     "authentik": "authentik", "gateway": "minor", "ca": "minor", "database": "patch", "directory": "patch",
-    "telemetry-relay": "minor", "node-exporter": "minor", "gpu-exporter": "minor",
+    "telemetry-relay": "minor", "node-exporter": "minor", "gpu-exporter": "minor", "openbao": "manual",
 }
 REQUEST_FIELDS = {"schemaVersion", "generation", "requestedAt", "updates"}
 UPDATE_FIELDS = {"service", "tag", "digest"}
@@ -144,7 +144,7 @@ def validate_manifest(value):
                 or image["service"] in images):
             raise ValueError("The platform image manifest is invalid.")
         images[image["service"]] = image
-    if set(images) != set(SERVICES):
+    if set(images) not in (set(SERVICES), set(SERVICES) - {"openbao"}):
         raise ValueError("The platform image manifest doesn't list every platform image.")
     return images
 

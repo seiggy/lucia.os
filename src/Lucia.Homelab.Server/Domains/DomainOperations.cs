@@ -75,7 +75,9 @@ public sealed class DomainOperationsService(DomainOnboardingStore store, DomainO
             throw new InvalidOperationException("The domain configuration changed during this check. Refresh to read its current state.");
         return new(DateTimeOffset.UtcNow, job.Plan.Naming.Namespace, job.Plan.IngressAddress, gatewayError, dnsError,
             routes, [.. Records(job, records, health), .. Records(nodeRecords, records, health),
-                .. appRecords.Select(record => Record(record.Domain, record.Answer, "App address, pointed at Lucia's gateway", records, health))]);
+                .. appRecords.Select(record => Record(record.Domain, record.Answer, "App address, pointed at Lucia's gateway", records, health)),
+                .. OpenBaoDnsRegistration.Read(store.Root, job).Select(record =>
+                    Record(record.Domain, record.Answer, "OpenBao foundation, managed by Lucia", records, health))]);
     }
 
     /// <summary>App routes from the gateway's <c>apps.yml</c>, compared with what Lucia would publish for them now.</summary>

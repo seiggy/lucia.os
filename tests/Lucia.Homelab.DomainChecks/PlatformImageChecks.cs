@@ -38,6 +38,8 @@ internal static class PlatformImageChecks
         check(Offered("minor", "v3.7.16", "v3.7.17", "v3.8.2", "v4.0.1", "v3.8") == "v3.7.17:patch:y v3.8.2:minor:y v4.0.1:major:n",
             "Traefik is offered a patch and a minor, and a major that can't be applied.");
         check(Offered("minor", "0.30.2") == "" && Offered("plugin", "v1.8.1", "v1.9.0") == "", "Nothing newer means no offers; the plugin is never offered as an image.");
+        check(Offered("manual", "2.7.2", "2.7.3", "2.8.0", "3.0.0") == "2.7.3:patch:n 2.8.0:minor:n 3.0.0:major:n"
+            && !PlatformImages.Allowed("manual", "2.7.2", "2.7.3"), "OpenBao offers are visible but require an operator procedure, never automatic rollback.");
         check(PlatformImages.Allowed("authentik", "2026.8.5", "2026.10.1", ["2026.10.1", "2026.12.0"])
             && !PlatformImages.Allowed("authentik", "2026.8.5", "2026.12.0", ["2026.10.1", "2026.12.0"])
             && PlatformImages.Allowed("authentik", "2026.12.3", "2027.2.0", ["2027.2.0", "2027.4.0"])
@@ -130,7 +132,7 @@ internal static class PlatformImageChecks
                 catch (PackageUpdatesException error) { return error; }
             }
             var (builtIn, unwritten, unrecorded) = updates.Running();
-            check(unwritten is null && unrecorded is not null && builtIn == PlatformImages.BuiltIn
+            check(unwritten is null && unrecorded is not null && builtIn.SequenceEqual(PlatformImages.BuiltIn.Where(pin => pin.Service != "openbao"))
                 && (string?)Get()["worker"]!["state"] == "missing", "Before an identity deploy records them, the host shows the built-in pins and no worker.");
             check(await Refused(new(Services: ["authentik"])) is { StatusCode: 503, Code: "worker_missing" }, "Nothing is requested without the Spark's worker.");
 
@@ -191,6 +193,17 @@ internal static class PlatformImageChecks
             check(PlatformImageUpdates.Disruption(["node-exporter", "telemetry-relay"]).StartsWith("Only telemetry", StringComparison.Ordinal)
                 && PlatformImageUpdates.Disruption(["ca"]).StartsWith("Certificates", StringComparison.Ordinal),
                 "Telemetry-only and CA updates say they don't touch web traffic.");
+            check(updates.Rows().Single(row => row.Service == "openbao") is { Policy: "manual", Security: true }
+                && PlatformImageUpdates.Disruption(["gateway", "openbao"]).Contains("manual unseal", StringComparison.Ordinal),
+                "The deployed OpenBao row and mixed-service warnings preserve the manual-unseal boundary.");
+            updates.Found(PlatformImages.Pin(pins, "openbao"), [Offer("2.7.3", 'b', "patch", applicable: false, seen: old)]);
+            check(Get()["securityWaiting"]!.AsArray().Any(item => (string?)item!["service"] == "openbao"),
+                "Operator-managed security patches still draw attention even though they cannot be applied automatically.");
+            var withoutBao = pins.Where(pin => pin.Service != "openbao").ToArray();
+            await System.IO.File.WriteAllTextAsync(Path.Combine(folder, PlatformImages.ManifestFile), PlatformImages.Manifest(withoutBao, DateTimeOffset.UtcNow));
+            check(updates.Rows().All(row => row.Service != "openbao"), "An installation without the OpenBao opt-in never claims it is deployed.");
+            check(PlatformImageUpdates.Notes("openbao", "2.7.2") == "https://github.com/openbao/openbao/releases/tag/v2.7.2",
+                "OpenBao offers link to the pinned release's notes.");
             check(PlatformImageUpdates.Notes("database", "16.16-alpine") == "https://www.postgresql.org/docs/release/16.16/"
                 && PlatformImageUpdates.Notes("authentik", "2026.8.6") == "https://github.com/goauthentik/authentik/releases/tag/version/2026.8.6"
                 && PlatformImageUpdates.Notes("ca", "0.30.3") == "https://github.com/smallstep/certificates/releases/tag/v0.30.3",

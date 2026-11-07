@@ -1,5 +1,5 @@
 export type OfferKind = 'rebuild' | 'patch' | 'minor' | 'release-line' | 'major'
-export type Policy = 'patch' | 'authentik' | 'minor' | 'plugin'
+export type Policy = 'patch' | 'authentik' | 'minor' | 'plugin' | 'manual'
 export interface PlatformOffer {
   tag: string; digest: string; kind: OfferKind; applicable: boolean; notes: string | null; upgradeNotes: string | null; firstSeenAt: string
 }
@@ -51,7 +51,7 @@ function offer(value: unknown): PlatformOffer {
 function image(value: unknown): PlatformImage {
   const data = object(value)
   return {
-    service: text(data.service), name: text(data.name), policy: oneOf(data.policy, ['patch', 'authentik', 'minor', 'plugin'] as const),
+    service: text(data.service), name: text(data.name), policy: oneOf(data.policy, ['patch', 'authentik', 'minor', 'plugin', 'manual'] as const),
     image: text(data.image), tag: text(data.tag), digest: text(data.digest), override: flag(data.override), security: flag(data.security),
     disruption: text(data.disruption), offers: list(data.offers).map(offer), problem: optionalText(data.problem),
   }
@@ -91,9 +91,13 @@ export function patchServices(images: PlatformImage[]): string[] {
 const traffic = ['authentik', 'gateway', 'database', 'directory']
 /** What restarts, as the server says it (PlatformImageUpdates.Disruption). */
 export function disruption(services: string[]): string {
+  const unseal = services.includes('openbao')
+    ? ' OpenBao restarts sealed and requires manual unseal. Fresh secret operations remain unavailable until then; image rollback does not restore Raft data.'
+    : ''
   if (services.some(service => traffic.includes(service)))
-    return 'Every web route through the gateway restarts: Lucia, sign-in and your apps’ web addresses are unreachable for about 10 to 15 seconds.'
-  if (services.includes('ca')) return 'Certificates can’t be issued or renewed for a few seconds. Web traffic isn’t touched.'
+    return 'Every web route through the gateway restarts: Lucia, sign-in and your apps’ web addresses are unreachable for about 10 to 15 seconds.' + unseal
+  if (services.includes('ca')) return 'Certificates can’t be issued or renewed for a few seconds. Web traffic isn’t touched.' + unseal
+  if (services.includes('openbao')) return unseal.trimStart()
   return 'Only telemetry restarts, so a few seconds of Spark metrics are missing. Web traffic isn’t touched.'
 }
 
@@ -101,7 +105,8 @@ export function kindLabel(kind: OfferKind): string {
   return ({ rebuild: 'Rebuild with OS fixes', patch: 'Patch', minor: 'Minor update', 'release-line': 'Next release line', major: 'Major version' } as const)[kind]
 }
 export function policyLabel(policy: Policy): string {
-  return ({ patch: 'Patches only', authentik: 'Patches, then one release line at a time', minor: 'Same major version', plugin: 'Shown only' } as const)[policy]
+  return ({ patch: 'Patches only', authentik: 'Patches, then one release line at a time', minor: 'Same major version', plugin: 'Shown only',
+    manual: 'Operator-managed; manual unseal after restart' } as const)[policy]
 }
 export function stepLabel(step: string | null): string {
   return ({ verifying: 'Checking each image with its registry', preflight: 'Checking the Spark is ready', 'backing-up': 'Backing up Authentik’s database',

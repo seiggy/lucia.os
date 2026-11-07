@@ -9,11 +9,11 @@ import { bytes } from './sparkTelemetry'
 import {
   ago, appAddressProblem, appAddressState, backupFolderProblem, backupOrder, formatBytes, backupState, parseBackupRecovery, parseBackups,
   catalogDefaults, catalogReason, composeExample, containerState, describeUnmet, envValue, freeName, logLineChoices, moveState, parseCatalog, parseInventory, secretKey,
-  parseSparkRunner, requirementProblem, sparkIdleProblem, sparkRunnerState,
+  parseSparkRunner, parseOpenBaoStack, requirementProblem, sparkIdleProblem, sparkRunnerState,
   parseStackDetail, parseStackList, parseStackSummary, portRows, requirementForm, requirementList, settingsProblem, fieldShown, stackNamePattern, stackState, unmetRequirement,
   validateStackDraft,
 } from './stackManagement'
-import type { BackupApp, BackupRecovery, CatalogApp, CatalogServer, ImageUpdate, NodeContainer, NodeInventory, RequirementForm, SparkRunner, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
+import type { BackupApp, BackupRecovery, CatalogApp, CatalogServer, ImageUpdate, NodeContainer, NodeInventory, OpenBaoStack, RequirementForm, SparkRunner, StackDetail, StackPlacement, StackSummary, StackTone } from './stackManagement'
 import './NetworkSettings.css'
 import './Stacks.css'
 
@@ -77,23 +77,26 @@ export function StateLabel({ label, tone }: { label: string; tone: StackTone }) 
 function AppList(props: Session) {
   const { data: stacks, error, reload } = useJson(props, '/api/host/stacks', parseStackList, 10000)
   const spark = useJson(props, '/api/host/spark-runner', parseSparkRunner, 10000)
+  const vault = useJson(props, '/api/host/openbao-stack', parseOpenBaoStack, 10000)
   const runner = spark.data?.configured ? spark.data : null
+  const openbao = vault.data?.configured ? vault.data : null
   const [notice, setNotice] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const waiting = stacks?.filter(stack => stack.updates.length > 0).length ?? 0
   return <section className="surface network-section">
     <div className="network-overview-header"><h2>Your apps</h2><a className="button primary" href="#/apps/catalog">Add an app<Icon name="arrow" /></a></div>
     {error && <p className="network-error" role="alert">{error}</p>}
+    {vault.error && <p className="network-error" role="alert">OpenBao status: {vault.error}</p>}
     {!stacks && !error && <p className="section-note" role="status">Reading your apps…</p>}
     {waiting > 0 && <p className="stack-update-note stack-updates-summary"><Icon name="upgrade" />
       <span><strong>{waiting === 1 ? '1 app has an update' : `${waiting} apps have updates`}</strong> waiting. Newer versions of their images are out.</span></p>}
     {problem && <p className="network-error" role="alert">{problem}</p>}
     <p className="network-notice stack-quiet-notice" role="status">{notice}</p>
-    {stacks?.length === 0 && !runner && <div className="stack-empty">
+    {stacks?.length === 0 && !runner && !openbao && <div className="stack-empty">
       <p>No apps yet. <a href="#/apps/catalog">Pick one from the catalog</a>, or paste the Docker Compose file of any self-hosted app.</p>
       <p className="section-note">Lucia stores named volumes under <code>/srv/lucia/stacks/&lt;app&gt;/volumes</code> on the server, so your data is easy to find and back up.</p>
     </div>}
-    {stacks && (stacks.length > 0 || runner) && <table className={`network-table stack-table ${waiting > 0 ? 'stack-table-updates' : ''}`}>
+    {stacks && (stacks.length > 0 || runner || openbao) && <table className={`network-table stack-table ${waiting > 0 ? 'stack-table-updates' : ''}`}>
       <caption className="network-table-caption">Apps and their state</caption>
       <thead><tr><th scope="col">App</th><th scope="col">State</th><th scope="col">Server</th><th scope="col"><span className="network-table-caption">Actions</span></th></tr></thead>
       <tbody>{stacks.map(stack => {
@@ -116,9 +119,50 @@ function AppList(props: Session) {
         </tr>
       })}
       {runner && <SparkRunnerRow {...props} runner={runner} onDone={done => { setProblem(null); setNotice(done); spark.reload() }} onError={setProblem} />}
+      {openbao && <OpenBaoRow {...props} vault={openbao} onDone={done => { setProblem(null); setNotice(done); vault.reload() }} onError={setProblem} />}
       </tbody>
     </table>}
   </section>
+}
+
+function OpenBaoRow({ vault, onDone, onError, ...props }: Session & {
+  vault: OpenBaoStack; onDone: (message: string) => void; onError: (message: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [confirmStop, setConfirmStop] = useState(false)
+  const labels: Record<string, string> = { starting: 'Starting', stopping: 'Stopping', running: 'Running', sealed: 'Needs unseal',
+    uninitialized: 'Data needs attention', missing: 'Container missing', stopped: 'Stopped', failed: 'Failed', unknown: 'Status unavailable' }
+  const state = vault.state ?? 'unknown'
+  const tone: StackTone = state === 'running' ? 'green' : state === 'sealed' ? 'amber' : state === 'stopped' ? 'muted'
+    : state === 'starting' || state === 'stopping' ? 'accent' : 'failed'
+  const canStart = ['stopped', 'missing', 'failed'].includes(state)
+  const canStop = ['running', 'sealed'].includes(state)
+  async function act(action: 'start' | 'stop') {
+    setBusy(true)
+    try {
+      await ownerRequest(props.session, props.refreshSession, `/api/host/openbao-stack/${action}`, 'POST')
+      setConfirmStop(false)
+      onDone(action === 'start' ? 'Starting OpenBao with its existing data. It may need manual unseal.' : 'Stopping OpenBao. Its data stays on the Spark.')
+    } catch (error) { onError(message(error, 'Lucia could not change OpenBao.')) }
+    finally { setBusy(false) }
+  }
+  return <tr>
+    <th scope="row">{vault.url ? <a className="stack-name" href={vault.url} target="_blank" rel="noreferrer">OpenBao<Icon name="arrow" /></a>
+      : <span className="stack-name">OpenBao</span>}<span className="network-cell-note">Secrets vault · isolated Compose stack</span></th>
+    <td data-label="State"><StateLabel label={labels[state]} tone={tone} />
+      {vault.message && <span className="network-cell-note">{vault.message}</span>}
+      {!vault.workerReady && <span className="network-cell-note">The Spark management service has not checked in.</span>}
+      <span className="network-cell-note">Backup: {vault.backup?.state ?? 'not reported'}
+        {vault.backup?.lastSuccessAt && `; last succeeded ${ago(vault.backup.lastSuccessAt)}`}</span></td>
+    <td data-label="Server">Spark</td>
+    <td className="stack-open"><div className="stack-row-actions">
+      {canStart && <button className="button secondary" disabled={busy || !vault.workerReady} onClick={() => void act('start')}>{busy ? 'Starting…' : 'Start'}</button>}
+      {canStop && !confirmStop && <button className="text-link" disabled={busy || !vault.workerReady} onClick={() => setConfirmStop(true)}>Stop…</button>}
+      {confirmStop && <><span>Apps using this vault lose access. Starting it again requires manual unseal.</span>
+        <button className="button secondary stack-danger" disabled={busy || !vault.workerReady} onClick={() => void act('stop')}>{busy ? 'Stopping…' : 'Stop OpenBao'}</button>
+        <button className="text-link" disabled={busy} onClick={() => setConfirmStop(false)}>Keep running</button></>}
+    </div></td>
+  </tr>
 }
 
 /** The update an app's list row offers: one within the current versions if there is one, since those install without review. */

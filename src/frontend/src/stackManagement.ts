@@ -44,6 +44,11 @@ export interface SparkRunner {
   state: 'starting' | 'running' | 'stopping' | 'stopped' | 'failed' | 'removed' | null; reason: string | null; since: string | null
   lastJobAt: string | null; busy: boolean; message: string | null; stopsAt: string | null
 }
+export interface OpenBaoStack {
+  configured: boolean; workerReady: boolean; state: string | null; message: string | null
+  initialized: boolean | null; sealed: boolean | null; checkedAt: string | null; image: string | null; url: string | null
+  backup: { state: string | null; lastSuccessAt: string | null } | null
+}
 /** A web address: its internal URL and, while public access is on, the public one its public name answers at. */
 export interface StackWebAddress { host: string; url: string | null; public: string | null; publicUrl: string | null }
 export interface StackDetail {
@@ -68,6 +73,27 @@ function list<T>(value: unknown, parse: (item: unknown) => T, limit = 1024): T[]
   return value.map(parse)
 }
 function timestamp(value: unknown): string { const result = text(value); if (Number.isNaN(Date.parse(result))) throw invalid(); return result }
+
+export function parseOpenBaoStack(value: unknown): OpenBaoStack {
+  const item = object(value)
+  if (typeof item.configured !== 'boolean' || typeof item.workerReady !== 'boolean') throw invalid()
+  if (!item.configured) return { configured: false, workerReady: item.workerReady, state: null, message: null,
+    initialized: null, sealed: null, checkedAt: null, image: null, url: null, backup: null }
+  const state = text(item.state)
+  if (!['starting', 'stopping', 'running', 'sealed', 'uninitialized', 'missing', 'stopped', 'failed', 'unknown'].includes(state)) throw invalid()
+  const nullableBoolean = (value: unknown) => {
+    if (value === null) return null
+    if (typeof value !== 'boolean') throw invalid()
+    return value
+  }
+  const url = optional(item.url)
+  if (url !== null && (new URL(url).protocol !== 'https:' || new URL(url).username || new URL(url).password)) throw invalid()
+  const backup = item.backup === null ? null : object(item.backup)
+  return { configured: true, workerReady: item.workerReady, state, message: optional(item.message),
+    initialized: nullableBoolean(item.initialized), sealed: nullableBoolean(item.sealed), checkedAt: timestamp(item.checkedAt),
+    image: text(item.image), url, backup: backup === null ? null : { state: optional(backup.state),
+      lastSuccessAt: backup.lastSuccessAt === null ? null : timestamp(backup.lastSuccessAt) } }
+}
 
 export function parseContainer(value: unknown): NodeContainer {
   const item = object(value)

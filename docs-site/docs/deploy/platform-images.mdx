@@ -17,13 +17,14 @@ import Source from '@site/src/components/Source';
 
 ## What it covers
 
-The identity AppHost pins ten third-party containers to a tag and a digest. They share eight images, and each image has a policy class that decides what Lucia offers. The pins live in <Source path="src/Lucia.Homelab.Server/Platform/PlatformImages.cs" />, which the AppHost and the server both compile.
+The identity AppHost pins third-party containers to a tag and a digest. Each image has a policy class that decides what Lucia offers. The optional [OpenBao foundation](./secrets.mdx) appears only after explicit configuration. The pins live in <Source path="src/Lucia.Homelab.Server/Platform/PlatformImages.cs" />, which the AppHost and the server both compile.
 
 | Service key | Containers | Image | Policy |
 |---|---|---|---|
 | `authentik` | `lucia-identity-server`, `lucia-identity-worker` | `ghcr.io/goauthentik/server` | `authentik` |
 | `gateway` | `lucia-identity-gateway` | `traefik` | `minor` |
 | `ca` | `lucia-identity-ca`, `lucia-identity-renewer` | `smallstep/step-ca` | `minor` |
+| `openbao` | `lucia-identity-openbao` (opt-in) | `openbao/openbao` | `manual` |
 | `database` | `lucia-identity-db` | `postgres` | `patch` |
 | `directory` | `lucia-identity-ldap` | `vegardit/openldap` | `patch` |
 | `telemetry-relay` | `lucia-telemetry-relay` | `otel/opentelemetry-collector-contrib` | `minor` |
@@ -31,6 +32,8 @@ The identity AppHost pins ten third-party containers to a tag and a digest. They
 | `gpu-exporter` | `lucia-telemetry-gpu-exporter` | `utkuozdemir/nvidia_gpu_exporter` | `minor` |
 
 `patch` offers a change in the last number only. `authentik` offers patches of the running release line and the newest version of the next line, one line at a time. `minor` offers anything in the same major; a newer major is listed as `major` with `applicable: false`. Every class also offers a `rebuild`: the same tag with a newer digest. The gateway's CrowdSec bouncer plugin is listed from its GitHub releases and never applied, because <Source path="tools/identity/provision.py" /> pins its zip by SHA-256.
+
+`manual` lists OpenBao updates and rebuilds with `applicable: false`. The worker refuses them before changing any image. An OpenBao restart requires manual unseal, and an older image cannot restore Raft data. The ordinary rollback procedure below applies to the automatic policies only.
 
 `lucia-managed-host`, `lucia-boot` and the Qwen recipe aren't in this list. Lucia builds the first two and updates them with a host deploy; the recipe has its own worker.
 
@@ -74,7 +77,7 @@ Every file is `0600` and every directory `0700`, owned by the setup user. The wo
 }
 ```
 
-The keys are exact. `service` must be one of the eight keys above, `tag` matches `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`, `digest` is `sha256:` and 64 lowercase hex digits. The host takes the digest from its own registry check, never from the browser or the assistant. The worker acts when `generation` differs from the one in `status.json`.
+The keys are exact. `service` must be one of the keys above, `tag` matches `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`, `digest` is `sha256:` and 64 lowercase hex digits. The host takes the digest from its own registry check, never from the browser or the assistant. The worker acts when `generation` differs from the one in `status.json`. It refuses services absent from the trusted deployment manifest and the `manual` policy.
 
 ### The override
 

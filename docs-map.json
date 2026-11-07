@@ -27,6 +27,11 @@
       "docs": ["guide/people-and-sign-in", "code/identity", "deploy/identity"]
     },
     {
+      "name": "OpenBao secrets foundation",
+      "paths": ["deployment/identity/*openbao*", "tools/identity/provision.py", "tools/identity/openbao_backup.py", "tools/identity/openbao_access.py", "tools/identity/openbao_stack.py", "tools/identity/check_openbao*.py", "tools/security/check_openbao.mjs", "src/Lucia.Homelab.Identity.AppHost/**", "src/Lucia.Homelab.Server/Domains/OpenBaoDnsRegistration.cs", "src/Lucia.Homelab.Server/Stacks/OpenBaoStack.cs"],
+      "docs": ["guide/secrets", "deploy/secrets", "code/secrets"]
+    },
+    {
       "name": "Gateway protection (CrowdSec)",
       "paths": ["src/Lucia.Homelab.Server/Security/**", "src/Lucia.Homelab.Server/Stacks/CrowdSecApp.cs", "src/Lucia.Homelab.Server/Stacks/StackCrowdSec.cs", "src/frontend/src/CrowdSec.tsx", "src/frontend/src/crowdsecStatus.ts", "src/frontend/src/TrustedAddresses.tsx", "tests/Lucia.Homelab.DomainChecks/SecurityChecks.cs", "tests/Lucia.Homelab.DomainChecks/CrowdSecResponseChecks.cs", "tests/Lucia.Homelab.AssistantChecks/CrowdSecToolChecks.cs", "tools/nodes/enrollment_worker.py", "src/Lucia.Homelab.Server/Assistant/AssistantCrowdSec.cs", "src/Lucia.Homelab.Server/Assistant/Skills/BuiltIn/crowdsec-response/**", "src/Lucia.Homelab.Server/Telemetry/CrowdSec*", "src/Lucia.Homelab.Server/Telemetry/CrowdSec/**", "tools/telemetry/**", "tools/security/**"],
       "docs": ["guide/gateway-protection", "code/gateway-security", "deploy/crowdsec"]

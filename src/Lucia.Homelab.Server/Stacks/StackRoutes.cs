@@ -134,9 +134,12 @@ public sealed partial class StackStore
         if (routes is null || routes.Length == 0) return null;
         var other = others.ToArray();
         var named = (direct ?? []).ToArray();
-        var naming = await ManagedNodeDns.ActiveNaming(domains, ct);
+        var activeJob = await ManagedNodeDns.ActiveJob(domains, ct);
+        var naming = activeJob?.Plan.Naming;
         var taken = (await nodes.Names(ct)).Select(item => item.Hostname.ToLowerInvariant())
-            .Concat((naming?.LocalHostnames ?? []).Select(fqdn => fqdn.Split('.')[0].ToLowerInvariant())).ToHashSet(StringComparer.Ordinal);
+            .Concat((naming?.LocalHostnames ?? []).Select(fqdn => fqdn.Split('.')[0].ToLowerInvariant()))
+            .Concat(activeJob is null ? [] : OpenBaoDnsRegistration.Read(domains.Root, activeJob).Select(record => record.Domain.Split('.')[0]))
+            .ToHashSet(StringComparer.Ordinal);
         // Public names sit directly under the zone, next to Authentik's public name and the namespace itself.
         var reserved = naming is null ? [] : naming.LocalHostnames.Append(naming.Namespace).Append("auth." + naming.Domain)
             .Where(fqdn => fqdn.EndsWith("." + naming.Domain, StringComparison.Ordinal))

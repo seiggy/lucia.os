@@ -17,6 +17,8 @@ import Source from '@site/src/components/Source';
 
 [Identity](./identity.mdx) and [Managed nodes](./nodes.mdx) cover how those parts run. This page is the map of who trusts whom.
 
+[OpenBao foundation](./secrets.mdx) adds an opt-in private secrets service. Credential migration and node delivery are not implemented yet; the existing stores below remain authoritative. The web host receives no Raft data or unseal shares, and bootstrap recovery stays independent of OpenBao.
+
 ## Trust boundaries
 
 ```mermaid

@@ -9,6 +9,41 @@ internal static class StackChecks
 {
     internal static async Task Run(Action<bool, string> check)
     {
+        var vaultNow = DateTimeOffset.UtcNow;
+        var vaultStatus = new OpenBaoStack.Status(1, true, 0, "sealed", "Manual unseal required.", true, true,
+            vaultNow, new("failed", vaultNow.AddDays(-2)), "openbao/openbao:2.7.2", "https://openbao.lab.example.test");
+        check(OpenBaoStack.Fresh(vaultStatus, vaultNow), "The OpenBao worker's fresh status was rejected.");
+        check(!OpenBaoStack.Fresh(vaultStatus with { CheckedAt = vaultNow.AddMinutes(-2) }, vaultNow),
+            "A stale OpenBao heartbeat was trusted.");
+        check(!OpenBaoStack.Fresh(vaultStatus with { CheckedAt = vaultNow.AddMinutes(2) }, vaultNow),
+            "A future OpenBao heartbeat was trusted.");
+        var vaultRoot = Path.Combine(Path.GetTempPath(), "lucia-openbao-check-" + Guid.NewGuid().ToString("N"));
+        var vaultFolder = Path.Combine(vaultRoot, "openbao-stack");
+        Directory.CreateDirectory(vaultFolder);
+        try
+        {
+            var vault = new OpenBaoStack(Options.Create(new HardwareOnboardingOptions { StateDirectory = Path.Combine(vaultRoot, "onboarding") }),
+                TimeProvider.System);
+            await Lucia.Homelab.Server.Domains.DomainOnboardingStore.WriteJson(Path.Combine(vaultFolder, "status.json"), vaultStatus, default);
+            var view = System.Text.Json.JsonSerializer.SerializeToElement(await vault.Get(default),
+                Lucia.Homelab.Server.Domains.DomainOnboardingStore.Json);
+            check(view.GetProperty("state").GetString() == "sealed" && view.GetProperty("initialized").GetBoolean(),
+                "A sealed vault was presented as ready.");
+            await vault.Set("stopped", default);
+            var stored = System.Text.Json.JsonSerializer.Deserialize<OpenBaoStack.Request>(
+                File.ReadAllText(Path.Combine(vaultFolder, "request.json")), Lucia.Homelab.Server.Domains.DomainOnboardingStore.Json)!;
+            check(stored.Generation == 1 && stored.Desired == "stopped", "Owner stop did not create a bounded worker request.");
+            try { await vault.Set("removed", default); throw new InvalidOperationException("Vault deletion was accepted."); }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 400) { check(true, "Vault deletion was refused."); }
+            await Lucia.Homelab.Server.Domains.DomainOnboardingStore.WriteJson(Path.Combine(vaultFolder, "status.json"),
+                vaultStatus with { CheckedAt = vaultNow.AddMinutes(-2) }, default);
+            view = System.Text.Json.JsonSerializer.SerializeToElement(await vault.Get(default),
+                Lucia.Homelab.Server.Domains.DomainOnboardingStore.Json);
+            check(view.GetProperty("state").GetString() == "unknown", "A stale vault report showed a usable service.");
+            try { await vault.Set("running", default); throw new InvalidOperationException("Offline worker accepted a start."); }
+            catch (HardwareOnboardingException error) when (error.StatusCode == 409) { check(true, "Offline vault control was refused."); }
+        }
+        finally { Directory.Delete(vaultRoot, recursive: true); }
         void Rejects(Action action, string message)
         {
             try { action(); }

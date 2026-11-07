@@ -46,6 +46,54 @@ internal static class OperationsChecks
                 "Existing DNS rules were falsely adopted.");
             check(provider.Reads == 2 && before == await File.ReadAllTextAsync(Path.Combine(store.Root, "workflow.json")),
                 "Reading the operations view changed workflow or invoked unexpected DNS operations.");
+            var foundationPath = Path.Combine(store.Root, OpenBaoDnsRegistration.FileName);
+            check(OpenBaoDnsRegistration.Read(store.Root, job).Length == 0, "An old installation invented an OpenBao DNS record.");
+            var foundationIntent = new OpenBaoDnsIntent(1, job.Id, "https://openbao.lab.example.com");
+            await DomainOnboardingStore.WriteJson(foundationPath, foundationIntent);
+            var foundationRecords = OpenBaoDnsRegistration.Read(store.Root, job);
+            check(foundationRecords is [{ Domain: "openbao.lab.example.com", Answer: "192.168.0.222" }],
+                "OpenBao DNS did not use the active private gateway address.");
+            var foundationWanted = Lucia.Homelab.Server.Nodes.ManagedNodeDns.Wanted(naming, [], plan.IngressAddress, foundation: foundationRecords);
+            check(foundationWanted.SequenceEqual(foundationRecords), "The managed DNS reconciler omitted the foundation service.");
+            var foundationView = (await service.Read(default)).DnsRecords.Single(record => record.Hostname == foundationRecords[0].Domain);
+            check(foundationView.State == "Missing" && foundationView.Ownership == "OpenBao foundation, managed by Lucia",
+                "The domain operations view did not expose the foundation DNS state.");
+            foreach (var invalid in new[] {
+                foundationIntent with { SchemaVersion = 2 }, foundationIntent with { ProfileId = Guid.NewGuid() },
+                foundationIntent with { Origin = "https://openbao.example.com" },
+                foundationIntent with { Origin = "https://nested.openbao.lab.example.com" },
+                foundationIntent with { Origin = naming.ServiceUrls.Lucia },
+                foundationIntent with { Origin = "http://openbao.lab.example.com" } })
+            {
+                await DomainOnboardingStore.WriteJson(foundationPath, invalid);
+                var rejected = false;
+                try { OpenBaoDnsRegistration.Read(store.Root, job); }
+                catch (Exception error) when (error is InvalidDataException or ArgumentException) { rejected = true; }
+                check(rejected, "Unsafe or stale OpenBao DNS registration was accepted.");
+            }
+            foreach (var invalid in new[] {
+                "{\"schemaVersion\":1,\"profileId\":\"" + job.Id + "\",\"origin\":\"https://openbao.lab.example.com\",\"unexpected\":true}",
+                "{\"schemaVersion\":1,\"schemaVersion\":1,\"profileId\":\"" + job.Id + "\",\"origin\":\"https://openbao.lab.example.com\"}",
+                "{\"schemaVersion\":1}", "{\"origin\":null}", new string(' ', 4097) })
+            {
+                await File.WriteAllTextAsync(foundationPath, invalid);
+                var rejected = false;
+                try { OpenBaoDnsRegistration.Read(store.Root, job); }
+                catch (Exception error) when (error is JsonException or InvalidDataException or IOException or CertbotException) { rejected = true; }
+                check(rejected, "Malformed, duplicate or unrecognized OpenBao DNS fields were accepted.");
+            }
+            await DomainOnboardingStore.WriteJson(foundationPath, foundationIntent);
+            var foundationDns = new WritableDns { Entries = [] };
+            var foundationState = Path.Combine(root, "foundation", "dns-records.json");
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(foundationDns, foundationState, foundationWanted, default);
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(foundationDns, foundationState, foundationWanted, default);
+            check(foundationDns.Entries.SequenceEqual(foundationRecords), "OpenBao DNS reruns created duplicate records.");
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(foundationDns, foundationState, [], default);
+            check(foundationDns.Entries.Length == 0, "Retiring OpenBao registration left its owned DNS record behind.");
+            foundationDns.Entries = [foundationRecords[0] with { Answer = "192.168.0.99" }];
+            await Lucia.Homelab.Server.Nodes.ManagedNodeDns.Apply(foundationDns, foundationState, foundationWanted, default);
+            check(foundationDns.Entries is [{ Answer: "192.168.0.99" }], "OpenBao DNS replaced another owner's conflicting record.");
+            File.Delete(foundationPath);
             var path = Path.Combine(options.GatewayDirectory, DomainIngressConfiguration.FileName);
             var document = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
             document["http"]!["services"]!["domain-lucia"]!["loadBalancer"]!["servers"]![0]!["url"] = "http://different-service:8080";
