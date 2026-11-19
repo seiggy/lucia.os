@@ -23,7 +23,7 @@ Lucia's rule here is small footprint. It adds what it needs and reports what it 
 
 ## Connect AdGuard Home
 
-Lucia works with the AdGuard Home you already run. Open **Settings → AdGuard** and enter:
+Lucia works with the AdGuard Home you already run. Open **Network → DNS** and enter:
 
 - the address of its web page, with the port if it has one, such as `https://192.168.1.2:3000`. Leave off `/control`;
 - the username and password you use to sign in to AdGuard.
@@ -73,7 +73,7 @@ If the page says "Connect AdGuard first", "Finish domain setup first" or "Instal
 
 ## Connect UniFi
 
-If you use UniFi, Lucia can pin addresses. Open **Settings → UniFi Network**.
+If you use UniFi, Lucia can pin addresses. Open **Network → UniFi gateway**.
 
 1. In UniFi Network, open **Settings → Control Plane → Integrations** and create an API key. If you can, use an admin limited to Network.
 2. In Lucia, enter the gateway's address, such as `https://192.168.1.1`. Leave the site as `default` unless your console has several.

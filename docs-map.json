@@ -83,8 +83,8 @@
     },
     {
       "name": "Lab map and portal",
-      "paths": ["src/Lucia.Homelab.Server/LabMap/**", "src/frontend/src/LabMap*.tsx", "src/frontend/src/labMapModel.ts", "src/frontend/src/Universe*.ts", "src/frontend/src/navigation.ts", "tools/assets/**"],
-      "docs": ["guide/lab-map", "code/lab-map-and-portal"]
+      "paths": ["src/Lucia.Homelab.Server/LabMap/**", "src/frontend/src/LabMap*.tsx", "src/frontend/src/labMapModel.ts", "src/frontend/src/Universe*.ts", "src/frontend/src/navigation.ts", "src/frontend/src/PortalNavigation.*", "src/frontend/src/AssistantDock.css", "src/frontend/src/Icon.tsx", "tools/assets/**"],
+      "docs": ["guide/first-hour", "guide/lab-map", "code/lab-map-and-portal"]
     },
     {
       "name": "Desktop bootstrap",

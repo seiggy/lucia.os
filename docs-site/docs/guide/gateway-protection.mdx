@@ -20,10 +20,10 @@ CrowdSec runs on one of your servers, not on the Spark, so it doesn't take memor
 
 ## Install it
 
-1. Set up your domain in **Settings → Domains** if you haven't. The gateway finds CrowdSec by a name under your domain, such as `crowdsec.lab.example.com`, so Lucia won't install it before the domain works.
-2. Install **Observability** from **Apps → Catalog** if you haven't. CrowdSec reads the gateway's log through it, so Lucia asks for it first. If you installed Observability a while ago, open it under **Apps** and choose **Update** when Lucia offers a new version: older ones don't pass the log on.
+1. Set up your domain in **Network → Domains & HTTPS** if you haven't. The gateway finds CrowdSec by a name under your domain, such as `crowdsec.lab.example.com`, so Lucia won't install it before the domain works.
+2. Install **Observability** from **Apps → App catalog** if you haven't. CrowdSec reads the gateway's log through it, so Lucia asks for it first. If you installed Observability a while ago, open it under **Apps** and choose **Update** when Lucia offers a new version: older ones don't pass the log on.
 3. Install **CrowdSec** from the same catalog and pick a server. The defaults are fine.
-4. Open **Your lab → Gateway protection**. After a minute or two it says **Protecting the gateway**.
+4. Open **Network → Gateway protection**. After a minute or two it says **Protecting the gateway**.
 
 Lucia sets up the rest: the name in your network's DNS, a certificate for it from Lucia's own authority so the gateway can trust the app, the gateway's settings, and the log forwarding. If you move CrowdSec to another server later, all of that follows it.
 
@@ -42,7 +42,7 @@ Requests to Lucia's own pages skip the exploit check. Uploading a compose file o
 
 ## The Gateway protection page
 
-**Your lab → Gateway protection** shows whether the gateway is using CrowdSec right now, which server it runs on, and what it has been doing:
+**Network → Gateway protection** shows whether the gateway is using CrowdSec right now, which server it runs on, and what it has been doing:
 
 {/* TODO screenshot: security-page — the Gateway protection page with fixture data: healthy engine, two bans, a few alerts, Console pending */}
 
@@ -73,8 +73,8 @@ Paste a row from the dashboard into the assistant and ask what it is, or ask it 
 | It can | Asks you first? |
 |---|---|
 | List and look into alerts and bans | No |
-| Lift a ban | Yes, unless you let it run without asking in **Settings → Assistant**. In Plan mode it only suggests it. |
-| Ban an address or a small block of addresses for a while, with a reason | Yes, unless you let it run without asking in **Settings → Assistant** |
+| Lift a ban | Yes, unless you let it run without asking in **Assistant → Permissions & approvals**. In Plan mode it only suggests it. |
+| Ban an address or a small block of addresses for a while, with a reason | Yes, unless you let it run without asking in **Assistant → Permissions & approvals** |
 | Add or remove a custom rule | Always |
 
 Unbanning asks first because the assistant reads alerts, and alerts carry whatever text an attacker put in their requests. That text could try to talk the assistant into letting the attacker back in, so the assistant treats it as evidence only and you decide every unban. Lucia checks every request the assistant makes. It refuses to ban your trusted addresses, Lucia's own, or Cloudflare's, and anything wider than a block of 65,536 addresses. A ban lasts from a minute to 30 days. A rule can't block every request, ordinary browsers, Lucia's own pages, or headers every browser sends, and you can have up to 50. A rule's pattern uses plain English letters, digits and punctuation; its reason can be in any language. When a rule is added or removed, CrowdSec reloads, which pauses the checks for a few seconds; requests go through during that time.
@@ -83,7 +83,7 @@ Unbanning asks first because the assistant reads alerts, and alerts carry whatev
 
 Give the computer you manage Lucia from a fixed address on your router, then add it to the trusted list:
 
-1. Open **Your lab → Gateway protection**.
+1. Open **Network → Gateway protection**.
 2. Under **Trusted addresses**, choose **Edit trusted addresses…**.
 3. Type your computer's address, for example `192.168.1.50`, one per line. A whole home network such as `192.168.1.0/24` works too.
 4. Choose **Save**.

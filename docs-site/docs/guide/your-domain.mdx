@@ -23,7 +23,7 @@ Out of the box you reach Lucia by the Spark's own name, and your browser may war
 - **A padlock that works.** Lucia gets a free certificate from Let's Encrypt, so browsers and phones stop complaining.
 - **Names that stay at home.** Your lab's own DNS server (AdGuard Home) answers for these names. Outside your house, they lead nowhere. Nothing is published to the internet and no port on your router opens, unless you turn on [public access](#sharing-an-app-with-the-internet) for a particular app.
 
-You must be a Lucia owner to see this page. It lives under **Settings → Domains**, titled **DNS & certificates**.
+You must be a Lucia owner to see this page. It lives under **Network → Domains & HTTPS**, titled **DNS & certificates**.
 
 <Screenshot name="domains" alt="The DNS and certificates page with its routes, certificate and AdGuard records">
   After setup, this page shows your routes, the certificate and its expiry, and the DNS records Lucia keeps.
@@ -36,7 +36,7 @@ You must be a Lucia owner to see this page. It lives under **Settings → Domain
 | A domain name you own | Any registrar works. You do not move it or give Lucia access to it. |
 | That domain served by Cloudflare | Cloudflare must already be the domain's DNS provider. A free account is enough. |
 | A Cloudflare token | A key that lets Lucia prove to Let's Encrypt that you own the domain. The steps below make one. |
-| AdGuard Home, connected to Lucia | It answers the local names. Connect it at **Settings → AdGuard** first. See [Network devices](./network.mdx). |
+| AdGuard Home, connected to Lucia | It answers the local names. Connect it at **Network → DNS** first. See [Network devices](./network.mdx). |
 | The Spark's LAN address | Lucia asks for it, for example `192.168.1.10`. |
 
 Lucia also needs a small helper service on the Spark to finish activation. If it is not running, the page tells you setup cannot begin. Your installer turns it on, but it relies on a Linux setting called lingering, which keeps a user's background services alive after logout. Ask whoever installed the Spark to run `loginctl enable-linger` for the setup account if you see that message. The [deployment page](../deploy/networking-and-dns.mdx) has the detail.
@@ -58,7 +58,7 @@ It can edit every DNS record in that domain, not just the ones Lucia uses. Lucia
 
 ## The steps in Lucia
 
-Open **Settings → Domains**. Lucia walks you through four screens.
+Open **Network → Domains & HTTPS**. Lucia walks you through four screens.
 
 1. **Connect Cloudflare.** Paste the account ID and the token. Lucia checks that the token works and lists your domains.
 2. **Name your lab.** Pick the domain, then a *local subdomain* (a word such as `homelab`) and a name for the Spark (such as `atlas`). Lucia suggests addresses:
@@ -80,7 +80,7 @@ Lucia supports one domain. Changing it later is a separate, planned move, not so
 
 ## After it is set up
 
-Revisit **Settings → Domains** and you get an overview, not the wizard. It shows:
+Revisit **Network → Domains & HTTPS** and you get an overview, not the wizard. It shows:
 
 - **Traefik routes**, the addresses Lucia publishes. This is what is configured, not a live health check.
 - **Let's Encrypt**, with the certificate names, its expiry date and the result of the last renewal check.
@@ -109,7 +109,7 @@ If a step fails, Lucia keeps the failed attempt on screen with a plain explanati
 
 | What you see | What it usually means | What to do |
 |---|---|---|
-| "Connect AdGuard first" | Lucia has no local DNS server to talk to. | Connect AdGuard at **Settings → AdGuard**. |
+| "Connect AdGuard first" | Lucia has no local DNS server to talk to. | Connect AdGuard at **Network → DNS**. |
 | No domains in the list | The token cannot see your domain, or Cloudflare is not its DNS yet. | Check the account ID, that the token covers the domain, and that the domain's nameservers point at Cloudflare. |
 | "Public DNS delegation does not match" | The registrar still points at other nameservers. | Change the nameservers at your registrar to the two Cloudflare shows. Wait, then review again. |
 | "AdGuard already has a conflicting rewrite" | You have a hand-made DNS rule for one of the names. | Remove or change that rule in AdGuard, or pick a different name. Lucia never overwrites your rules. |

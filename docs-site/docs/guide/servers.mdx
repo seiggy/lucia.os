@@ -19,7 +19,7 @@ A **managed server** is a computer that Lucia installed Debian on and now looks 
 
 ## The Devices page
 
-Open **Your lab → Devices**. Managed servers are listed under **Your servers**.
+Open **Lab → Devices**. Managed servers are listed under **Your servers**.
 
 <Screenshot name="devices" alt="The Devices page with one card per managed server and its health.">
   Each card shows the server's name, address and health. Click Manage to open the details.
@@ -81,7 +81,7 @@ To reuse the machine, boot it from the network again and add it as a new server.
 | What you see | What to try |
 |---|---|
 | A server stays on **Readings stale** | Check that it has power and a network cable. Restart it from its power button if you can. If it comes back, it reports within a minute. |
-| **Waiting for agent** for more than 10 minutes | Open **Your lab → Installation tasks** to see where it stopped. [Adding a server](./adding-a-server.mdx) lists what to check. |
+| **Waiting for agent** for more than 10 minutes | Open **Lab → Installation tasks** to see where it stopped. [Adding a server](./adding-a-server.mdx) lists what to check. |
 | **Actions are available while the agent is reporting** | The server is offline. Wait for it to come back. |
 | **This agent is too old to update itself** | The server runs an early agent. Someone with access to the Spark has to upgrade it once. See [Managed nodes](../deploy/nodes.mdx). |
 | You can't SSH in with your account | Only `lucia-owners` can sign in. Check your account on **Settings → People**, and try `lucia-recovery` with your recovery key if the directory is down. |

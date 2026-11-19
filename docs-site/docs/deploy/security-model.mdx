@@ -60,7 +60,7 @@ Human and machine identities are kept apart. None can stand in for another.
 |---|---|---|
 | A person | An OpenLDAP account. Sign-in goes through Authentik. | Owners (`lucia-owners`) get the portal, SSO into supported apps, and SSH with `sudo` on managed servers. Members (`lucia-users`) get the Home, Playground and Appearance pages. |
 | The owner API key | `HostPlatform:ApiKey`, a bearer key of 32+ characters | Role `Owner` on the host API, for automation. It carries no username, so it can't manage people or SSH keys. |
-| Inference API keys | The fixed inference key, or managed keys (`lucia_inf_…`) from **Local AI → API keys** | Role `Inference`: the `/v1` model API only. Managed keys are stored as hashes and shown once. |
+| Inference API keys | The fixed inference key, or managed keys (`lucia_inf_…`) from **Local AI → Inference API keys** | Role `Inference`: the `/v1` model API only. Managed keys are stored as hashes and shown once. |
 | An Authentik access token | A JWT with the `lucia_api` scope and `azp` equal to Lucia's client | Same roles as the browser session, for API clients |
 | A node agent | A P-256 key generated on the node and a 7-day private-CA certificate | Its own heartbeats, stack sync, requests and agent download. Every call signs a fresh challenge. |
 | A booting machine | A per-device key and a one-time capability, valid 30 minutes | Registering, reporting progress and requesting one grant. No erase authority until an owner approves. |
@@ -136,12 +136,12 @@ Credentials you give Lucia are encrypted with ASP.NET Core Data Protection, one 
 
 | Secret | Entered in |
 |---|---|
-| Hugging Face token | Local AI → Models |
-| Cloudflare API token | Settings → Domains |
-| AdGuard credentials | Settings → AdGuard |
-| UniFi API key and SNMP settings | Settings → UniFi Network |
-| NAS credentials | Settings → Storage |
-| Registry sign-ins | Settings → Registries |
+| Hugging Face token | Local AI → Local models |
+| Cloudflare API token | Network → Domains & HTTPS |
+| AdGuard credentials | Network → DNS |
+| UniFi API key and SNMP settings | Network → UniFi gateway |
+| NAS credentials | Lab → Network storage |
+| Registry sign-ins | Apps → Container registries |
 | Backup repository password | Apps → Backups |
 | App environment secrets | Apps, including values typed through the assistant's `request_secret` |
 | The assistant's GitHub sign-in and LiteLLM key | The assistant panel, per owner |

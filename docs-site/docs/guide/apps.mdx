@@ -92,11 +92,11 @@ An app can also be reachable from the internet through Cloudflare. That's off un
 
 ## Storage on your NAS
 
-Under **Settings → Storage** you add shares from your NAS, over NFS or SMB. Lucia mounts each share on every server at the same path, `/mnt/lucia/nas/<nas>/<share>`, so an app keeps working if you move it. Lucia only reads your NAS settings and mounts the shares. It never changes anything on the NAS itself.
+Under **Lab → Network storage** you add shares from your NAS, over NFS or SMB. Lucia mounts each share on every server at the same path, `/mnt/lucia/nas/<nas>/<share>`, so an app keeps working if you move it. Lucia only reads your NAS settings and mounts the shares. It never changes anything on the NAS itself.
 
 ## Private image sign-ins
 
-Some apps come from private registries, which are like password-protected app stores. **Settings → Registries** keeps your sign-in for Docker Hub, GHCR or one you host. Lucia tests each sign-in before saving it and hands it to every server. You can keep up to 16.
+Some apps come from private registries, which are like password-protected app stores. **Apps → Container registries** keeps your sign-in for Docker Hub, GHCR or one you host. Lucia tests each sign-in before saving it and hands it to every server. You can keep up to 16.
 
 ## Backups
 
@@ -121,7 +121,7 @@ Catalog apps also get improvements from Lucia. If a newer version of the app's r
 | You see | What it means | What to do |
 |---|---|---|
 | **Applying changes** for more than a few minutes | The server is still downloading images or starting containers | Wait. Big images are slow. Open the app and read the container logs if it never finishes |
-| **Waiting** | The app needs a NAS share or its own address that isn't there yet | Check **Settings → Storage**, and that the NAS is on. It clears by itself |
+| **Waiting** | The app needs a NAS share or its own address that isn't there yet | Check **Lab → Network storage**, and that the NAS is on. It clears by itself |
 | **Failed** | The server couldn't apply the app. The message says why | Fix the cause, such as a port that's taken. Lucia retries every 2 minutes |
 | **Needs attention** | Some containers are running and some aren't | Open the app and read the logs of the stopped one |
 | **Server not reporting** | The server hasn't checked in recently | See [Servers](./servers.mdx). It may be off, or need an agent update |

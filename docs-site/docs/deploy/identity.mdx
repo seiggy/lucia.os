@@ -171,7 +171,7 @@ Don't run `aspire destroy` against a running identity install. Teardown can remo
 | AppHost refuses to start: path, link or secret error | A guard caught a symlink, loose permissions or a missing file | Restore the file or fix its mode to `0600`, then redeploy. |
 | CA container exits with "Partial CA initialization found" | `ca/` holds some but not all CA files | Restore the directory from backup. The script won't replace trust keys. |
 | Authentik login works but Lucia says sign-in failed | CA trust or callback mismatch | Check the host's `HostAuthentication__*` settings and the logs for `OIDC sign-in failed`. |
-| Owner password lost | No owner can sign in | Another owner sets a temporary password in Settings → People. Otherwise use the `akadmin` account with the password in `secrets/authentik-admin-password`. |
+| Owner password lost | No owner can sign in | Another owner sets a temporary password in Settings → People & access. Otherwise use the `akadmin` account with the password in `secrets/authentik-admin-password`. |
 | LDAP unreachable | Server logins fall back | Managed servers still accept the `lucia-recovery` key. |
 
 ## Upgrade

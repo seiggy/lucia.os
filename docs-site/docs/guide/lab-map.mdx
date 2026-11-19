@@ -18,7 +18,7 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
 
 ## What it shows
 
-Open **Map** in the sidebar under **Your lab**. Lucia joins what it knows from three places into one picture:
+Open **Network → Map**. Lucia joins what it knows from three places into one picture:
 
 - **Your network**, read from UniFi: the gateway, switches, access points, the VLANs, and the phones, laptops and gadgets connected right now.
 - **Your Lucia servers and their apps**, including the Spark itself.
@@ -31,7 +31,7 @@ The Internet side is a city too. Each **district** is a kind of place your devic
 If you switch **Theme** to **Universe**, the same map becomes a galaxy: your network is a solar system, devices are planets and moons, servers are stations, and the Internet is a galaxy through a wormhole. Nothing about the data changes. Universe needs a browser with 3D graphics turned on, and it is off if your system asks for reduced motion.
 
 :::note
-UniFi is optional. Without it, the map still draws your Lucia servers and apps under a stand-in gateway, and says "UniFi is not connected" along the bottom. Connect it under **Settings → UniFi Network**. See [Network](./network.mdx).
+UniFi is optional. Without it, the map still draws your Lucia servers and apps under a stand-in gateway, and says "UniFi is not connected" along the bottom. Connect it under **Network → UniFi gateway**. See [Network](./network.mdx).
 :::
 
 ## Moving around
@@ -72,7 +72,7 @@ What you see depends on what Lucia can measure:
 |---|---|
 | UniFi only | Rates for devices, the WAN and clients. The strip says traffic is from UniFi only. |
 | The **Observability** app | Rates for servers and containers, and conversations. |
-| SNMPv3 turned on in UniFi, and its details saved under **Settings → UniFi Network → Device traffic (SNMPv3)** | Per-port rates on switches and access points |
+| SNMPv3 turned on in UniFi, and its details saved under **Network → UniFi gateway → Device traffic (SNMPv3)** | Per-port rates on switches and access points |
 | NetFlow sent from your gateway to the Observability app | **Conversations**: who talks to whom, and which Internet sites, with names from AdGuard where Lucia can find them |
 
 Nothing is required. The map gets richer as you add them. See [Monitoring](./monitoring.mdx).
@@ -96,8 +96,8 @@ Press **Wallboard** to fill the screen with the map, with no controls. It slowly
 | You see | What to do |
 |---|---|
 | **The map could not be drawn** | Press **Try again**. If it repeats, check that Lucia is running. |
-| "UniFi is not connected" | Connect UniFi under **Settings → UniFi Network**. |
-| "UniFi: …" with an error | Open **Settings → UniFi Network** and check the connection. The message is what UniFi answered. |
+| "UniFi is not connected" | Connect UniFi under **Network → UniFi gateway**. |
+| "UniFi: …" with an error | Open **Network → UniFi gateway** and check the connection. The message is what UniFi answered. |
 | "Traffic is from UniFi only" | Install the Observability app. |
 | "No traffic readings yet" | It has just started. Wait a minute, and check the Observability app is running. |
 | "Conversations appear once NetFlow arrives" | Send NetFlow from your gateway to the Observability app. |

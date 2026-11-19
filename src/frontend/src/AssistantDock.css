@@ -29,7 +29,6 @@ html:has(.portal-workspace):has(.assistant-bar) { scroll-padding-block-end: 92px
 /* A pushed dock leaves the page 800–1000px wide, so apply the portal's narrow-width layout. */
 @media (max-width: 1400px) {
   .app-shell:has(> .assistant-dock[data-layout=push]:not([hidden])) :is(.portal-header, .portal-context) { padding-inline: 28px; }
-  .app-shell:has(> .assistant-dock[data-layout=push]:not([hidden])) :is(.portal-search-button kbd, .portal-account-button span, .portal-breadcrumb) { display: none; }
-  .app-shell:has(> .assistant-dock[data-layout=push]:not([hidden])) .portal-context { justify-content: center; }
+  .app-shell:has(> .assistant-dock[data-layout=push]:not([hidden])) :is(.portal-search-button kbd, .portal-account-button span) { display: none; }
   .app-shell:has(> .assistant-dock[data-layout=push]:not([hidden])) > main { padding-inline: 28px; margin-top: 32px; }
 }

@@ -91,13 +91,13 @@ The portal origin serves the OpenAI-compatible routes at `/v1`. They require the
 | A signed-in portal session | Owner or Inference | What the Playground uses |
 | `HostPlatform__ApiKey` as a bearer token | Owner | At least 32 characters |
 | `HostPlatform__InferenceApiKey` | Inference | At least 32 characters, must differ from the owner key. The assistant uses it, over loopback, to reach the Spark's own model. |
-| `lucia_inf_…` key from **Local AI → API keys** | Inference | Stored as a SHA-256 hash, optional expiry, checked on every request, up to 1,000 keys |
+| `lucia_inf_…` key from **Local AI → Inference API keys** | Inference | Stored as a SHA-256 hash, optional expiry, checked on every request, up to 1,000 keys |
 
 An inference role can call `/v1` and nothing under `/api/host`.
 
 ```bash
 export LUCIA=https://lucia.example.com
-export KEY=lucia_inf_xxxxxxxx   # created on Local AI → API keys
+export KEY=lucia_inf_xxxxxxxx   # created on Local AI → Inference API keys
 
 curl -sS -H "Authorization: Bearer $KEY" $LUCIA/v1/models | jq '.data[] | {id, backend, context_length}'
 

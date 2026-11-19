@@ -178,7 +178,7 @@ dig +short @192.0.2.2 lucia.lab.example.com
 curl -sS -o /dev/null -w '%{http_code}\n' https://auth.example.com/
 ```
 
-The same checks are visible in **Settings → Domains**, from `GET /api/host/domains/overview`: published routes, certificate names and expiry, the last renewal outcome, and every managed AdGuard record with its state.
+The same checks are visible in **Network → Domains & HTTPS**, from `GET /api/host/domains/overview`: published routes, certificate names and expiry, the last renewal outcome, and every managed AdGuard record with its state.
 
 ## Failure modes
 
@@ -190,7 +190,7 @@ The same checks are visible in **Settings → Domains**, from `GET /api/host/dom
 | Gateway serves a different certificate | Traefik did not reload, or cannot read the pair | Check `domain.yml` loaded and `/domain-certificates` is mounted |
 | Activation stuck in `ActivationCheck` | The restarted host cannot confirm the new URLs | It retries each minute; legacy API access stays available |
 | `409` changing the AdGuard or Cloudflare connection | A setup, renewal or public change is running | Wait for it to finish |
-| Renewal shows `Failed` | Token expired, deleted, or the account changed | Replace the token in **Settings → Domains** |
+| Renewal shows `Failed` | Token expired, deleted, or the account changed | Replace the token in **Network → Domains & HTTPS** |
 | Public names time out after a port change | The Cloudflare Origin Rule does not send traffic to the new internet port | Point the Origin Rule at the port shown under **Internet port**, or set it back to 443 |
 
 Failed setup keeps the job and a confirmed diagnosis. Cleanup is ownership-checked: Lucia removes only rewrites it created and the gateway file it published, and anything that changed in the meantime is left for you. When it cannot be sure, `recoveryRequired` stays set and `POST /api/host/domains/jobs/{id}/recover` retries the cleanup. Authentik registration is rolled back through the activation helper.

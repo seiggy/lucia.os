@@ -14,7 +14,7 @@ import WhoWhatWhy from '@site/src/components/WhoWhatWhy';
   why="Installing an operating system by hand means a USB stick, a monitor and an evening. Lucia does it from the network, so you click one approval and wait."
 />
 
-Lucia can turn an ordinary x86-64 computer into a managed server. You boot the machine from the network, Lucia shows you what it found, and you approve it. Lucia then installs Debian 13 and sets the machine up. When it's done, the server appears under **Your lab → Devices**. [Servers](./servers.mdx) covers life after that.
+Lucia can turn an ordinary x86-64 computer into a managed server. You boot the machine from the network, Lucia shows you what it found, and you approve it. Lucia then installs Debian 13 and sets the machine up. When it's done, the server appears under **Lab → Devices**. [Servers](./servers.mdx) covers life after that.
 
 :::danger
 Approving an installation erases **every** disk in the machine, not only the one you pick for Debian. Back up anything you want to keep first. This can't be undone.
@@ -49,7 +49,7 @@ The machine also has to find Lucia by name when it boots. The name is the one in
 
 ## Add the server
 
-1. Sign in as an owner and open **Your lab → Devices**.
+1. Sign in as an owner and open **Lab → Devices**.
 2. Click **Add hardware**. Lucia opens a **discovery window** for 30 minutes. **Extend 30 minutes** and **Stop discovery** change it.
 3. Connect the machine to the network and power it on. Open its boot menu and choose the network (PXE) option for UEFI.
 4. Watch the machine's screen, if it has one. A monitor is optional, and nothing on the screen waits for a key. You'll see this:
@@ -68,7 +68,7 @@ The machine also has to find Lucia by name when it boots. The name is the one in
 {/* TODO screenshot: devices-approve — the approval form on the Devices page with the erase warning, disk list and ERASE box */}
 {/* TODO screenshot: boot-verification-code — the server's status screen showing the verification code */}
 
-After you approve, the installer runs on its own. Follow it under **Your lab → Installation tasks**. Debian downloads its packages during the install, so your internet speed sets how long it takes. The machine restarts once. After the restart it introduces itself to Lucia and shows up as **Online** on the Devices page.
+After you approve, the installer runs on its own. Follow it under **Lab → Installation tasks**. Debian downloads its packages during the install, so your internet speed sets how long it takes. The machine restarts once. After the restart it introduces itself to Lucia and shows up as **Online** on the Devices page.
 
 Once the machine has its operating system, change its firmware's boot order back to the local disk. Use the one-time network boot choice only when you want to reinstall.
 

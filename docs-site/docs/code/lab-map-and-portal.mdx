@@ -165,7 +165,11 @@ The universe scene uses a licensed jumpgate model that is not in the repository.
 
 ## The portal shell
 
-`navigation.ts` is the single list of destinations. Each has a `page`, an `area` (`overview`, `lab`, `ai` or `settings`), a label, a `href`, an `ownerOnly` flag and search keywords. `visibleDestinations(isOwner)` filters it, `findDestinations` powers the shell's search, and `App.tsx` switches on `route.page` from `parseRoute(location.hash)`. To add a page, add a `Route` variant in `dashboard.ts`, a destination here, and a branch in `App.tsx`. An owner-only page still needs a server-side `HostOwner` policy. The flag only hides the link.
+`navigation.ts` is the single list of destinations. Each has a `page`, an optional `area` (`lab`, `apps`, `network`, `ai`, `assistant` or `settings`), a label, a `href` and search keywords. The same file defines the six workspaces and builds breadcrumbs from the current route. `visibleDestinations(isOwner)` keeps member navigation to Home, Playground and Appearance; `findDestinations` powers search, and `App.tsx` switches on `route.page` from `parseRoute(location.hash)`. To add a page, add a `Route` variant in `dashboard.ts`, a destination here, and a branch in `App.tsx`. An owner-only page still needs a server-side `HostOwner` policy.
+
+`PortalNavigation.tsx` shows the workspaces as expandable sidebar groups. `workspaceLinks` adds direct links to the Apps views and marks their nested routes. The sidebar can collapse to icons, and its preference is stored in `localStorage` as `lucia.portal.navigation.collapsed.v1`. On smaller screens, or when the assistant leaves a narrow page column, the same links open in a modal drawer.
+
+`tests/navigation.test.mjs` checks the route and search registry. `tests/navigation.browser.mjs` uses fixture responses to check the sidebar, drawer, keyboard focus and assistant placement.
 
 `ownerRequest` in `managementApi.ts` is the only way pages call the host API. It refuses non-owner sessions, only allows paths under `/api/host/` or `/api/assistant/`, adds the `X-CSRF-TOKEN` header to anything but a GET, and calls `refreshSession` on a 401.
 

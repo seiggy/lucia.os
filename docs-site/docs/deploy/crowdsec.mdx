@@ -35,9 +35,9 @@ flowchart LR
 
 ## Install it
 
-1. Set up your domain first (**Settings → Domains**). The gateway reaches CrowdSec by a name under it, so Lucia refuses the install without an active domain (`409 domain_required`).
+1. Set up your domain first (**Network → Domains & HTTPS**). The gateway reaches CrowdSec by a name under it, so Lucia refuses the install without an active domain (`409 domain_required`).
 2. Install **Observability**, at catalog version 13 or later. CrowdSec reads the gateway's access log through Observability's collector (version 12 and later forward it), and version 13 adds CrowdSec's dashboards and indexes its alerts by kind in Loki. Lucia refuses a new install without Observability (`409 requires_app`) or with an older one (`409 requires_update`). Catalog apps don't update themselves, so an Observability installed before this release needs **Update** on its app page first.
-3. Install **CrowdSec** from **Apps → Catalog** on the server you want. Lucia runs one copy at most. Its **Name** setting (`crowdsec-host`, default `crowdsec`) becomes `crowdsec.<your namespace>`, for example `crowdsec.lab.example.com`.
+3. Install **CrowdSec** from **Apps → App catalog** on the server you want. Lucia runs one copy at most. Its **Name** setting (`crowdsec-host`, default `crowdsec`) becomes `crowdsec.<your namespace>`, for example `crowdsec.lab.example.com`.
 4. Within a minute or two Lucia publishes that name in AdGuard, asks its CA for the engine's certificate, the engine starts, and the **Gateway protection** page (`#/security`) shows **Protecting the gateway**.
 
 The engine's first start needs internet: it registers with the Central API and downloads the hub collections. Until it answers over TLS, the gateway's middlewares are empty chains and nothing waits on it.

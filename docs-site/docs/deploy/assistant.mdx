@@ -36,7 +36,7 @@ flowchart LR
 | Outbound HTTPS to GitHub | Copilot models, the sign-in | Device flow at `github.com`, user lookup at `api.github.com`, then Copilot's own service. The runtime child inherits `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; the host's own sign-in calls go direct. |
 | A GitHub account with Copilot | Copilot models only | Each owner signs in from the panel. The host holds the token. |
 | The LiteLLM catalog app | `litellm:` models | Optional. The host mints a virtual key for each owner. |
-| An OpenAI-compatible API, such as Heimdall | `byok:` models | Optional. Each owner saves its API base URL and client key in Settings → Assistant model sources. |
+| An OpenAI-compatible API, such as Heimdall | `byok:` models | Optional. Each owner saves its API base URL and client key in Assistant → Model connections. |
 | A model on the Spark, or the Local AI app on a node | `local:` models | Optional. See [Local AI](./local-ai.mdx). |
 | `HostPlatform__InferenceApiKey` | The Spark's own model | At least 32 characters and different from the owner API key. |
 | Node agents that report the `exec` feature | `run_command` | Update the agent first. See [Nodes](./nodes.mdx). |
@@ -135,7 +135,7 @@ The reverse proxy never reaches the host over loopback, since it connects throug
 | The Spark | Host services | Read its health and updates, check for updates, install updates (never restarts it). |
 | DNS | The host's resolver and AdGuard | Look up names and AdGuard rewrites. Read only. |
 | UniFi | The saved controller connection | List clients. Read only. |
-| Container registries | The registry protocol | Tag counts and digests. Private images use sign-ins from Settings → Registries. |
+| Container registries | The registry protocol | Tag counts and digests. Private images use sign-ins from Apps → Container registries. |
 | The public web | `read_web_page` | Public sites only: up to 2 MB fetched, 20,000 characters per read. |
 | Owner's browsers | Web Push | Notifications to devices the owner registered. |
 | Skill scripts | Nodes, the Spark's skill runner, or the KVM sandbox | Run the owner's skill scripts where each skill says. Each script runs in a container or micro-VM, never on the Spark host. See [Deploying assistant skills](./assistant-skills.mdx). |

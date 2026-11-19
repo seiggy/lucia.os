@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
   why="Some questions are worth asking every morning. A job asks them for you, and it taps your shoulder only when it needs you."
 />
 
-A job is a saved prompt that the assistant runs on a schedule. Each run happens in its own chat, as you, so you can open it later and read exactly what the assistant did. Open **Local AI → Assistant jobs** to see yours.
+A job is a saved prompt that the assistant runs on a schedule. Each run happens in its own chat, as you, so you can open it later and read exactly what the assistant did. Open **Assistant → Scheduled jobs** to see yours.
 
 <Screenshot name="jobs" alt="The Assistant jobs page listing scheduled jobs with their schedule, next run and last run">
   Each row shows when the job runs next and how the last run ended.
@@ -30,7 +30,7 @@ Choose **New job** and fill in the three sections.
 - **Name.** Up to 80 characters, such as "Morning app check".
 - **Prompt.** What you would type into the assistant. Write it the way you would ask a colleague: "Look at every app for containers that are offline but shouldn't be. Read their logs and tell me the cause. If it needs an app change, notify me instead of changing it."
 - **Follow-up prompts.** Add up to 10 in total. They run in order in the same chat, each after the previous answer ends. If one fails or is stopped, the rest don't run.
-- **Model.** Choose from the same list as the panel, or leave it on your default. A model you have disabled in **Settings → Assistant model sources** is hidden here too. A job that uses it fails on each run until you enable it again. Models that offer reasoning effort or a choice of context window show those too. A simple check is often fine on low effort and uses far fewer tokens.
+- **Model.** Choose from the same list as the panel, or leave it on your default. A model you have disabled in **Assistant → Model connections** is hidden here too. A job that uses it fails on each run until you enable it again. Models that offer reasoning effort or a choice of context window show those too. A simple check is often fine on low effort and uses far fewer tokens.
 
 **When it runs.** Pick a repeat: every hour, every 6 hours, every day, weekdays, once a week, or a custom schedule. Choose a time and a time zone. The page shows the next few run times, so you can see you got it right.
 
@@ -47,12 +47,12 @@ Untick **Run on this schedule** to pause a job. You can still start it by hand w
 
 ## Choose what a job may do unasked
 
-A job runs while nobody watches, so it can't wait for you the way a chat can. Anything you haven't allowed waits for approval (more on that below). What you allow here applies to this job only, on top of whatever **Settings → Assistant** already allows.
+A job runs while nobody watches, so it can't wait for you the way a chat can. Anything you haven't allowed waits for approval (more on that below). What you allow here applies to this job only, on top of whatever **Assistant → Permissions & approvals** already allows.
 
 - **Changes.** Ordinary changes such as backing up an app or restarting it.
 - **Risky changes.** Deleting, restoring a backup, publishing, installing updates, restarting a server and running a command. Allow one only when the job's prompts truly need it.
 - **Sites it may read.** Extra host names for this job, one per line.
-- **Container registries it may query.** A registry is where container images are stored. Allowing one lets the job ask it for an image's tags, to see whether a newer version exists. Docker Hub, GitHub, GitLab, Quay, Google and Microsoft are in the list. Registries you added under **Settings → Registries** appear too.
+- **Container registries it may query.** A registry is where container images are stored. Allowing one lets the job ask it for an image's tags, to see whether a newer version exists. Docker Hub, GitHub, GitLab, Quay, Google and Microsoft are in the list. Registries you added under **Apps → Container registries** appear too.
 - **Skills it may use.** Pick the skills this job can read and run scripts from. Leave it empty for none, choose specific skills, or choose **All enabled skills**. Scripts still follow each skill's approval rules. See [Assistant skills](./assistant-skills.mdx).
 
 :::warning

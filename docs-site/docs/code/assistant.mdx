@@ -134,7 +134,7 @@ To add a tool:
 ```
 
 6. **Mention it in the identity prompt only if the model needs steering.** The prompt in `AssistantRuntime` names the main lookup tools. A new read tool usually needs no edit there.
-7. **Check what you get for free.** The settings endpoint returns every tool from `Create` with its tier, and Settings → Assistant shows the change tools as checkboxes. Job permissions work the same way for change and destructive tools. The tool name becomes a grant key, so renaming a tool later silently drops saved grants.
+7. **Check what you get for free.** The settings endpoint returns every tool from `Create` with its tier, and Assistant → Permissions & approvals shows the change tools as checkboxes. Job permissions work the same way for change and destructive tools. The tool name becomes a grant key, so renaming a tool later silently drops saved grants.
 
 Then add a check (see [Testing](#testing)).
 

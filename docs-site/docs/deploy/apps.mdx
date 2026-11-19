@@ -172,7 +172,7 @@ Backups of a moving or restoring stack are skipped. A backup that fails because 
 
 ## Registry sign-ins
 
-Under **Settings → Registries**, add a host (`docker.io`, `ghcr.io`, your own), a username and a token. Lucia signs in to the registry first and refuses a bad secret. Every sync then writes `/etc/lucia/docker/config.json` on each server. Compose runs with `DOCKER_CONFIG=/etc/lucia/docker` while that file exists, so root's own `~/.docker` is untouched. Removing the last sign-in deletes the file.
+Under **Apps → Container registries**, add a host (`docker.io`, `ghcr.io`, your own), a username and a token. Lucia signs in to the registry first and refuses a bad secret. Every sync then writes `/etc/lucia/docker/config.json` on each server. Compose runs with `DOCKER_CONFIG=/etc/lucia/docker` while that file exists, so root's own `~/.docker` is untouched. Removing the last sign-in deletes the file.
 
 To confirm on a server:
 
@@ -239,7 +239,7 @@ cat /srv/lucia/stacks/observability/.lucia-applied.json
 | Old catalog behaviour after a server deploy | The stack wasn't re-rendered | Compare `template.version` with `template.latest` and roll out |
 | Backup status `Failed` with "isn't mounted" | The backup share isn't mounted on that server | Mount check above |
 | Backup "kept the repository locked" | Another node's backup or prune ran past 30 minutes | Retry later. Don't `restic unlock` while another node is running |
-| Pull fails for a private image | No registry sign-in, or the token expired | **Settings → Registries**, then the `docker pull` test above |
+| Pull fails for a private image | No registry sign-in, or the token expired | **Apps → Container registries**, then the `docker pull` test above |
 
 ## Deleting
 

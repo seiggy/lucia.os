@@ -52,8 +52,8 @@ The hour is kept in memory. When Lucia's host restarts, the history starts again
 | **Spark is reporting normally.** | Everything is being read and nothing is low. | Nothing. |
 | **Waiting for the first host readings.** | Lucia just started. | Wait a few seconds. |
 | **Some host readings are unavailable.** | One reading, often a GPU sensor, is not coming through. The rest are fine. The card names what is missing. | Usually nothing. The GPU on the Spark does not report every sensor. |
-| **The host volume has less than 5% space available.** | The disk is nearly full. | Delete models you no longer use on **Local AI → Models**, or remove apps you do not need. |
-| **The host has less than 3% memory available.** | Memory is nearly all in use. | Unload a model on **Local AI → Models**, or stop an app you are not using. |
+| **The host volume has less than 5% space available.** | The disk is nearly full. | Delete models you no longer use on **Local AI → Local models**, or remove apps you do not need. |
+| **The host has less than 3% memory available.** | Memory is nearly all in use. | Unload a model on **Local AI → Local models**, or stop an app you are not using. |
 | **The latest host readings are out of date.** | Readings stopped arriving for over 30 seconds. | Wait a moment and press **Try again**. If it stays, Lucia's host may have restarted or be busy. |
 | **No host readings are available from the last hour.** | Nothing has been read for an hour. | Check that Lucia is running. |
 | **Spark monitoring is not configured.** | Monitoring was left off for this install. | An installation from the standard installer has it on. If you built Lucia yourself, see [Spark telemetry](../code/spark-telemetry.mdx). |
@@ -61,7 +61,7 @@ The hour is kept in memory. When Lucia's host restarts, the history starts again
 
 ## Why does memory look full?
 
-A model that stays loaded keeps its memory, on purpose, so answers come back quickly. A large one can use around 30 GB of the Spark's 128 GB. That is normal, and the card only turns to **Attention** when under 3% is left. To get memory back, unload the model on **Local AI → Models**. See [Local AI](./local-ai.mdx).
+A model that stays loaded keeps its memory, on purpose, so answers come back quickly. A large one can use around 30 GB of the Spark's 128 GB. That is normal, and the card only turns to **Attention** when under 3% is left. To get memory back, unload the model on **Local AI → Local models**. See [Local AI](./local-ai.mdx).
 
 ## Next
 

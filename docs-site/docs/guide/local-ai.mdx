@@ -36,7 +36,7 @@ The panel on the right shows the loaded model, its **served context** and its **
 
 ## Add a model
 
-Owners only. Open **Local AI → Models**, then **Find & download**.
+Owners only. Open **Local AI → Local models**, then **Find & download**.
 
 1. Search by name, or paste a Hugging Face address such as `owner/model-name` and press **Open**. Hugging Face is a public website where people share models.
 2. Pick one of the variants that Lucia lists. Lucia only offers files it can run: a single GGUF file for chat, or a sentence-encoder for embeddings. Smaller numbers like Q4 mean a smaller, faster, slightly less accurate file.
@@ -65,7 +65,7 @@ Lucia checks every load and refuses one that would not fit, with a message such 
 
 Apps that speak the OpenAI format, such as Home Assistant add-ons or chat front ends, can use your Spark.
 
-1. Open **Local AI → API keys** and press **New API key**.
+1. Open **Local AI → Inference API keys** and press **New API key**.
 2. Give it a name you will recognise, for example the app's name. Add an expiry date if you want one.
 3. Copy the key now. It is shown only once, and Lucia keeps only a fingerprint of it.
 4. In the app, set the **base URL** shown under **Connect another app** on the Playground, and the key. The model name is the one the Playground shows under **Hosted model**.
