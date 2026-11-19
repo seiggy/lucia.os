@@ -36,6 +36,7 @@ flowchart LR
 | Outbound HTTPS to GitHub | Copilot models, the sign-in | Device flow at `github.com`, user lookup at `api.github.com`, then Copilot's own service. The runtime child inherits `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; the host's own sign-in calls go direct. |
 | A GitHub account with Copilot | Copilot models only | Each owner signs in from the panel. The host holds the token. |
 | The LiteLLM catalog app | `litellm:` models | Optional. The host mints a virtual key for each owner. |
+| An OpenAI-compatible API, such as Heimdall | `byok:` models | Optional. Each owner saves its API base URL and client key in Settings → Assistant model sources. |
 | A model on the Spark, or the Local AI app on a node | `local:` models | Optional. See [Local AI](./local-ai.mdx). |
 | `HostPlatform__InferenceApiKey` | The Spark's own model | At least 32 characters and different from the owner API key. |
 | Node agents that report the `exec` feature | `run_command` | Update the agent first. See [Nodes](./nodes.mdx). |
@@ -44,7 +45,7 @@ flowchart LR
 | A node with KVM (`/dev/kvm`) and Docker | Skill scripts with `sandbox` execution | Optional. Without it sandbox scripts fail with a clear message. See [Deploying assistant skills](./assistant-skills.mdx). |
 | HTTPS on a name devices trust | Browser notifications | Web Push needs a secure context. See [Networking and DNS](./networking-and-dns.mdx). |
 
-None of the model sources is required on its own. The assistant works with Copilot only, with local models only, or with both. A source that isn't ready says why in the model picker.
+None of the model sources is required on its own. The assistant can use Copilot, local models or configured gateways independently. A source that isn't ready says why in the model picker.
 
 The Copilot runtime binary is downloaded at build and publish time for the target platform (a SHA-256-checked release from GitHub), so the running container makes no download for it.
 
@@ -71,6 +72,14 @@ volumes:
 
 Other settings are in [Configuration](./configuration.mdx).
 
+### Gateway connections
+
+The host and its Copilot runtime child need network access to each configured API base URL. Discovery calls `GET <base>/models`; inference uses Chat Completions at `<base>/chat/completions`. Include the version path in the base URL, for example `https://gateway.example.com/v1`. Private lab addresses are allowed for these owner-configured connections. Redirects are refused and TLS uses the machine's trust store; HTTP is supported but sends credentials and conversation content without encryption.
+
+For Heimdall, provision a client API key with access to the intended models. Lucia sends it as a bearer token. A management portal cookie is insufficient. Heimdall controls upstream credentials and model policy, including OpenRouter access; Lucia needs only the client key. Its model list includes only chat surfaces that Heimdall reports as available.
+
+Owners can disable non-GitHub models, including those from discovered lab apps. Disabled IDs are blocked when resolving a new turn, so saved jobs cannot bypass the choice. Existing turns are not cancelled. A disabled model that is temporarily unavailable remains listed in settings so it can be enabled again.
+
 ## State and backups
 
 All assistant state lives under `Assistant__Directory`, with one folder per owner:
@@ -80,18 +89,20 @@ All assistant state lives under `Assistant__Directory`, with one folder per owne
   users/<owner>/            settings, devices, chats, jobs
   github/<owner>.json       GitHub token, encrypted
   litellm/<owner>.json      LiteLLM virtual key, encrypted
+  sources/<owner>.json      configured connections and disabled model IDs, encrypted
   push-key.json             VAPID private key, encrypted
   runtime/                  Copilot runtime state
   skills/                   owner skills, index.json and one folder per skill
   workspace/                its working directory (kept empty)
 ```
 
-Back up the whole `/data` bind mount, and keep `data-protection` with it. The GitHub token, the LiteLLM key and the push key are encrypted with ASP.NET Core Data Protection, and the keys for that live in `/data/data-protection`.
+Back up the whole `/data` bind mount, and keep `data-protection` with it. Model source settings and credentials use ASP.NET Core Data Protection, as do the GitHub token, LiteLLM key and push key. The protection keys live in `/data/data-protection`.
 
 If the Data Protection keys are lost:
 
 - Owners sign in to GitHub again. The old token file can't be read.
 - A LiteLLM key that can't be read is replaced: the host mints a new one on the next use.
+- Configured model sources fail closed if their file cannot be decrypted. Restore it together with its Data Protection keys; Lucia does not silently discard model restrictions.
 - Delete `push-key.json`. The host makes a new key, and each owner turns notifications on again for their devices.
 
 Chats are JSON files, capped at 16 MB each. A bigger chat refuses new messages and tells the owner to start a new one.
@@ -103,7 +114,7 @@ The Copilot runtime runs inside the host container, so it reaches the host over 
 | Path | Who calls it | Why |
 |---|---|---|
 | `/v1` | The runtime, using `HostPlatform__InferenceApiKey` | The Spark's loaded chat model, as an OpenAI-compatible API |
-| `/assistant-engine/v1` | The runtime, using a one-turn random token | The shim that writes a reasoning effort into requests for LiteLLM and Local AI models |
+| `/assistant-engine/v1` | The runtime, using a one-turn random token | The shim that writes a reasoning effort into requests for non-GitHub models |
 
 Normally the host proxy refuses requests that don't arrive over HTTPS on the public origin. For these two prefixes it makes one exception. The rule in `HostAuthentication.UseHostProxy` lets a request through only when all of these hold:
 

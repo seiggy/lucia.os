@@ -227,7 +227,7 @@ public sealed class AssistantRuntime(IOptions<AssistantOptions> options, GitHubS
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var (provider, resolved) = await providers.ResolveAsync(owner, model ?? DefaultModel, timeout.Token);
+            var (provider, resolved) = await providers.ResolveAsync(owner, model ?? DefaultModel, timeout.Token, forAbort: true);
             var token = provider is null ? await github.TokenAsync(owner, timeout.Token) : null;
             var client = await ClientAsync(timeout.Token);
             await using var session = await client.ResumeSessionAsync(sessionKey,

@@ -30,10 +30,11 @@ public sealed record AssistantSource(string Id, string Name, AssistantModel[] Mo
 public sealed record SparkInference(Uri? BaseUri, string? Key, string? Model, int ContextTokens, int MaxOutputTokens, string? Problem);
 
 /// <summary>
-/// Models the owner brings: LiteLLM's, the Spark's and each Local AI app's. They run in the same Copilot runtime as
+/// Models the owner brings: configured OpenAI-compatible sources, LiteLLM, the Spark and each Local AI app. They run in the same Copilot runtime as
 /// bring-your-own-key providers, so they need no GitHub sign-in. Model ids carry where they run: <c>litellm:&lt;model&gt;</c>,
 /// <c>local:&lt;model&gt;</c> on the Spark and <c>local:&lt;stack&gt;/&lt;model&gt;</c> on a node; bare ids are Copilot's.
 /// LiteLLM gets a virtual key per owner, minted with the app's master key and kept encrypted on the host.
+/// Configured sources use <c>byok:&lt;connection&gt;/&lt;model&gt;</c> ids and the owner's encrypted credentials.
 /// </summary>
 public sealed partial class AssistantProviders(IOptions<AssistantOptions> options, IDataProtectionProvider protection,
     ILogger<AssistantProviders> logger, HttpClient http, Func<CancellationToken, Task<IReadOnlyList<AppEndpoint>>> apps,
@@ -49,21 +50,42 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
 
     public static bool IsGitHub(string? id) => id is null || Parse(id).Source == "github";
 
-    public async Task<AssistantSource[]> ListAsync(string owner, CancellationToken ct)
+    public async Task<AssistantSource[]> ListAsync(string owner, CancellationToken ct, bool includeDisabled = false)
     {
+        var settings = ReadSources(owner);
         var endpoints = await apps(ct);
         var liteLlm = LiteLlmSourceAsync(owner, endpoints, ct);
         var local = LocalSourceAsync(endpoints, ct);
-        return [await liteLlm, await local];
+        var connections = Task.WhenAll(settings.Connections.Select(connection => ConnectionSourceAsync(connection, ct)));
+        AssistantSource[] sources = [await liteLlm, await local, .. await connections];
+        return includeDisabled ? sources : [.. sources.Select(source => source with
+        {
+            Models = [.. source.Models.Where(model => !settings.DisabledModels.Contains(model.Id))],
+            Reason = source.Reason ?? (source.Models.Length > 0 && source.Models.All(model => settings.DisabledModels.Contains(model.Id))
+                ? "All models are disabled. Enable them in Settings > Assistant model sources." : null)
+        })];
     }
 
     /// <summary>The provider and model name for a turn. No provider means GitHub Copilot.</summary>
-    public async Task<(ProviderConfig? Provider, string? Model)> ResolveAsync(string owner, string? id, CancellationToken ct)
+    public async Task<(ProviderConfig? Provider, string? Model)> ResolveAsync(string owner, string? id, CancellationToken ct, bool forAbort = false)
     {
         if (id is null) return (null, null);
         var (source, stack, model) = Parse(id);
         if (source == "github") return (null, id);
         if (model.Length == 0) throw Unavailable("That model isn't available. Pick another model.");
+        var settings = ReadSources(owner);
+        if (!forAbort && settings.DisabledModels.Contains(id))
+            throw Unavailable("That model is disabled. Enable it in Settings > Assistant model sources or pick another model.");
+        if (source == "byok")
+        {
+            var connection = settings.Connections.FirstOrDefault(item => item.Id == stack)
+                ?? throw Unavailable("That model source was removed. Pick another model.");
+            ServedModel[] served;
+            try { served = await ConnectionModelsAsync(connection, ct); }
+            catch (Exception e) when (Unreachable(e, ct)) { throw Unavailable(ConnectionFailure(e)); }
+            if (served.All(item => item.Id != model)) throw Unavailable("That model is no longer available from this source. Pick another model.");
+            return (Provider(SourceUri(connection.BaseUrl), connection.ApiKey, null, null), model);
+        }
         var endpoints = await apps(ct);
         if (source == "litellm")
         {
@@ -100,6 +122,9 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
         switch (colon < 0 ? "" : id[..colon])
         {
             case "litellm": return ("litellm", null, rest);
+            case "byok":
+                var separator = rest.IndexOf('/');
+                return separator < 0 ? ("byok", null, "") : ("byok", rest[..separator], rest[(separator + 1)..]);
             case "local":
                 var slash = rest.IndexOf('/');
                 return slash < 0 ? ("local", null, rest) : ("local", rest[..slash], rest[(slash + 1)..]);
@@ -241,12 +266,23 @@ public sealed partial class AssistantProviders(IOptions<AssistantOptions> option
     private static ServedModel[] Models(JsonElement list, string prefix) =>
         list.ValueKind == JsonValueKind.Object && list.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array
             ? data.EnumerateArray()
-                .Where(item => item.ValueKind == JsonValueKind.Object && (!item.TryGetProperty("capabilities", out var capabilities)
+                .Where(item => item.ValueKind == JsonValueKind.Object && HeimdallChat(item) && (!item.TryGetProperty("capabilities", out var capabilities)
                     || capabilities.ValueKind != JsonValueKind.Array || capabilities.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String && value.GetString() == "chat")))
                 .Select(item => new ServedModel(item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString()! : "",
-                    Number(item, "context_length") ?? Number(item, "max_model_len"), Number(item, "max_output_tokens")))
+                    Number(item, "context_length") ?? Number(item, "max_model_len") ?? HeimdallContext(item), Number(item, "max_output_tokens")))
                 .Where(item => ModelPattern().IsMatch(prefix + item.Id)).DistinctBy(item => item.Id).Take(200).ToArray()
             : [];
+
+    private static bool HeimdallChat(JsonElement item) =>
+        !item.TryGetProperty("x-heimdall", out var extension) || extension.ValueKind != JsonValueKind.Object
+        || !extension.TryGetProperty("surfaces", out var surfaces) || surfaces.ValueKind != JsonValueKind.Array
+        || surfaces.EnumerateArray().Any(surface => surface.ValueKind == JsonValueKind.Object
+            && surface.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && name.GetString() == "chat"
+            && surface.TryGetProperty("mode", out var mode) && mode.ValueKind == JsonValueKind.String && mode.GetString() is "native" or "translated");
+
+    private static int? HeimdallContext(JsonElement item) =>
+        item.TryGetProperty("x-heimdall", out var extension) && extension.ValueKind == JsonValueKind.Object
+            ? Number(extension, "contextWindow") : null;
 
     private static int? Number(JsonElement item, string name) =>
         item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number > 0 ? number : null;

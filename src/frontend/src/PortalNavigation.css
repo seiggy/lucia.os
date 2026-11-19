@@ -18,7 +18,7 @@
 .portal-breadcrumb { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
 .portal-breadcrumb svg { width: 12px; height: 12px; }
 .portal-breadcrumb strong { color: var(--text); font-weight: 600; }
-.workspace-navigation { display: flex; align-self: stretch; gap: 28px; }
+.workspace-navigation { display: flex; align-self: stretch; gap: 28px; min-width: 0; overflow-x: auto; }
 .workspace-navigation a { display: flex; align-items: center; min-height: 52px; padding: 12px 2px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 14px; font-weight: 650; white-space: nowrap; }
 .workspace-navigation a:hover { color: var(--text); }
 .workspace-navigation a[aria-current="page"] { color: var(--accent-ink); border-bottom-color: var(--accent-ink); }

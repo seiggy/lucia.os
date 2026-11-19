@@ -18,7 +18,7 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './componen
 import { SelectGroup, SelectLabel } from './components/ui/select'
 import {
   approvalNote, askEvent, chatKey, chatTitle, chooseModel, chosenEffort, commandBody, commandText, contextKey, currentTier, diffRows, draftedSkill, findModel, grantScope, grantText, isChatId, isDestructiveTool, isGitHubModel, lastContext, matchCommands, maxCommandSources, maxMessageLength, messageText, newChatId, openChatEvent, pageRoute, skillDiffOf, sourceOptions, takeAsk,
-  parseChoices, parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, reasoningKey, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
+  modelSourcesChanged, parseChoices, parseGitHub, parseModels, parseSessions, parseTranscript, questionOf, reasoningKey, secretOf, settledText, signInModel, toolNote, toolStatus, toolTitle,
   waitingPart, waitingParts,
 } from './assistant'
 import type { SkillDiff, SkillDiffFile } from './assistant'
@@ -935,6 +935,11 @@ export default function AssistantPanel({ session, refreshSession, page, side, la
   const [tiers, setTiers] = useState(() => parseChoices(readStored(contextKey)))
   const [focusCount, setFocusCount] = useState(0)
   const [modelsRound, setModelsRound] = useState(0)
+  useEffect(() => {
+    const refresh = () => setModelsRound(round => round + 1)
+    window.addEventListener(modelSourcesChanged, refresh)
+    return () => window.removeEventListener(modelSourcesChanged, refresh)
+  }, [])
   const github = useGitHub(auth)
   const { check: checkGitHub, setNotice } = github
   const linked = github.status ? github.status.state === 'connected' : null

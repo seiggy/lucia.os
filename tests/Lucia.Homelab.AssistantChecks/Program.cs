@@ -455,6 +455,72 @@ try
     await local.Completion;
     Check(local.Done, "Local models answer without a GitHub sign-in.");
 
+    const string connectionId = "abcdef012345", gatewayModel = "byok:abcdef012345/openai/gpt-4o";
+    var connection = new AssistantConnection(connectionId, "Heimdall", "https://gateway.example.com/proxy/v1", "hg_live_fixture_client_key");
+    await providers.SaveSourcesAsync(owner, new([connection], []), default);
+    var sourceFile = Path.Combine(directory, "sources", owner + ".json");
+    Check(File.Exists(sourceFile) && !File.ReadAllText(sourceFile).Contains("hg_live_fixture"),
+        "Configured source credentials are encrypted at rest.");
+    var sourceSettings = Node(await providers.SourceSettingsAsync(owner, default));
+    Check((bool)sourceSettings["connections"]![0]!["hasKey"]! && !sourceSettings.ToJsonString().Contains("hg_live_fixture")
+        && (string)sourceSettings["sources"]![2]!["models"]![0]!["id"]! == gatewayModel
+        && sourceSettings["sources"]![2]!["models"]!.AsArray().Count == 1
+        && (int)sourceSettings["sources"]![2]!["models"]![0]!["context"]! == 128_000,
+        "Source management returns no credentials; Heimdall exposes only usable chat models and their context.");
+    Check(Node(await providers.SourceSettingsAsync(stranger, default))["connections"]!.AsArray().Count == 0,
+        "Model source connections belong to one owner.");
+    (provider, served) = await providers.ResolveAsync(owner, gatewayModel, default);
+    Check(provider is { Type: "openai", WireApi: "completions", BaseUrl: "https://gateway.example.com/proxy/v1", ApiKey: "hg_live_fixture_client_key" }
+        && served == "openai/gpt-4o" && !AssistantProviders.IsGitHub(gatewayModel),
+        "A gateway model preserves its upstream model ID, API path and client key without a GitHub sign-in.");
+    const string gatewayOwner = "00000000000000ab";
+    await providers.SaveSourcesAsync(gatewayOwner, new([connection], []), default);
+    var gatewayRun = await runs.StartAsync(gatewayOwner, Ask("Hi", model: gatewayModel, session: Guid.NewGuid().ToString("N")), "tester via assistant", null, default);
+    await gatewayRun.Completion;
+    Check(gatewayRun.Done, "Configured source models pass the turn's GitHub sign-in gate.");
+    var noKeyChange = connection with { ApiKey = null };
+    await providers.SaveSourcesAsync(owner, new([noKeyChange], [gatewayModel, "local:ai/qwen3"]), default);
+    Check((await providers.ListAsync(owner, default)).SelectMany(source => source.Models).All(model => model.Id != gatewayModel && model.Id != "local:ai/qwen3")
+        && (await providers.ListAsync(owner, default, includeDisabled: true)).SelectMany(source => source.Models).Any(model => model.Id == gatewayModel),
+        "Disabled models disappear from pickers but stay discoverable in model source management.");
+    var requestsBeforeDisable = openAi.Calls.Count;
+    await Reject(() => providers.ResolveAsync(owner, gatewayModel, default), 503, "assistant_source_unavailable", "Disabled configured models cannot run.");
+    await Reject(() => providers.ResolveAsync(owner, "local:ai/qwen3", default), 503, "assistant_source_unavailable", "Disabled built-in models cannot run.");
+    Check(openAi.Calls.Count == requestsBeforeDisable, "Disabled model requests are refused before contacting their source.");
+    Check((await providers.ResolveAsync(owner, gatewayModel, default, forAbort: true)).Provider is not null,
+        "Disabling a model does not prevent resolving its provider to stop a turn already running.");
+    await Reject(() => providers.SaveSourcesAsync(owner, new([noKeyChange], ["gpt-5.1"]), default), 400, "invalid_model_sources", "GitHub models cannot be disabled.");
+    foreach (var url in new[] { "file:///etc/keys", "https://user:password@example.com/v1", "https://gateway.example.com/v1?key=x", "https://gateway.example.com/v1#fragment" })
+        await Reject(() => providers.SaveSourcesAsync(owner, new([connection with { BaseUrl = url }], []), default), 400, "invalid_model_sources", "Invalid API URLs cannot be saved.");
+    await Reject(() => providers.SaveSourcesAsync(owner, new([noKeyChange with { BaseUrl = "https://other.example.com/v1" }], []), default),
+        400, "invalid_model_sources", "An endpoint change cannot reuse a retained key.");
+    await providers.SaveSourcesAsync(owner, new([noKeyChange], []), default);
+    (provider, served) = await providers.ResolveAsync(owner, gatewayModel, default);
+    Check(provider?.ApiKey == connection.ApiKey, "Leaving the key blank retains it, and re-enabling a model restores routing.");
+    var plainConnection = connection with { Id = "123456abcdef", Name = "Other API", ApiKey = "plain-fixture-key" };
+    await providers.SaveSourcesAsync(owner, new([noKeyChange, plainConnection], []), default);
+    (provider, served) = await providers.ResolveAsync(owner, "byok:123456abcdef/vendor/chat-model", default);
+    Check(provider?.ApiKey == "plain-fixture-key" && served == "vendor/chat-model",
+        "Multiple connections retain separate credentials and accept ordinary OpenAI model lists without Heimdall metadata.");
+    const string copiedOwner = "00000000000000ac";
+    File.Copy(sourceFile, Path.Combine(directory, "sources", copiedOwner + ".json"));
+    await Reject(() => providers.SourceSettingsAsync(copiedOwner, default), 503, "assistant_source_unavailable",
+        "Copying encrypted settings to another owner cannot expose credentials or silently discard model restrictions.");
+    Check(await providers.ResolveAsync(copiedOwner, "gpt-5.1", default) == (null, "gpt-5.1"),
+        "Unreadable custom source settings do not prevent resolving GitHub models.");
+    var gatewayEfforts = await broker.SaveSettingsAsync(gatewayOwner, new([], [], new() { [gatewayModel] = ["low"] }), [], default);
+    Check(gatewayEfforts.ModelEfforts!.ContainsKey(gatewayModel), "Configured source models accept reasoning settings.");
+    await Reject(() => providers.ResolveAsync(owner, "byok:abcdef012345/missing", default), 503, "assistant_source_unavailable", "Dropped gateway models are rejected.");
+    await providers.SaveSourcesAsync(owner, new([connection with { ApiKey = "refused-key" }], []), default);
+    var refusedSource = (await providers.ListAsync(owner, default))[^1];
+    Check(refusedSource.Models.Length == 0 && refusedSource.Reason!.Contains("HTTP 401")
+        && (await providers.ListAsync(owner, default))[1].Models.Length > 0,
+        "A refused gateway credential explains the failure without hiding other sources.");
+    await providers.SaveSourcesAsync(owner, new([noKeyChange with { ApiKey = "" }], []), default);
+    Check(!(bool)Node(await providers.SourceSettingsAsync(owner, default))["connections"]![0]!["hasKey"]!, "Clearing a key removes the credential.");
+    await providers.SaveSourcesAsync(owner, new([], []), default);
+    await Reject(() => providers.ResolveAsync(owner, gatewayModel, default), 503, "assistant_source_unavailable", "Removed model sources cannot route stale chats or jobs.");
+
     var pending = await signIn.StartAsync(owner, default);
     Check(pending is { State: "pending", UserCode: "CODE-0001", VerificationUri: "https://github.com/login/device", Interval: 5 }
         && signIn.Status(owner) == pending, "Signing in shows a code to enter on GitHub.");
@@ -2365,6 +2431,28 @@ sealed class FakeOpenAi : HttpMessageHandler
         Calls.Enqueue($"{request.Method} {request.RequestUri} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct))}");
         return (request.Method.Method, request.RequestUri!.AbsoluteUri) switch
         {
+            ("GET", "https://gateway.example.com/proxy/v1/models") when key == "hg_live_fixture_client_key" => Json(new
+            {
+                data = new object[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["id"] = "openai/gpt-4o",
+                        ["x-heimdall"] = new { surfaces = new[] { new { name = "chat", mode = "native" } }, contextWindow = 128_000 }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        ["id"] = "embedding", ["x-heimdall"] = new { surfaces = new[] { new { name = "embeddings", mode = "native" } } }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        ["id"] = "offline", ["x-heimdall"] = new { surfaces = new[] { new { name = "chat", mode = "unavailable" } } }
+                    }
+                }
+            }),
+            ("GET", "https://gateway.example.com/proxy/v1/models") when key == "plain-fixture-key" =>
+                Json(new { data = new[] { new { id = "vendor/chat-model" } } }),
+            ("GET", "https://gateway.example.com/proxy/v1/models") => new(HttpStatusCode.Unauthorized),
             ("POST", "http://10.0.0.5:4000/key/delete") when key == "sk-master" => Minted == 0 ? new(HttpStatusCode.NotFound) : Json(new { deleted_keys = new[] { "old" } }),
             ("POST", "http://10.0.0.5:4000/key/generate") when key == "sk-master" => Json(new { key = $"sk-virtual-{++Minted}" }),
             ("GET", "http://10.0.0.5:4000/v1/models") when key is not null && key.StartsWith("sk-virtual-") && !Revoked.Contains(key) =>

@@ -132,6 +132,13 @@ public static class AssistantEndpoints
         });
         group.MapGet("/models", async (HttpContext context, AssistantRuntime runtime, AssistantBroker broker, CancellationToken ct) =>
             await runtime.ModelsAsync(Owner(context), (await broker.SettingsAsync(Owner(context), ct)).ModelEfforts, ct));
+        group.MapGet("/sources", (HttpContext context, AssistantProviders providers, CancellationToken ct) =>
+            providers.SourceSettingsAsync(Owner(context), ct));
+        group.MapPut("/sources", async (HttpContext context, AssistantProviders providers, CancellationToken ct) =>
+        {
+            await providers.SaveSourcesAsync(Owner(context), await Read<AssistantSourceSettings>(context, ct), ct);
+            return Results.NoContent();
+        });
         // The registries a job may be allowed to query: the common public ones, and those the owner signed in to.
         group.MapGet("/registries", async (StackStore stacks, CancellationToken ct) => new
         {

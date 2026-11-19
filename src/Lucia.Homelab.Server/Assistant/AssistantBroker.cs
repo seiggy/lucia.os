@@ -28,7 +28,7 @@ public static class ToolTier
 public sealed record SkillGate(Func<string, bool> Runnable, Func<string, bool> DraftLocked, Func<string, JsonElement, JsonObject>? EditDiff = null);
 
 /// <summary>The owner's standing choices: change tools that run without asking, and sites the assistant may read without asking.</summary>
-/// <param name="ModelEfforts">For models the owner brought (<c>local:</c> and <c>litellm:</c> ids): the reasoning efforts each accepts, from <see cref="AssistantEngineProxy.Efforts"/>.</param>
+/// <param name="ModelEfforts">For models the owner brought (<c>local:</c>, <c>litellm:</c> and <c>byok:</c> ids): the reasoning efforts each accepts, from <see cref="AssistantEngineProxy.Efforts"/>.</param>
 public sealed record AssistantSettings(string[] AutoTools, string[] Hosts, Dictionary<string, string[]>? ModelEfforts = null)
 {
     public static readonly AssistantSettings Default = new([], ["docs.docker.com", "hub.docker.com", "github.com", "raw.githubusercontent.com"]);
@@ -385,7 +385,7 @@ public sealed class AssistantBroker(IOptions<AssistantOptions> options, ILogger<
         foreach (var (model, list) in settings.ModelEfforts ?? [])
         {
             var kept = (list ?? []).Distinct().ToArray();
-            if (!model.StartsWith("local:", StringComparison.Ordinal) && !model.StartsWith("litellm:", StringComparison.Ordinal)
+            if (AssistantProviders.IsGitHub(model)
                 || !AssistantRuns.ModelPattern().IsMatch(model) || kept.Any(effort => !AssistantEngineProxy.Efforts.Contains(effort)) || efforts.Count >= 200)
                 throw new AssistantException(400, "invalid_efforts", "Reasoning efforts can be set for your own models, from Disabled to Extra high.");
             efforts[model] = [.. AssistantEngineProxy.Efforts.Where(kept.Contains)];

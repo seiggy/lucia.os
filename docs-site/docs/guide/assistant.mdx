@@ -35,15 +35,28 @@ Each chat is saved. Open the history icon in the panel to come back to an old on
 
 ## Pick a model
 
-The model menu in the box where you type has up to three groups:
+The model menu in the box where you type groups models by source:
 
 | Group | What you need |
 |---|---|
 | GitHub Copilot | A GitHub account with Copilot. The panel offers **Sign in with GitHub** and shows a short code to type at github.com. |
 | LiteLLM | The LiteLLM app installed from the catalog. |
 | Local AI | A model loaded on the Spark, or the Local AI app on one of your servers. See [Local AI](./local-ai.mdx). |
+| Your connections | An OpenAI-compatible API, such as Heimdall Gateway, added in **Settings → Assistant model sources**. |
 
 Only the Copilot group needs the GitHub sign-in. If a group has no models, the menu says why: not installed, no model loaded, or not answering.
+
+### Connect Heimdall or another model source
+
+Open **Settings → Assistant model sources** and choose **Add connection**. Enter a name, the API base URL including `/v1`, and its API key. For Heimdall, create a client key in its portal and allow that client to use the models you want. Its portal sign-in does not work as a client key.
+
+Choose **Save model sources** to load the models. When you select one in a chat or job, Lucia sends requests through that connection. With Heimdall, upstream credentials such as an OpenRouter key stay in Heimdall, where you manage access and track usage.
+
+Under **Available models**, leave the models you want checked and uncheck the others, then save. This also covers the built-in LiteLLM and Local AI sources. Disabled models disappear from chats and jobs, and a saved job using one cannot start another model turn until you enable it again. Turns already running keep going. New models are enabled when their source first lists them.
+
+These choices belong to your Lucia account. GitHub connections and models are managed separately in the assistant panel. To change the built-in app connections, use **Apps**.
+
+Lucia encrypts saved keys on its host and never shows them again. Leave an existing key blank to keep it, or tick **Clear the saved key when saving** to remove it. Enter the key again when changing its URL. Only connect services you trust with your chat and tool results; use HTTPS to keep those and your key encrypted on the network.
 
 ## Plan or Execute
 
@@ -93,7 +106,7 @@ Under the box where you type are a few small controls.
 
 Your choices are remembered for each model on this browser.
 
-**Your own models.** LiteLLM and Local AI models don't announce which efforts they accept. Under **Settings → Assistant → Reasoning for your own models**, tick the ones each model handles: Disabled, Low, Medium, High and Extra high. Disabled turns thinking off for models that support that.
+**Your own models.** Models from your connections, LiteLLM and Local AI don't announce which efforts they accept. Under **Settings → Assistant → Reasoning for your own models**, tick the ones each model handles: Disabled, Low, Medium, High and Extra high. Disabled turns thinking off for models that support that.
 
 ## What it can do
 

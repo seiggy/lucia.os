@@ -17,6 +17,7 @@ import { StorageSettings } from './StorageSettings'
 import { RegistrySettings } from './RegistrySettings'
 import { SshKeySettings } from './SshKeySettings'
 import { AssistantSettings } from './AssistantSettings'
+import { AssistantModelSources } from './AssistantModelSources'
 import { AssistantSkills } from './AssistantSkills'
 import { Jobs } from './Jobs'
 import { NotificationPrompt, NotificationSettings } from './NotificationSettings'
@@ -243,6 +244,7 @@ function App() {
         : route.page === 'adguard-settings' ? <AdGuardSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'ssh-key-settings' ? <SshKeySettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'assistant-settings' ? <AssistantSettings session={session} refreshSession={authentication.refresh} />
+        : route.page === 'assistant-model-sources' ? <AssistantModelSources session={session} refreshSession={authentication.refresh} />
         : route.page === 'assistant-skills' ? <AssistantSkills session={session} refreshSession={authentication.refresh} />
         : route.page === 'notification-settings' ? <NotificationSettings session={session} refreshSession={authentication.refresh} />
         : route.page === 'jobs' ? <Jobs session={session} refreshSession={authentication.refresh} />

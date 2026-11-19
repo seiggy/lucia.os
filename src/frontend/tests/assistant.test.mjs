@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { skillDiffOf, diffRows, parseSkillDiff, approvalNote, chatTitle, commandBody, commandText, draftedSkill, issueText, matchCommands, slashQuery, sourceOptions, skillReviewHref, chooseModel, chosenEffort, contextFill, currentTier, effortLabel, effortShort, grantText, isChatId, isDestructiveTool,
   isGitHubModel, isQuestionTool, lastContext, messageText, newChatId, pageRoute, parseChoices,
-  parseDock, parseGitHub, parseModels, parseSessions, parseSettings, parseTranscript, questionOf, secretOf, settledText, signInModel, toolLabel, toolNote,
+  parseDock, parseGitHub, parseModels, parseSourceSettings, parseSessions, parseSettings, parseTranscript, questionOf, secretOf, settledText, signInModel, toolLabel, toolNote,
   toolStatus, tokenText, toolTitle, urlHost, waitingParts } from '../.checks/assistant.js'
 
 const id = newChatId()
@@ -129,7 +129,17 @@ assert.equal(chooseModel(byok, signInModel), signInModel)
 assert.equal(chooseModel({ connected: false, sources: [], models: [] }, 'o4'), signInModel)
 assert.equal(signInModel, 'github:')
 for (const model of [undefined, 'gpt-5-mini', signInModel, 'localhost:llama3']) assert.ok(isGitHubModel(model), String(model))
-for (const model of ['litellm:llama3', 'local:qwen3', 'local:ollama/llama3']) assert.ok(!isGitHubModel(model), model)
+for (const model of ['litellm:llama3', 'local:qwen3', 'local:ollama/llama3', 'byok:abcdef012345/openai/gpt-4o']) assert.ok(!isGitHubModel(model), model)
+const sourceSettings = {
+  connections: [{ id: 'abcdef012345', name: 'Heimdall', baseUrl: 'https://gateway.example.com/v1/', hasKey: true }],
+  disabledModels: ['byok:abcdef012345/openai/gpt-4o', 'local:qwen3'],
+  sources: [{ id: 'byok:abcdef012345', name: 'Heimdall', models: [{ id: 'byok:abcdef012345/openai/gpt-4o', name: 'openai/gpt-4o' }] }],
+}
+assert.deepEqual(parseSourceSettings(sourceSettings), sourceSettings)
+assert.deepEqual(parseSourceSettings({ ...sourceSettings, connections: [{ ...sourceSettings.connections[0], apiKey: 'must-not-be-kept' }] }), sourceSettings)
+for (const broken of [{}, { ...sourceSettings, connections: [null] }, { ...sourceSettings, disabledModels: ['gpt-4o'] }])
+  assert.throws(() => parseSourceSettings(broken))
+assert.equal(chooseModel({ connected: false, models: sourceSettings.sources[0].models, sources: sourceSettings.sources }, null), 'byok:abcdef012345/openai/gpt-4o')
 
 const transcript = parseTranscript({ id, title: 'Add Immich', running: false, messages: [
   { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'How do I add Immich?' }] },

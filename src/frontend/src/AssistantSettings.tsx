@@ -94,6 +94,7 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
   const changes = tools.filter(tool => tool.tier === 'change')
   return <>
     <div className="page-intro"><h1>Assistant</h1><p>The assistant checks your servers, apps and logs on its own, and asks in the chat before it changes anything. Choose what it may do without asking.</p><p><a className="text-link" href="#/settings/assistant/skills">Manage skills <Icon name="arrow" /></a></p></div>
+    <p><a className="text-link" href="#/settings/assistant/models">Manage model sources and credentials <Icon name="arrow" /></a></p>
     {error && <p className="network-error" role="alert">{error}</p>}
     <p className="network-notice" role="status">{loading ? 'Reading your settings…' : ''}</p>
     <form onSubmit={event => void save(event)}>
@@ -118,7 +119,7 @@ export function AssistantSettings({ session, refreshSession }: { session: Authen
       <section className="surface network-section">
         <h2>Reasoning for your own models</h2>
         <p className="section-note">Tick the efforts each model accepts and they appear on the composer’s reasoning button and in jobs. Disabled turns thinking off (it sends <code>enable_thinking: false</code>); the others send <code>reasoning_effort</code>. LiteLLM models that report reasoning start with Low, Medium and High.</p>
-        {!custom.length ? <p className="section-note">{loading ? '' : 'Models from LiteLLM and Local AI appear here once they’re running.'}</p>
+        {!custom.length ? <p className="section-note">{loading ? '' : 'Enabled models from your model sources appear here once they are available.'}</p>
           : <div className="assistant-settings-models">{custom.map(model => <fieldset key={model.id} className="assistant-settings-model">
             <legend>{model.name}</legend>
             {reasoningEfforts.map(effort => <label key={effort} className="network-checkbox">

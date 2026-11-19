@@ -76,8 +76,27 @@ export function takeAsk(): string | null {
 export const isModelId = (value: unknown): value is string => typeof value === 'string' && modelPattern.test(value)
 // Picking this asks for a GitHub sign-in; it is never sent.
 export const signInModel = 'github:'
-// Mirrors the host: LiteLLM and Local AI ids carry their source, and every other id is Copilot's.
-export const isGitHubModel = (id?: string) => !id || !/^(litellm|local):/.test(id)
+// Mirrors the host: bring-your-own models carry their source; every other id is Copilot's.
+export const isGitHubModel = (id?: string) => !id || !/^(litellm|local|byok):/.test(id)
+export const modelSourcesChanged = 'lucia:assistant-model-sources'
+
+export type AssistantConnection = { id: string; name: string; baseUrl: string; hasKey: boolean }
+export type AssistantSourceSettings = { connections: AssistantConnection[]; disabledModels: string[]; sources: AssistantSource[] }
+
+export function parseSourceSettings(value: unknown): AssistantSourceSettings {
+  if (!record(value) || !Array.isArray(value.connections) || !Array.isArray(value.disabledModels) || !Array.isArray(value.sources)) throw unexpected()
+  const connections = value.connections.map((item): AssistantConnection => {
+    if (!record(item) || typeof item.id !== 'string' || !/^[a-f0-9]{12}$/.test(item.id) || typeof item.name !== 'string'
+      || typeof item.baseUrl !== 'string' || typeof item.hasKey !== 'boolean') throw unexpected()
+    return { id: item.id, name: item.name, baseUrl: item.baseUrl, hasKey: item.hasKey }
+  })
+  const disabledModels = value.disabledModels.map(id => {
+    if (!isModelId(id) || isGitHubModel(id)) throw unexpected()
+    return id
+  })
+  return { connections, disabledModels,
+    sources: parseModels({ connected: false, sources: value.sources }).sources.filter(source => source.id !== 'github') }
+}
 
 export function pageRoute(hash: string): string | undefined {
   const route = hash.replace(/^#/, '').split('?')[0] || '/'

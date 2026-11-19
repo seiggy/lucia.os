@@ -36,6 +36,7 @@ Three decisions shape most of the code.
 | `AssistantRuns.cs` | Turn start and execution, chat storage, job prompts |
 | `AssistantStream.cs` | Maps runtime events to AI SDK UI message chunks |
 | `AssistantProviders.cs` | LiteLLM and Local AI model sources |
+| `AssistantModelSources.cs` | Configured OpenAI-compatible sources, encrypted settings and model exclusions |
 | `AssistantEngineProxy.cs` | Loopback shim that writes reasoning effort into a request |
 | `AssistantJobs.cs` | Job storage, the cron ticker, job grants |
 | `Skills/` | Owner skills: the store, the tools, the three script runners. See [Assistant skills](./assistant-skills.mdx) |
@@ -43,7 +44,7 @@ Three decisions shape most of the code.
 | `AssistantWeb.cs` | `read_web_page`: public sites only |
 | `GitHubSignIn.cs` | GitHub device flow and token refresh |
 
-Frontend: `src/frontend/src/AssistantPanel.tsx` (chat, cards), `AssistantTuning.tsx` (mode button, effort menu, context donut), `AssistantSettings.tsx`, `Jobs.tsx`, `MultiSelect.tsx`, plus `assistant.ts` and `assistantJobs.ts` for parsing and helpers.
+Frontend: `src/frontend/src/AssistantPanel.tsx` (chat, cards), `AssistantTuning.tsx` (mode button, effort menu, context donut), `AssistantSettings.tsx`, `AssistantModelSources.tsx` (connections and model exclusions at `#/settings/assistant/models`), `Jobs.tsx`, `MultiSelect.tsx`, plus `assistant.ts` and `assistantJobs.ts` for parsing and helpers.
 
 ## Tool tiers
 
@@ -188,8 +189,15 @@ Details worth knowing:
 | `litellm:<model>` | The LiteLLM catalog app |
 | `local:<model>` | The model loaded on the Spark, over loopback |
 | `local:<stack>/<model>` | The Local AI app of a managed node |
+| `byok:<connection>/<model>` | An owner-configured OpenAI-compatible endpoint, including Heimdall |
 
-LiteLLM and Local AI use the runtime's bring-your-own-key provider (`Type = "openai"`, `WireApi = "completions"`), so they need no GitHub sign-in. `AssistantRuns.StartAsync` only checks for a GitHub connection when the model is a Copilot one.
+Non-GitHub sources use the runtime's bring-your-own-key provider (`Type = "openai"`, `WireApi = "completions"`), so they need no GitHub sign-in. `AssistantRuns.StartAsync` only checks for a GitHub connection when the model is a Copilot one.
+
+`GET /api/assistant/sources` returns connection metadata, `hasKey`, disabled IDs and discovered non-GitHub models, including disabled ones. `PUT /api/assistant/sources` replaces the owner's connections and disabled IDs. Each connection has a stable 12-character lowercase hex `id`, `name`, `baseUrl` and an optional write-only `apiKey`: omitted or null keeps the saved key; an empty string clears it. A changed URL cannot retain an existing key implicitly. Both routes use the same owner authorization and CSRF middleware as the other assistant settings.
+
+The host encrypts the complete source configuration with an owner-bound Data Protection purpose and saves it atomically under `sources/`. Reads reject linked files; unreadable settings fail closed. Saving is serialized per owner. URLs accept HTTP or HTTPS, including private lab endpoints, but reject embedded credentials, queries and fragments. The HTTP handler does not follow redirects.
+
+`ListAsync` filters disabled IDs for pickers; its management view keeps them. `ResolveAsync` checks the same exclusions before making a request and confirms the selected model still exists. It preserves slashes in upstream model IDs. Heimdall's `x-heimdall.surfaces` excludes models without an available chat surface, and `contextWindow` supplies context metadata. Ordinary OpenAI model lists need no Heimdall fields. The browser's `lucia:assistant-model-sources` event refreshes an open assistant panel after saving; no credential is stored in browser storage.
 
 - **LiteLLM keys.** The host mints one virtual key per owner with the app's master key (`key/generate`, alias `lucia-assistant-<owner>`), stores it encrypted with Data Protection under `litellm/`, and mints again when LiteLLM answers 401 or 403.
 - **The Spark.** `AssistantEndpoints.Spark` builds `http://127.0.0.1:<port>/v1` with `HostPlatform:InferenceApiKey`. The host proxy lets that through (see [deployment](../deploy/assistant.mdx#loopback-and-the-host-proxy)).
@@ -241,6 +249,7 @@ Everything lives under `Assistant:Directory`, in a per-owner folder. The owner k
     jobs/<jobId>.runs.json newest 50 runs
   github/<owner>.json      encrypted GitHub token
   litellm/<owner>.json     encrypted LiteLLM virtual key
+  sources/<owner>.json     encrypted model connections and disabled IDs
   push-key.json            encrypted VAPID key
   runtime/  workspace/     Copilot CLI state and working directory
 ```
