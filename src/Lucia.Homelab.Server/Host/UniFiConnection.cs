@@ -63,6 +63,7 @@ internal sealed record UniFiStoredConnection(int Version, string BaseUrl, string
 /// UniFi Network connection. API contract verified against UniFi Network 10.6.106 with an API key (X-API-KEY):
 /// GET /proxy/network/integration/v1/info, /proxy/network/api/self/sites, /api/s/{site}/rest/user, /api/s/{site}/stat/sta;
 /// PUT /api/s/{site}/rest/user/{id} with use_fixedip, fixed_ip and network_id. The Integration API has no reservation endpoint.
+/// Network 11.0.103 reads return UUIDs for client, network and port-forward IDs; older IDs are 24-character hex strings.
 /// </summary>
 public sealed class UniFiConnectionService : IDhcpReservations
 {
@@ -550,7 +551,7 @@ internal static partial class UniFiValidation
     internal static bool Mac(string value) => MacPattern().IsMatch(value);
 
     [GeneratedRegex(@"\A[A-Za-z0-9_-]{1,64}\z")] private static partial Regex SitePattern();
-    [GeneratedRegex(@"\A[0-9a-f]{24}\z")] private static partial Regex IdPattern();
+    [GeneratedRegex(@"\A(?:[0-9a-f]{24}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\z")] private static partial Regex IdPattern();
     [GeneratedRegex(@"\A(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\z")] private static partial Regex MacPattern();
 }
 

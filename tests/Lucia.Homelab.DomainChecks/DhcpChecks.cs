@@ -1,3 +1,6 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using Lucia.Homelab.Server.Host;
 using Lucia.Homelab.Server.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -84,6 +87,42 @@ internal static class DhcpChecks
         }
         check(UniFiValidation.Id(Net) && !UniFiValidation.Id("../../rest") && UniFiValidation.Mac("a0:36:bc:ad:d8:29") && !UniFiValidation.Mac("a0-36"),
             "UniFi identifier validation is wrong.");
+
+        const string uuid = "12345678-9abc-4def-8123-456789abcdef";
+        const string uuidNetwork = "23456789-abcd-4ef0-9234-56789abcdef0";
+        using var handler = new FakeUniFiHttp();
+        using var http = new HttpClient(handler);
+        var session = new UniFiSession(http, "https://gateway.example.test", "abcdefghijklmnopqrstuvwx");
+        foreach (var (clientId, networkId) in new[] { (Id(1), Net), (uuid, uuidNetwork), (uuid, Net) })
+        {
+            handler.Body = JsonSerializer.Serialize(new
+            {
+                data = new[] { new { _id = clientId, mac = "a0:36:bc:ad:d8:29", ip = "192.168.0.241", network_id = networkId } }
+            });
+            var clients = await session.ClientsAsync("default", "stat/sta", CancellationToken.None);
+            check(clients is [{ Address: "192.168.0.241" }] && clients[0].Id == clientId && clients[0].NetworkId == networkId,
+                "UniFi client parsing must preserve legacy and UUID identifiers, including mixed-format network references.");
+        }
+        handler.Body = JsonSerializer.Serialize(new { data = new[] { new { _id = uuid } } });
+        check((await session.PortForwardsAsync("default", CancellationToken.None)).Single().GetProperty("_id").GetString() == uuid,
+            "UniFi 11 port forwards with UUIDs must be readable.");
+        await session.SavePortForwardAsync("default", uuid, new() { ["enabled"] = false }, CancellationToken.None);
+        check(handler.LastPath == "/proxy/network/api/s/default/rest/portforward/" + uuid,
+            "Port-forward updates must keep the full UUID and accept a UUID acknowledgement.");
+        foreach (var invalid in new[] { null, "", "../../rest", uuid.Replace("-", ""), uuid + "/rest", uuid + "\n", uuid[..^1] + "z" })
+            check(!UniFiValidation.Id(invalid), "Malformed UniFi identifiers must still be rejected.");
+    }
+
+    private sealed class FakeUniFiHttp : HttpMessageHandler
+    {
+        public string Body { get; set; } = "";
+        public string? LastPath { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            LastPath = request.RequestUri?.AbsolutePath;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent(Body, Encoding.UTF8, "application/json") });
+        }
     }
 
     private sealed class FakeDhcp(UniFiClient[] known, UniFiClient[] online) : IDhcpReservations

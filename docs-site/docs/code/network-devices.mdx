@@ -132,6 +132,8 @@ The class also exposes `ReadTopologyAsync` (read-only tables for the lab map) an
 
 **Authentication.** UniFi uses an `X-API-KEY` header against `/proxy/network/...`. The class comment records the endpoints verified on Network 10.6.106: `rest/user`, `stat/sta`, and `PUT rest/user/{id}` with `use_fixedip`, `fixed_ip` and `network_id`. The Integration API has no reservation endpoint, which is why the legacy proxy is used. Unknown or missing fields are tolerated and an unavailable zone or client-history table degrades to an empty array.
 
+**Identifiers.** Network 11.0.103 returns UUIDs for clients and networks, and for port-forward rules. `UniFiValidation.Id` accepts these alongside the older 24-character lowercase hex IDs. Existing reservations can still carry an older `network_id` even when the client's `_id` is a UUID. Both formats stay unchanged when Lucia reads them or sends an update.
+
 **Certificate trust.** UniFi gateways are usually self-signed. `UniFiTransport` accepts either normal validation or an exact SHA-256 pin the owner approved. The check runs inside the TLS callback, so the key header is never written to an untrusted peer. An unpinned failure returns `unifi_certificate_untrusted` with the observed fingerprint; a pinned mismatch returns `unifi_certificate_changed`.
 
 **Reservations.** `ManagedNodeDhcp` keeps the planning pure. `Plan(nodes, known, online)` returns the per-machine states and the list of reserve actions, and `Apply` performs them:
